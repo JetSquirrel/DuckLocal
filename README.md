@@ -2,23 +2,35 @@
 
 <img src="assets/logo.png" width="128" alt="DuckLocal logo">
 
-本地 · 快速 · 简单的 DuckDB 桌面客户端，基于 GPUI Kit 构建。
+**[中文文档](README.zh-CN.md)**
 
-![DuckLocal 介绍](assets/intro.png)
+A local-first, fast and simple DuckDB desktop client, built with GPUI Kit.
 
-## 运行
+![DuckLocal screenshot](assets/intro.png)
+
+## Features
+
+- SQL editor with syntax highlighting, autocompletion and one-click formatting, across multiple query tabs
+- Run queries with ⌘↵ (Cmd+Enter); inspect plans with EXPLAIN
+- Schema sidebar: browse databases / schemas / tables / columns, generate SELECT queries in one click, alter a column's data type from a dialog
+- Attach local CSV/TSV/Parquet/JSON files as queryable views; optional S3 support via httpfs
+- Results grid with filtering, cell copy, CSV/Parquet export and built-in charts
+- Query history with one-click refill into the editor
+- Light and dark themes
+
+## Run
 
 ```bash
 cargo run
 ```
 
-## 打包 macOS 应用
+## Build the macOS app
 
 ```bash
 ./scripts/bundle.sh
-# 生成 target/release/DuckLocal.app
+# Produces target/release/DuckLocal.app
 ```
 
-## 开源协议
+## License
 
 [Apache-2.0](LICENSE) · Copyright © 2026 JetSquirrel
