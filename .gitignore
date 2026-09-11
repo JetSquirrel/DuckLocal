@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+
+# macOS
+.DS_Store
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local secrets (defensive; the app does not read env files today)
+.env
+.env.*
+
+# Project-local AI agent skills (kept on disk, not published)
+/skills
