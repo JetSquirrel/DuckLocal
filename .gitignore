@@ -1,6 +1,12 @@
 # Rust build artifacts
 /target
 
+# macOS packaging output (scripts/package-macos.sh writes these into the
+# repository root; CI uploads them as release assets)
+/DuckLocal.app/
+/dmg-root/
+/ducklocal-macos-*.dmg
+
 # macOS
 .DS_Store
 
@@ -13,6 +19,7 @@
 # Local secrets (defensive; the app does not read env files today)
 .env
 .env.*
+*.local
 
 # Project-local AI agent skills (kept on disk, not published)
 /skills
