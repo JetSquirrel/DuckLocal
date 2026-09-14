@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+#
+# Package a built binary as DuckLocal.app inside a .dmg, signed with a
+# Developer ID and notarized by Apple.
+#
+# A bare executable in a zip is not what macOS expects: Finder shows it as
+# a document, it arrives without the execute bit, and it has no bundle to
+# hang an identity, a version or an icon on. A .dmg with an app bundle and
+# an Applications symlink is the drag-to-install shape people know.
+#
+# Signing and notarization are *required*, not optional. An ad-hoc signed
+# build is refused by Gatekeeper on every current macOS — and since 15
+# (Sequoia) there is no Control-click bypass left, so an unnotarized
+# artifact is not something a user can reasonably open. Rather than let one
+# ship by accident, this script fails when the credentials are absent.
+#
+# Usage: scripts/package-macos.sh <binary> <output.dmg> <version>
+# Run from the repository root; writes DuckLocal.app into the working
+# directory (and the dmg to <output.dmg>, relative to the same directory).
+#
+# Required environment:
+#   NOTARY_KEY        Path to the App Store Connect API key (.p8)
+#   NOTARY_KEY_ID     That key's Key ID
+#   NOTARY_ISSUER     The issuer UUID the key belongs to
+#
+# Optional:
+#   MACOS_SIGN_IDENTITY  Signing identity. Defaults to the one
+#                        "Developer ID Application" identity in the
+#                        keychain, which is what CI imports.
+set -euo pipefail
+
+BINARY="$1"
+DMG="$2"
+VERSION="$3"
+APP="DuckLocal.app"
+EXECUTABLE="ducklocal"
+ENTITLEMENTS="scripts/entitlements.plist"
+
+die() {
+  echo "package-macos: $*" >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Credentials, checked before anything is built: a failure here is a
+# configuration mistake, and finding out after a five-minute build is worse
+# than finding out now.
+# ---------------------------------------------------------------------------
+
+if [ -z "${MACOS_SIGN_IDENTITY:-}" ]; then
+  # `security find-identity` prints one indented line per identity:
+  #   1) <40 hex> "Developer ID Application: Name (TEAMID)"
+  # No mapfile: the macOS runners (and /bin/bash on every shipping macOS)
+  # are bash 3.2.
+  IDENTITIES=()
+  while IFS= read -r line; do
+    IDENTITIES+=("$line")
+  done < <(
+    security find-identity -v -p codesigning |
+      sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p'
+  )
+  case ${#IDENTITIES[@]} in
+    1) MACOS_SIGN_IDENTITY="${IDENTITIES[0]}" ;;
+    0) die "no 'Developer ID Application' identity in the keychain.
+
+An 'Apple Development' certificate cannot sign for distribution. Create a
+Developer ID Application certificate at
+https://developer.apple.com/account/resources/certificates, install it, and
+re-run. To pick an identity explicitly, set MACOS_SIGN_IDENTITY." ;;
+    *) die "${#IDENTITIES[@]} Developer ID Application identities found; set \
+MACOS_SIGN_IDENTITY to the one to use:
+$(printf '  %s\n' "${IDENTITIES[@]}")" ;;
+  esac
+fi
+
+for var in NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER; do
+  [ -n "${!var:-}" ] || die "$var is not set.
+
+Notarization needs an App Store Connect API key. Create one under
+App Store Connect -> Users and Access -> Integrations -> Keys, then set
+NOTARY_KEY (path to the .p8), NOTARY_KEY_ID and NOTARY_ISSUER."
+done
+[ -f "$NOTARY_KEY" ] || die "NOTARY_KEY points at no file: $NOTARY_KEY"
+[ -f "$ENTITLEMENTS" ] || die "$ENTITLEMENTS is missing; run this from the \
+repository root."
+
+echo "package-macos: signing as $MACOS_SIGN_IDENTITY"
+
+# ---------------------------------------------------------------------------
+# The bundle
+#
+# assets/Info.plist is the single source of truth for the bundle metadata:
+# bundle.sh ships the same file. Only the version is filled in from the
+# argument, so the two paths cannot drift apart.
+# ---------------------------------------------------------------------------
+
+rm -rf "$APP" dmg-root "$DMG"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BINARY" "$APP/Contents/MacOS/$EXECUTABLE"
+chmod +x "$APP/Contents/MacOS/$EXECUTABLE"
+
+# An icon is optional: without one the app shows the generic bundle icon.
+if [ -f assets/AppIcon.icns ]; then
+  cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+fi
+
+cp assets/Info.plist "$APP/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
+
+# ---------------------------------------------------------------------------
+# Signing
+#
+# `--options runtime` (the hardened runtime) and `--timestamp` are both
+# preconditions for notarization, not preferences.
+#
+# The entitlements file exists for one reason: DuckDB loads extensions with
+# dlopen at runtime — httpfs for the S3 feature, and the parquet/json
+# readers that are not linked into the bundled amalgamation. Those
+# .duckdb_extension files are signed by DuckDB Labs, not by us, and the
+# hardened runtime's library validation rejects any library not signed by
+# the same team. See scripts/entitlements.plist.
+#
+# Inside out, and no `--deep`: Apple discourages it, and the only nested
+# code here is the main executable.
+# ---------------------------------------------------------------------------
+
+sign() {
+  codesign --force --timestamp --options runtime \
+    --sign "$MACOS_SIGN_IDENTITY" "$1"
+}
+
+sign_app() {
+  codesign --force --timestamp --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign "$MACOS_SIGN_IDENTITY" "$1"
+}
+
+sign_app "$APP/Contents/MacOS/$EXECUTABLE"
+sign_app "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+
+# ---------------------------------------------------------------------------
+# Notarization
+#
+# One submission, not two. The notary service scans the .dmg's contents, so
+# the enclosed .app gets its ticket from the same submission. The trade-off:
+# the .app inside carries no stapled ticket of its own, so Gatekeeper's
+# first-launch check needs network. That is the shape most Mac apps ship in,
+# and it halves our exposure to the notary queue — fresh teams see hours of
+# queue latency per submission, and two sequential hour-long waits do not
+# fit in a CI job. If an offline-first-launch guarantee ever matters, add a
+# second submission for the zipped .app here.
+#
+# The wait budget is 5 hours for the same reason: a new team's first
+# submissions routinely sit In Progress for several hours. The client
+# timing out does not stop the server-side submission, but the run needs
+# the verdict to staple, so the budget has to outlast the queue.
+# ---------------------------------------------------------------------------
+
+mkdir -p dmg-root
+cp -R "$APP" dmg-root/
+ln -s /Applications dmg-root/Applications
+hdiutil create -volname DuckLocal -srcfolder dmg-root -ov -format UDZO "$DMG" >/dev/null
+rm -rf dmg-root
+
+# The disk image gets its own signature too: Gatekeeper's open assessment
+# (the spctl check below) rejects a notarized, stapled dmg that carries no
+# code signature of its own. No --options runtime here — the hardened
+# runtime applies to executables, not container formats.
+codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG"
+
+echo "package-macos: notarizing $DMG"
+SUBMIT_LOG=$(mktemp -t notarytool)
+if ! xcrun notarytool submit "$DMG" \
+    --key "$NOTARY_KEY" \
+    --key-id "$NOTARY_KEY_ID" \
+    --issuer "$NOTARY_ISSUER" \
+    --wait --timeout 300m | tee "$SUBMIT_LOG"; then
+  # Rejected or timed out: Apple's log says exactly which and why.
+  SUBMISSION_ID=$(sed -n 's/^  id: //p' "$SUBMIT_LOG" | head -1)
+  if [ -n "$SUBMISSION_ID" ]; then
+    xcrun notarytool log "$SUBMISSION_ID" \
+      --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+  fi
+  die "notarization did not complete cleanly (see log above)"
+fi
+xcrun stapler staple "$DMG"
+
+# ---------------------------------------------------------------------------
+# What a user's Mac will conclude. `spctl` here is the whole point of the
+# exercise: it is the check that rejected every build before this one. The
+# .app assessment works only online: its ticket lives on Apple's servers,
+# not stapled to the bundle (see the notarization comment above).
+# ---------------------------------------------------------------------------
+
+xcrun stapler validate "$DMG"
+spctl --assess --type execute --verbose=2 "$APP"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+echo "package-macos: $DMG is signed, notarized and stapled"

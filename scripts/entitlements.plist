@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- DuckDB extensions are dlopen'ed at runtime: httpfs behind the S3
+	     feature, plus the parquet/json readers that the bundled
+	     amalgamation does not link in. Those .duckdb_extension files are
+	     signed by DuckDB Labs, not by us, and the hardened runtime's
+	     library validation refuses any library not signed by the same
+	     team. Without this entitlement `INSTALL httpfs; LOAD httpfs`
+	     fails inside a signed build, even though the same statement works
+	     under `cargo run`. Nothing else here needs an exception. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
