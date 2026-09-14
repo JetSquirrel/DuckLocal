@@ -1,9 +1,11 @@
 mod app;
 mod db;
 mod history;
+mod i18n;
 #[cfg(test)]
 mod perf_probe;
 mod query;
+mod s3;
 mod schema;
 mod state;
 mod ui;
@@ -20,6 +22,13 @@ fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Resolve the UI language before the first frame: open the history store
+    // here (app.rs re-opens it harmlessly later) and read the persisted
+    // `language` setting; without one, fall back to the system locale.
+    // Nothing is persisted until the user explicitly switches language.
+    crate::history::init().ok();
+    i18n::set_current(i18n::initial_language());
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

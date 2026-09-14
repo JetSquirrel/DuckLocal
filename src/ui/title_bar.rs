@@ -13,8 +13,11 @@ use gpui_kit::*;
 
 use crate::db::{DatabaseTarget, ServerInfo};
 use crate::history::HistoryEntry;
+use crate::i18n::{Language, tr, trf};
 use crate::schema::DatabaseInfo;
 use crate::state::AppState;
+
+const DIALOG_WIDTH: Pixels = px(440.);
 
 pub struct TitleBarView {
     state: Entity<AppState>,
@@ -56,6 +59,15 @@ impl TitleBarView {
         Theme::sync_base(cx);
     }
 
+    fn toggle_language(_: &ClickEvent, _: &mut Window, cx: &mut App) {
+        let next = match crate::i18n::current() {
+            Language::Zh => Language::En,
+            Language::En => Language::Zh,
+        };
+        crate::i18n::set_language(next);
+        cx.refresh_windows();
+    }
+
     fn open_s3_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let inputs = S3Inputs {
             endpoint: cx.new(|cx| {
@@ -83,8 +95,8 @@ impl TitleBarView {
             let key_id = key_id.clone();
             let secret = secret.clone();
             dialog
-                .title("配置 S3 数据源")
-                .w(px(440.))
+                .title(tr("dialog.s3.title"))
+                .w(DIALOG_WIDTH)
                 .child(
                     v_flex()
                         .gap_3()
@@ -92,16 +104,16 @@ impl TitleBarView {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("配置后可直接查询 s3://bucket/路径 下的数据文件。凭据仅当前会话有效，不会写入磁盘；切换数据库连接后需重新配置。"),
+                                .child(tr("dialog.s3.description")),
                         )
                         .child(
                             v_flex()
                                 .gap_2()
-                                .child(labeled_field("Endpoint", Input::new(&endpoint).into_any_element(), cx))
-                                .child(labeled_field("Region", Input::new(&region).into_any_element(), cx))
-                                .child(labeled_field("Access Key ID", Input::new(&key_id).into_any_element(), cx))
+                                .child(labeled_field(tr("dialog.s3.field.endpoint"), Input::new(&endpoint).into_any_element(), cx))
+                                .child(labeled_field(tr("dialog.s3.field.region"), Input::new(&region).into_any_element(), cx))
+                                .child(labeled_field(tr("dialog.s3.field.access_key_id"), Input::new(&key_id).into_any_element(), cx))
                                 .child(labeled_field(
-                                    "Secret Access Key",
+                                    tr("dialog.s3.field.secret_access_key"),
                                     Input::new(&secret)
                                         .content_type(InputContentType::Password)
                                         .mask_toggle()
@@ -116,13 +128,13 @@ impl TitleBarView {
                         .child(
                             Button::new("cancel")
                                 .outline()
-                                .label("取消")
+                                .label(tr("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("save-s3")
                                 .primary()
-                                .label("启用 S3")
+                                .label(tr("dialog.s3.confirm"))
                                 .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                                     let endpoint = endpoint.read(cx).value().trim().to_string();
                                     let region = region.read(cx).value().trim().to_string();
@@ -130,7 +142,7 @@ impl TitleBarView {
                                     let secret = secret.read(cx).value().to_string();
                                     if key_id.is_empty() || secret.is_empty() {
                                         window.push_notification(
-                                            Notification::error("Access Key ID 与 Secret Access Key 不能为空。"),
+                                            Notification::error(tr("notify.s3.missing_keys")),
                                             cx,
                                         );
                                         return;
@@ -158,7 +170,12 @@ impl TitleBarView {
         cx: &mut Context<Self>,
     ) {
         let state = self.state.clone();
-        let endpoint_label = endpoint.clone();
+        let config = crate::s3::S3Config {
+            endpoint: endpoint.clone(),
+            region: region.clone(),
+            key_id: key_id.clone(),
+            secret: secret.clone(),
+        };
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || {
                 let esc = |s: &str| s.replace('\'', "''");
@@ -182,12 +199,15 @@ impl TitleBarView {
             this.update_in(cx, move |_, window, cx| match result {
                 Ok(()) => {
                     state.update(cx, |s, cx| {
-                        s.set_s3_configured(Some(endpoint_label.clone()), cx);
+                        s.set_s3_configured(Some(config.clone()), cx);
                     });
-                    window.push_notification("S3 已配置，可查询 s3:// 路径", cx);
+                    window.push_notification(tr("notify.s3.configured"), cx);
                 }
                 Err(e) => {
-                    window.push_notification(Notification::error(format!("S3 配置失败：{e}")), cx)
+                    window.push_notification(
+                        Notification::error(trf("notify.s3.failed", &[&e.to_string()])),
+                        cx,
+                    )
                 }
             })
             .ok();
@@ -206,8 +226,8 @@ impl TitleBarView {
             let open_file_view = view.clone();
             let memory_view = view.clone();
             dialog
-                .title("打开数据库")
-                .w(px(420.))
+                .title(tr("dialog.open_db.title"))
+                .w(DIALOG_WIDTH)
                 .child(
                     v_flex()
                         .gap_3()
@@ -215,7 +235,7 @@ impl TitleBarView {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("输入 .duckdb 文件路径，或直接导入 CSV / Parquet / JSON 数据文件为视图。"),
+                                .child(tr("dialog.open_db.description")),
                         )
                         .child(
                             h_flex()
@@ -226,7 +246,7 @@ impl TitleBarView {
                                 .child(
                                     Button::new("browse")
                                         .outline()
-                                        .label("浏览…")
+                                        .label(tr("dialog.open_db.browse"))
                                         .on_click({
                                             let input = input.clone();
                                             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -234,7 +254,7 @@ impl TitleBarView {
                                                     files: true,
                                                     directories: false,
                                                     multiple: false,
-                                                    prompt: Some("选择数据库或数据文件".into()),
+                                                    prompt: Some(tr("dialog.open_db.picker_prompt").into()),
                                                 });
                                                 let input = input.clone();
                                                 window
@@ -262,13 +282,13 @@ impl TitleBarView {
                         .child(
                             Button::new("cancel")
                                 .outline()
-                                .label("取消")
+                                .label(tr("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("memory")
                                 .outline()
-                                .label("内存模式")
+                                .label(tr("dialog.open_db.memory"))
                                 .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                                     window.close_dialog(cx);
                                     if let Some(view) = memory_view.upgrade() {
@@ -281,7 +301,7 @@ impl TitleBarView {
                         .child(
                             Button::new("open-file")
                                 .primary()
-                                .label("打开文件")
+                                .label(tr("dialog.open_db.open_file"))
                                 .on_click({
                                     let input = input.clone();
                                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -336,10 +356,10 @@ impl TitleBarView {
                         s.set_history(history, cx);
                         s.set_attached_files(attached, cx);
                     });
-                    window.push_notification(format!("已创建视图 {view}"), cx);
+                    window.push_notification(trf("notify.attach.success", &[&view]), cx);
                 }
                 Err(e) => window.push_notification(
-                    Notification::error(format!("无法导入数据文件：{e}")),
+                    Notification::error(trf("notify.attach.failed", &[&e.to_string()])),
                     cx,
                 ),
             })
@@ -377,10 +397,13 @@ impl TitleBarView {
                         s.set_history(history, cx);
                         s.set_attached_files(attached, cx);
                     });
-                    window.push_notification(format!("已连接到 {label}"), cx);
+                    window.push_notification(trf("notify.connect.success", &[&label]), cx);
                 }
                 Err(e) => {
-                    window.push_notification(Notification::error(format!("无法打开数据库：{e}")), cx)
+                    window.push_notification(
+                        Notification::error(trf("notify.connect.failed", &[&e.to_string()])),
+                        cx,
+                    )
                 }
             })
             .ok();
@@ -391,12 +414,9 @@ impl TitleBarView {
 
 impl Render for TitleBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (target_label, version) = {
+        let target_label = {
             let state = self.state.read(cx);
-            (
-                state.target.as_ref().map(|t| t.display_label()),
-                state.server.as_ref().map(|s| s.version.clone()),
-            )
+            state.target.as_ref().map(|t| t.display_label())
         };
         let dark = cx.theme().mode.is_dark();
 
@@ -406,27 +426,32 @@ impl Render for TitleBarView {
                 .items_center()
                 .gap_2()
                 .child(
-                    Button::new("open-db")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::FolderOpen)
-                        .label("打开数据库…")
-                        .on_click(cx.listener(Self::open_db_dialog)),
-                )
-                .child(
-                    Button::new("configure-s3")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Globe)
-                        .label("S3")
-                        .tooltip("配置 S3 数据源（httpfs）")
-                        .on_click(cx.listener(Self::open_s3_dialog)),
-                )
-                .child(
                     h_flex()
                         .flex_1()
                         .min_w_0()
-                        .justify_center()
+                        .justify_start()
+                        .gap_2()
+                        .child(
+                            Button::new("open-db")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::FolderOpen)
+                                .label(tr("title_bar.open_database"))
+                                .on_click(cx.listener(Self::open_db_dialog)),
+                        )
+                        .child(
+                            Button::new("configure-s3")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Globe)
+                                .label("S3")
+                                .tooltip(tr("title_bar.configure_s3"))
+                                .on_click(cx.listener(Self::open_s3_dialog)),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .min_w_0()
                         .gap_2()
                         .child(
                             div()
@@ -446,45 +471,27 @@ impl Render for TitleBarView {
                 )
                 .child(
                     h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_end()
                         .gap_2()
-                        .items_center()
-                        .when_some(version, |this, version| {
-                            this.child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .size_2()
-                                            .rounded_full()
-                                            .bg(cx.theme().success),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("DuckDB {version}")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("·"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("本地"),
-                                    ),
-                            )
-                        })
+                        .child(
+                            Button::new("toggle-language")
+                                .ghost()
+                                .xsmall()
+                                .label(match crate::i18n::current() {
+                                    Language::Zh => "EN",
+                                    Language::En => "中",
+                                })
+                                .tooltip(tr("title_bar.toggle_language"))
+                                .on_click(Self::toggle_language),
+                        )
                         .child(
                             Button::new("toggle-theme")
                                 .ghost()
                                 .xsmall()
                                 .icon(if dark { IconName::Sun } else { IconName::Moon })
-                                .tooltip("切换明暗主题")
+                                .tooltip(tr("title_bar.toggle_theme"))
                                 .on_click(Self::toggle_theme),
                         ),
                 ),

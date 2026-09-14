@@ -12,10 +12,11 @@ use std::rc::Rc;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::chart::{AreaChart, BarChart};
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
+use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
 
 pub struct ChartDatum {
@@ -38,6 +39,11 @@ const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
 /// cannot be meaningfully merged — so surplus bars are dropped, not averaged.
 const MAX_BARS: usize = 200;
+/// How many detected columns the "nothing to plot" message lists before
+/// summarizing the rest.
+const MAX_LISTED_COLUMNS: usize = 5;
+/// How many series names go into the chart title before summarizing the rest.
+const MAX_TITLE_SERIES: usize = 3;
 
 /// Everything the chart needs, derived from a result set once.
 pub struct ChartData {
@@ -82,7 +88,10 @@ impl ChartData {
         let series_total = value_ixes.len();
         if series_total > MAX_SERIES {
             value_ixes.truncate(MAX_SERIES);
-            notices.push(format!("仅显示前 {MAX_SERIES} / {series_total} 个数值列"));
+            notices.push(trf(
+                "chart.notice.series_capped",
+                &[&MAX_SERIES.to_string(), &series_total.to_string()],
+            ));
         }
 
         // `(source row index, band, one value per series)`.
@@ -106,9 +115,13 @@ impl ChartData {
             let reduced = bucket_average(raw, MAX_POINTS);
             if reduced.len() < source_points {
                 let per_point = source_points.div_ceil(reduced.len().max(1));
-                notices.push(format!(
-                    "已降采样：{source_points} 点 → {} 点（每点为 {per_point} 个采样的均值）",
-                    reduced.len()
+                notices.push(trf(
+                    "chart.notice.downsampled",
+                    &[
+                        &source_points.to_string(),
+                        &reduced.len().to_string(),
+                        &per_point.to_string(),
+                    ],
                 ));
             }
             reduced
@@ -117,7 +130,10 @@ impl ChartData {
             let mut bars = raw;
             if source_bars > MAX_BARS {
                 bars.truncate(MAX_BARS);
-                notices.push(format!("仅显示前 {MAX_BARS} / {source_bars} 行"));
+                notices.push(trf(
+                    "chart.notice.bars_capped",
+                    &[&MAX_BARS.to_string(), &source_bars.to_string()],
+                ));
             }
             bars
         };
@@ -214,49 +230,29 @@ impl RenderOnce for ChartPanel {
         let data = &self.data;
 
         if data.series_names.is_empty() {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .text_center()
-                        .child("当前结果没有数值列，无法绘制图表。"),
+            let detected = if data.detected.len() > MAX_LISTED_COLUMNS {
+                trf(
+                    "chart.empty.detected_more",
+                    &[
+                        &data.detected[..MAX_LISTED_COLUMNS].join(" · "),
+                        &data.detected.len().to_string(),
+                    ],
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .text_center()
-                        .child(format!("检测到的列：{}", data.detected.join(" · "))),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .text_center()
-                        .child("提示：文本列可用 cast(列名 AS DOUBLE) 或聚合函数（如 avg/sum/count）转换为数值。"),
-                )
-                .into_any_element();
+            } else {
+                data.detected.join(" · ")
+            };
+            return empty_chart_state(
+                tr("chart.empty.no_numeric"),
+                &[
+                    trf("chart.empty.detected_columns", &[&detected]),
+                    tr("chart.empty.hint").to_string(),
+                ],
+                cx,
+            );
         }
 
         if data.rows.is_empty() {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("没有可绘制的数据行。"),
-                )
-                .into_any_element();
+            return empty_chart_state(tr("chart.empty.no_rows"), &[], cx);
         }
 
         let palette = [
@@ -304,37 +300,83 @@ impl RenderOnce for ChartPanel {
 
         let label_name = data.label_name.clone();
         let notice = data.notice.clone();
+        let series_title = if data.series_names.len() > MAX_TITLE_SERIES {
+            trf(
+                "chart.title.series_more",
+                &[
+                    &data.series_names[..MAX_TITLE_SERIES].join(", "),
+                    &data.series_names.len().to_string(),
+                ],
+            )
+        } else {
+            data.series_names.join(", ")
+        };
         v_flex()
             .size_full()
             .p_4()
             .gap_2()
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_baseline()
+                v_flex()
+                    .gap_1()
                     .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("{}（按 {label_name}）", data.series_names.join(", "))),
+                        h_flex()
+                            .gap_2()
+                            .items_baseline()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(trf("chart.title.by", &[&series_title, &label_name])),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(trf("chart.title.point_count", &[&row_count.to_string()])),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("绘制 {row_count} 点")),
-                    ),
+                    .when_some(notice, |this, notice| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(notice),
+                        )
+                    }),
             )
-            .when_some(notice, |this, notice| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(notice),
-                )
-            })
             .child(div().flex_1().min_h_0().child(chart))
             .into_any_element()
     }
+}
+
+/// Shared empty-state layout: a medium-weight message over muted hints.
+fn empty_chart_state(message: &str, hints: &[String], cx: &App) -> AnyElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .p_4()
+        .gap_2()
+        .child(
+            Icon::new(gpui_kit::assets::IconName::ChartPie)
+                .large()
+                .text_color(cx.theme().muted_foreground.alpha(0.5)),
+        )
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .text_center()
+                .child(message.to_string()),
+        )
+        .children(hints.iter().map(|hint| {
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .text_center()
+                .child(hint.clone())
+                .into_any_element()
+        }))
+        .into_any_element()
 }
 
 fn format_value(value: f64) -> String {

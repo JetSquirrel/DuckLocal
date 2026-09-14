@@ -6,6 +6,7 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, h_flex};
 use gpui_kit::*;
 
+use crate::i18n::{tr, trf};
 use crate::state::{AppState, ConnectionChanged, QueryStatsChanged};
 
 pub struct StatusBarView {
@@ -37,11 +38,10 @@ impl Render for StatusBarView {
             )
         };
 
+        let mono = cx.theme().mono_font_family.clone();
+
         let mut bar = StatusBar::new()
-            .h(px(35.))
-            // Monospace for the whole bar — cascades to every child label and
-            // button text (icons are SVGs, unaffected).
-            .font_family(cx.theme().mono_font_family.clone())
+            .h(px(32.))
             .left(if let Some(label) = target_label {
             h_flex()
                 .gap_1p5()
@@ -51,33 +51,40 @@ impl Render for StatusBarView {
                         .xsmall()
                         .text_color(cx.theme().success),
                 )
-                .child("已连接")
-                .child(div().text_color(cx.theme().muted_foreground).child("·"))
+                .child(tr("status_bar.connected"))
                 .child(label)
                 .into_any_element()
         } else {
             h_flex()
-                .gap_1()
+                .gap_1p5()
                 .items_center()
-                .child(Icon::new(IconName::CircleX).xsmall())
-                .child("未连接")
+                .child(
+                    Icon::new(IconName::CircleX)
+                        .xsmall()
+                        .text_color(cx.theme().danger),
+                )
+                .child(tr("status_bar.disconnected"))
                 .into_any_element()
         });
 
         if let Some(stats) = last {
-            bar = bar
-                .right(Separator::vertical())
-                .right(format!(
-                    "耗时 {} · {} 行 · {} 列",
-                    crate::state::format_duration(stats.elapsed_ms as i64),
-                    stats.rows,
-                    stats.cols
-                ));
+            bar = bar.right(Separator::vertical()).right(
+                div().font_family(mono.clone()).child(trf(
+                    "status_bar.last_query",
+                    &[
+                        &crate::state::format_duration(stats.elapsed_ms as i64),
+                        &stats.rows.to_string(),
+                        &stats.cols.to_string(),
+                    ],
+                )),
+            );
         }
         if let Some(version) = version {
-            bar = bar
-                .right(Separator::vertical())
-                .right(format!("DuckDB {version}"));
+            bar = bar.right(Separator::vertical()).right(
+                div()
+                    .font_family(mono.clone())
+                    .child(format!("DuckDB {version}")),
+            );
         }
         bar
     }

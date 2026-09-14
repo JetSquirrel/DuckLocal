@@ -38,7 +38,6 @@ pub struct AttachedFileView {
     pub id: i64,
     pub path: String,
     pub view_name: String,
-    pub kind: String,
     /// `None` when the count has not been loaded or the query failed.
     pub row_count: Option<i64>,
 }
@@ -54,8 +53,8 @@ pub struct AppState {
     /// Last executed query text, for export actions in the results panel.
     pub last_sql: Option<String>,
     pub attached_files: Vec<AttachedFileView>,
-    /// Endpoint of the session-scoped S3 secret, if configured.
-    pub s3_endpoint: Option<String>,
+    /// Session-scoped S3 credentials, if configured. Memory only.
+    pub s3_config: Option<crate::s3::S3Config>,
 }
 
 impl EventEmitter<ConnectionChanged> for AppState {}
@@ -74,7 +73,7 @@ impl AppState {
             last_query: None,
             last_sql: None,
             attached_files: Vec::new(),
-            s3_endpoint: None,
+            s3_config: None,
         }
     }
 
@@ -93,7 +92,7 @@ impl AppState {
         self.catalog = catalog;
         // Session-scoped S3 secrets live in the connection, so a new
         // connection starts unconfigured.
-        self.s3_endpoint = None;
+        self.s3_config = None;
         cx.emit(ConnectionChanged);
         cx.notify();
     }
@@ -104,8 +103,8 @@ impl AppState {
         cx.notify();
     }
 
-    pub fn set_s3_configured(&mut self, endpoint: Option<String>, cx: &mut Context<Self>) {
-        self.s3_endpoint = endpoint;
+    pub fn set_s3_configured(&mut self, config: Option<crate::s3::S3Config>, cx: &mut Context<Self>) {
+        self.s3_config = config;
         cx.emit(S3ConfigChanged);
         cx.notify();
     }
@@ -168,7 +167,6 @@ pub fn load_attached_files() -> Vec<AttachedFileView> {
                 id: file.id,
                 path: file.path,
                 view_name: file.view_name,
-                kind: file.kind,
                 row_count,
             }
         })

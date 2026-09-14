@@ -17,7 +17,9 @@ use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Sty
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
+use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, ExportFormat, QueryOutcome, QueryResult};
+use crate::ui::RUN_QUERY_KEYSTROKE;
 use crate::ui::chart::{ChartData, ChartPanel};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,6 +41,9 @@ enum ResultView {
 const INDEX_COLUMN_HEADER: &str = "#";
 /// How many leading columns sit in front of the data columns.
 const LEADING_COLUMNS: usize = 1;
+/// Per-cell copy buttons build their ElementId as `row * MAX_ID_COLUMNS +
+/// col`, so a result set is assumed to never exceed this many columns.
+const MAX_ID_COLUMNS: usize = 10_000;
 
 /// Compact cell padding shared by header and body cells.
 fn cell_paddings() -> Edges<Pixels> {
@@ -124,7 +129,7 @@ impl ResultTableDelegate {
 
     fn index_column() -> Column {
         let mut spec = Column::new(INDEX_COLUMN_HEADER, INDEX_COLUMN_HEADER)
-            .width(80.)
+            .width(56.)
             .text_right()
             .resizable(false);
         spec.paddings = Some(cell_paddings());
@@ -271,23 +276,19 @@ impl TableDelegate for ResultTableDelegate {
             )
             .child(
                 div()
-                    .id(("copy-wrapper", row_ix * 10_000 + col_ix))
+                    .id(("copy-wrapper", row_ix * MAX_ID_COLUMNS + col_ix))
                     .opacity(0.)
                     .group_hover(group_name, |style| style.opacity(1.))
                     .flex_none()
                     .on_click(|_, _, cx: &mut App| cx.stop_propagation())
                     .child(
-                        Button::new(("copy-cell", row_ix * 10_000 + col_ix))
+                        Button::new(("copy-cell", row_ix * MAX_ID_COLUMNS + col_ix))
                             .ghost()
                             .xsmall()
                             .icon(IconName::Copy)
-                            .tooltip("复制")
-                            .on_click(move |_, window, cx: &mut App| {
+                            .tooltip(tr("results.cell.copy"))
+                            .on_click(move |_, _, cx: &mut App| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
-                                window.push_notification(
-                                    Notification::info("已复制到剪贴板"),
-                                    cx,
-                                );
                             }),
                     ),
             )
@@ -312,7 +313,7 @@ pub struct ResultsPanel {
 impl ResultsPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| TableState::new(ResultTableDelegate::new(), window, cx));
-        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("过滤结果…"));
+        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("results.filter.placeholder")));
         let subscription =
             cx.subscribe_in(&filter_input, window, |this, state, event, window, cx| {
                 match event {
@@ -428,7 +429,7 @@ impl ResultsPanel {
             let confirm_view = view.clone();
             let confirm_sql = sql.clone();
             dialog
-                .title(format!("导出 {format_label}"))
+                .title(trf("dialog.export.title", &[format_label]))
                 .w(px(440.))
                 .child(
                     v_flex()
@@ -437,9 +438,7 @@ impl ResultsPanel {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "将当前查询结果以 {format_label} 格式写入目标路径。"
-                                )),
+                                .child(trf("dialog.export.description", &[format_label])),
                         )
                         .child(Input::new(&input)),
                 )
@@ -449,13 +448,13 @@ impl ResultsPanel {
                         .child(
                             Button::new("cancel")
                                 .outline()
-                                .label("取消")
+                                .label(tr("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("confirm-export")
                                 .primary()
-                                .label("导出")
+                                .label(tr("dialog.export.confirm"))
                                 .on_click({
                                     let input = input.clone();
                                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -488,7 +487,7 @@ impl ResultsPanel {
         cx: &mut Context<Self>,
     ) {
         if path.trim().is_empty() {
-            window.push_notification(Notification::error("导出路径不能为空。"), cx);
+            window.push_notification(Notification::error(tr("notify.export.empty_path")), cx);
             return;
         }
         cx.spawn_in(window, async move |this, cx| {
@@ -500,10 +499,10 @@ impl ResultsPanel {
             .await;
             this.update_in(cx, move |_, window, cx| match result {
                 Ok(()) => {
-                    window.push_notification(format!("已导出到 {path}"), cx);
+                    window.push_notification(Notification::info(trf("notify.export.success", &[&path])), cx);
                 }
                 Err(e) => {
-                    window.push_notification(Notification::error(format!("导出失败：{e}")), cx);
+                    window.push_notification(Notification::error(trf("notify.export.failed", &[&e.to_string()])), cx);
                 }
             })
             .ok();
@@ -527,7 +526,12 @@ impl ResultsPanel {
 
     fn render_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_rows = matches!(self.view, ResultView::Rows(_));
-        let summary = has_rows.then(|| format!("{} 行 · {} 列", self.rows_count(), self.columns_count()));
+        let summary = has_rows.then(|| {
+            trf(
+                "results.summary",
+                &[&self.rows_count().to_string(), &self.columns_count().to_string()],
+            )
+        });
 
         h_flex()
             .w_full()
@@ -551,8 +555,8 @@ impl ResultsPanel {
                         };
                         cx.notify();
                     }))
-                    .child(Tab::new().label("结果"))
-                    .child(Tab::new().label("图表")),
+                    .child(Tab::new().label(tr("results.tab.table")))
+                    .child(Tab::new().label(tr("results.tab.chart"))),
             )
             .child(div().flex_1())
             .when_some(summary, |this, summary| {
@@ -570,7 +574,7 @@ impl ResultsPanel {
                         Button::new("export-csv")
                             .outline()
                             .xsmall()
-                            .label("导出 CSV")
+                            .label(tr("results.export_csv"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_export_dialog(ExportFormat::Csv, window, cx);
@@ -580,7 +584,7 @@ impl ResultsPanel {
                         Button::new("export-parquet")
                             .outline()
                             .xsmall()
-                            .label("导出 Parquet")
+                            .label(tr("results.export_parquet"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_export_dialog(ExportFormat::Parquet, window, cx);
@@ -592,25 +596,9 @@ impl ResultsPanel {
     fn render_table_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match &self.view {
             ResultView::Empty => {
-                empty_state("运行查询以查看结果", Some("在编辑器中输入 SQL，按 ⌘↵ 运行"), cx)
+                empty_state(tr("results.empty.title"), Some(tr("results.empty.hint_prefix")), cx)
             }
-            ResultView::Running => v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(
-                    Icon::new(IconName::LoaderCircle)
-                        .large()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("正在运行查询…"),
-                )
-                .into_any_element(),
+            ResultView::Running => running_state(cx),
             ResultView::Rows(result) => {
                 let truncated = result.truncated;
                 v_flex()
@@ -621,7 +609,7 @@ impl ResultsPanel {
                                 "truncated-notice",
                                 // The real count: a wide result is cut by the
                                 // cell budget well before the row cap.
-                                format!("结果已截断到 {} 行。", format_thousands(result.row_count())),
+                                trf("results.truncated", &[&format_thousands(result.row_count())]),
                             )
                             .banner()
                             .small(),
@@ -651,16 +639,19 @@ impl ResultsPanel {
                 .child(
                     div()
                         .text_sm()
-                        .child(format!(
-                            "完成 · {count} 行受影响 · 耗时 {}",
-                            crate::state::format_duration(*elapsed_ms as i64)
+                        .child(trf(
+                            "results.affected",
+                            &[
+                                &count.to_string(),
+                                &crate::state::format_duration(*elapsed_ms as i64),
+                            ],
                         )),
                 )
                 .into_any_element(),
             ResultView::Failed(message) => div()
                 .size_full()
                 .p_3()
-                .child(Alert::error("query-error", message.clone()).title("查询失败"))
+                .child(Alert::error("query-error", message.clone()).title(tr("results.failed.title")))
                 .into_any_element(),
             ResultView::Explain { lines, elapsed_ms } => v_flex()
                 .size_full()
@@ -672,9 +663,9 @@ impl ResultsPanel {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "EXPLAIN · 耗时 {}",
-                                    crate::state::format_duration(*elapsed_ms as i64)
+                                .child(trf(
+                                    "results.explain.elapsed",
+                                    &[&crate::state::format_duration(*elapsed_ms as i64)],
                                 )),
                         ),
                 )
@@ -710,8 +701,8 @@ impl ResultsPanel {
                 };
                 ChartPanel::new(data).into_any_element()
             }
-            ResultView::Running => empty_state("正在运行查询…", None, cx),
-            _ => empty_state("运行查询以查看图表", Some("在编辑器中输入 SQL，按 ⌘↵ 运行"), cx),
+            ResultView::Running => running_state(cx),
+            _ => empty_state(tr("results.empty_chart.title"), Some(tr("results.empty.hint_prefix")), cx),
         }
     }
 
@@ -745,7 +736,7 @@ impl ResultsPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(format!("{visible} / {total} 行")),
+                        .child(trf("results.filter.counts", &[&visible.to_string(), &total.to_string()])),
                 )
             })
     }
@@ -767,6 +758,27 @@ impl Render for ResultsPanel {
     }
 }
 
+/// Shared "query running" placeholder, used by both the table and chart tabs.
+fn running_state(cx: &mut Context<ResultsPanel>) -> AnyElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .child(
+            Icon::new(IconName::LoaderCircle)
+                .large()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(tr("results.running")),
+        )
+        .into_any_element()
+}
+
 fn empty_state(title: &str, subtitle: Option<&str>, cx: &mut Context<ResultsPanel>) -> AnyElement {
     v_flex()
         .size_full()
@@ -775,7 +787,8 @@ fn empty_state(title: &str, subtitle: Option<&str>, cx: &mut Context<ResultsPane
         .gap_2()
         .child(
             Icon::new(IconName::Inbox)
-                .with_size(px(40.))
+                .large()
+                // Deliberately faded: the icon is decoration, not information.
                 .text_color(cx.theme().muted_foreground.alpha(0.5)),
         )
         .child(
@@ -785,18 +798,26 @@ fn empty_state(title: &str, subtitle: Option<&str>, cx: &mut Context<ResultsPane
         )
         .when_some(subtitle, |this, subtitle| {
             this.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_center()
-                    .child(subtitle.to_string()),
-            )
-        })
-        .when(subtitle.is_some(), |this| {
-            this.children(
-                Keystroke::parse("cmd-enter")
-                    .ok()
-                    .map(|k| Kbd::new(k).into_any_element()),
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(subtitle.to_string()),
+                    )
+                    .children(
+                        Keystroke::parse(RUN_QUERY_KEYSTROKE)
+                            .ok()
+                            .map(|k| Kbd::new(k).into_any_element()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(tr("results.empty.hint_suffix")),
+                    ),
             )
         })
         .into_any_element()
