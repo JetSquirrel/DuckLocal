@@ -7,6 +7,7 @@ use gpui_kit::component::{ActiveTheme, WindowExt, v_flex};
 use gpui_kit::*;
 
 use crate::db::DatabaseTarget;
+use crate::i18n::trf;
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
@@ -57,7 +58,7 @@ impl DuckLocalApp {
                     }
                     Err(e) => {
                         window.push_notification(
-                            format!("初始化内存数据库失败：{e}"),
+                            trf("notify.init_memory.failed", &[&e.to_string()]),
                             cx,
                         );
                     }

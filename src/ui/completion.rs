@@ -17,7 +17,12 @@ use lsp_types::{
 use crate::schema::DatabaseInfo;
 use crate::state::AppState;
 
-const MAX_ITEMS: usize = 50;
+/// Catalog names share the menu with the static lists; per-group floors keep
+/// a wide catalog from crowding functions and keywords out entirely.
+const MAX_CATALOG_ITEMS: usize = 35;
+const MAX_FUNCTION_ITEMS: usize = 10;
+const MAX_KEYWORD_ITEMS: usize = 5;
+const MAX_ITEMS: usize = MAX_CATALOG_ITEMS + MAX_FUNCTION_ITEMS + MAX_KEYWORD_ITEMS;
 /// Don't pop the menu up for a single stray keystroke context like spaces;
 /// only complete once at least one identifier character exists.
 const MAX_PREFIX_SCAN: usize = 64;
@@ -80,58 +85,66 @@ enum CandidateSource {
 }
 
 /// Candidate names matching `prefix_lower`, capped at `MAX_ITEMS`: catalog
-/// tables and columns first, then functions, then keywords.
+/// tables and columns first (up to `MAX_CATALOG_ITEMS`), then functions, then
+/// keywords, each static group guaranteed its own floor.
 pub fn collect_candidates(catalog: &[DatabaseInfo], prefix_lower: &str) -> Vec<CandidateName> {
     let mut names: Vec<CandidateName> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     'catalog: for database in catalog {
         for table in &database.tables {
-            push_match(&mut names, &mut seen, prefix_lower, &table.name, || {
+            push_match(&mut names, &mut seen, prefix_lower, MAX_CATALOG_ITEMS, &table.name, || {
                 CandidateSource::Table {
                     schema: table.schema.clone(),
                     database: database.name.clone(),
                 }
             });
             for column in &table.columns {
-                push_match(&mut names, &mut seen, prefix_lower, &column.name, || {
+                push_match(&mut names, &mut seen, prefix_lower, MAX_CATALOG_ITEMS, &column.name, || {
                     CandidateSource::Column {
                         data_type: column.data_type.clone(),
                         table: table.name.clone(),
                     }
                 });
             }
-            if names.len() >= MAX_ITEMS {
+            if names.len() >= MAX_CATALOG_ITEMS {
                 break 'catalog;
             }
         }
     }
 
+    // Each static group's cap is relative to the candidates already taken, so
+    // it is a floor when the catalog is wide and grows when it is narrow.
+    let function_cap = names.len() + MAX_FUNCTION_ITEMS;
     for function in FUNCTIONS {
-        push_match(&mut names, &mut seen, prefix_lower, function, || {
+        push_match(&mut names, &mut seen, prefix_lower, function_cap, function, || {
             CandidateSource::Function
         });
     }
+    let keyword_cap = names.len() + MAX_KEYWORD_ITEMS;
     for keyword in KEYWORDS {
-        push_match(&mut names, &mut seen, prefix_lower, keyword, || {
+        push_match(&mut names, &mut seen, prefix_lower, keyword_cap, keyword, || {
             CandidateSource::Keyword
         });
     }
 
+    debug_assert!(names.len() <= MAX_ITEMS);
     names
 }
 
-/// Record `name` if it matches the prefix and has not been seen. `source` is
-/// only evaluated for a name that is kept, so describing a candidate costs
-/// nothing for the many that do not match.
+/// Record `name` if it matches the prefix, has not been seen, and `cap` —
+/// the total length `names` may reach for this group — has not been hit.
+/// `source` is only evaluated for a name that is kept, so describing a
+/// candidate costs nothing for the many that do not match.
 fn push_match(
     names: &mut Vec<CandidateName>,
     seen: &mut std::collections::HashSet<String>,
     prefix_lower: &str,
+    cap: usize,
     name: &str,
     source: impl FnOnce() -> CandidateSource,
 ) {
-    if names.len() >= MAX_ITEMS || !starts_with_ignore_case(name, prefix_lower) {
+    if names.len() >= cap || !starts_with_ignore_case(name, prefix_lower) {
         return;
     }
     let lower = name.to_lowercase();
@@ -218,7 +231,7 @@ impl CompletionProvider for SqlCompletionProvider {
             .map(|candidate| {
                 let (kind, detail, group, insert) = match &candidate.source {
                     CandidateSource::Table { schema, database } => (
-                        CompletionItemKind::CLASS,
+                        CompletionItemKind::STRUCT,
                         Some(format!("{schema} · {database}")),
                         1,
                         identifier_insert(&candidate.name),
@@ -231,7 +244,7 @@ impl CompletionProvider for SqlCompletionProvider {
                     ),
                     CandidateSource::Function => (
                         CompletionItemKind::FUNCTION,
-                        Some("DuckDB 函数".to_string()),
+                        None,
                         3,
                         format!("{}(", candidate.name),
                     ),
@@ -270,7 +283,7 @@ impl CompletionProvider for SqlCompletionProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{CandidateSource, MAX_ITEMS, collect_candidates, identifier_insert};
+    use super::{CandidateSource, MAX_CATALOG_ITEMS, MAX_ITEMS, collect_candidates, identifier_insert};
     use crate::schema::{ColumnInfo, DatabaseInfo, NodeKind, TableInfo};
 
     fn catalog(table_count: usize) -> Vec<DatabaseInfo> {
@@ -332,15 +345,46 @@ mod tests {
 
     #[test]
     fn candidates_are_capped_and_deduplicated() {
-        // A wide catalog must not be walked into a menu larger than the cap.
+        // A wide catalog must not be walked into a menu larger than its share
+        // of the cap; nothing static starts with "orders".
         let found = collect_candidates(&catalog(5_000), "orders");
-        assert_eq!(found.len(), MAX_ITEMS);
+        assert_eq!(found.len(), MAX_CATALOG_ITEMS);
 
         let mut names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         let before = names.len();
         names.dedup();
         assert_eq!(names.len(), before, "candidate names must be unique");
+    }
+
+    #[test]
+    fn statics_keep_a_floor_when_the_catalog_fills_up() {
+        // The catalog alone could fill the whole menu; functions and keywords
+        // that match must still be offered on top of the catalog's share.
+        let found = collect_candidates(&catalog(5_000), "ord");
+        assert!(found.len() <= MAX_ITEMS);
+        let catalog_count = found
+            .iter()
+            .filter(|c| matches!(
+                c.source,
+                CandidateSource::Table { .. } | CandidateSource::Column { .. }
+            ))
+            .count();
+        assert_eq!(catalog_count, MAX_CATALOG_ITEMS);
+        assert!(
+            found
+                .iter()
+                .any(|c| matches!(c.source, CandidateSource::Keyword) && c.name == "ORDER BY"),
+            "ORDER BY must be offered even when the catalog is full"
+        );
+
+        // Same for functions: "sum" collides with nothing in this catalog.
+        let found = collect_candidates(&catalog(5_000), "s");
+        assert!(
+            found
+                .iter()
+                .any(|c| matches!(c.source, CandidateSource::Function) && c.name == "sum"),
+        );
     }
 
     #[test]

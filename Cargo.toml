@@ -21,6 +21,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lazy_static = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+hmac = "0.12"
+sha2 = "0.10"
+quick-xml = { version = "0.36", features = ["serialize"] }
 
 [profile.dev.package."*"]
 opt-level = 3

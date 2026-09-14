@@ -10,6 +10,8 @@ use anyhow::{anyhow, Result};
 use duckdb::Connection;
 use lazy_static::lazy_static;
 
+use crate::i18n::trf;
+
 lazy_static! {
     static ref CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
 }
@@ -179,15 +181,15 @@ pub fn attach_data_file_of(conn: &Connection, path: &str) -> Result<String> {
     let expanded = expand_tilde(path);
     let file = std::path::Path::new(&expanded);
     if !file.exists() {
-        return Err(anyhow!("文件不存在: {expanded}"));
+        return Err(anyhow!(trf("error.file_not_found", &[&expanded])));
     }
     let reader = data_file_reader(&expanded)
-        .ok_or_else(|| anyhow!("不支持的文件类型: {expanded}"))?;
+        .ok_or_else(|| anyhow!(trf("error.unsupported_file_type", &[&expanded])))?;
     let stem = file
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow!("无法从路径推导视图名: {expanded}"))?;
+        .ok_or_else(|| anyhow!(trf("error.view_name_derivation", &[&expanded])))?;
     let quoted_ident = stem.replace('"', "\"\"");
     let quoted_path = expanded.replace('\'', "''");
     conn.execute_batch(&format!(

@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 use lazy_static::lazy_static;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 lazy_static! {
     static ref HISTORY_CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
@@ -92,6 +92,15 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
                 attached_at VARCHAR NOT NULL
             );
             CREATE SEQUENCE IF NOT EXISTS attached_files_id START 1;",
+        )?;
+        conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [2])?;
+    }
+    if version < 3 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings(
+                key VARCHAR PRIMARY KEY,
+                value VARCHAR
+            );",
         )?;
         conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [SCHEMA_VERSION])?;
     }
@@ -211,6 +220,34 @@ pub fn remove_attached_file_of(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Read a persisted setting (`None` when the key was never set).
+pub fn get_setting(key: &str) -> Result<Option<String>> {
+    with_connection(|conn| get_setting_of(conn, key))
+}
+
+pub fn get_setting_of(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let value = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?;
+    Ok(value)
+}
+
+/// Persist a setting (replacing any previous value of the same key).
+pub fn set_setting(key: &str, value: &str) -> Result<()> {
+    with_connection(|conn| set_setting_of(conn, key, value))
+}
+
+pub fn set_setting_of(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?1, ?2)",
+        duckdb::params![key, value],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +318,17 @@ mod tests {
         prepare_schema(&conn).unwrap();
         register_attached_file_to(&conn, "/tmp/a.csv", "a", "csv").unwrap();
         assert_eq!(attached_files_of(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare_schema(&conn).unwrap();
+        assert_eq!(get_setting_of(&conn, "language").unwrap(), None);
+        set_setting_of(&conn, "language", "en").unwrap();
+        assert_eq!(get_setting_of(&conn, "language").unwrap(), Some("en".into()));
+        // Re-setting the same key replaces the old value.
+        set_setting_of(&conn, "language", "zh").unwrap();
+        assert_eq!(get_setting_of(&conn, "language").unwrap(), Some("zh".into()));
     }
 }

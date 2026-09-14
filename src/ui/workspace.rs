@@ -11,11 +11,16 @@ use gpui_kit::component::{ActiveTheme, IconName, Sizable, WindowExt, h_flex, v_f
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
+use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
 use crate::state::{AppState, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
-use crate::ui::{RunQuery, WORKSPACE_KEY_CONTEXT};
+use crate::ui::{RUN_QUERY_KEYSTROKE, RunQuery, WORKSPACE_KEY_CONTEXT};
+
+const RESULTS_PANEL_DEFAULT: f32 = 320.;
+const RESULTS_PANEL_MIN: f32 = 160.;
+const RESULTS_PANEL_MAX: f32 = 640.;
 
 pub struct QueryTab {
     pub id: u64,
@@ -29,6 +34,7 @@ pub struct Workspace {
     active: usize,
     next_tab_id: u64,
     running: bool,
+    explaining: bool,
     results: Entity<ResultsPanel>,
     rename_input: Option<Entity<InputState>>,
     _subscriptions: Vec<Subscription>,
@@ -43,6 +49,7 @@ impl Workspace {
             active: 0,
             next_tab_id: 1,
             running: false,
+            explaining: false,
             results,
             rename_input: None,
             _subscriptions: vec![cx.subscribe(&state, |_, _, _: &ConnectionChanged, cx| {
@@ -50,12 +57,11 @@ impl Workspace {
             })],
         };
         let tab = this.new_tab_editor(window, cx);
+        let run_hint = Keystroke::parse(RUN_QUERY_KEYSTROKE)
+            .map(|k| Kbd::format(&k))
+            .unwrap_or_else(|_| "⌘↵".to_string());
         tab.editor.update(cx, |editor, cx| {
-            editor.set_value(
-                "-- 在编辑器中输入 SQL，按 ⌘↵ 运行\nSELECT '你好，DuckDB' AS greeting;",
-                window,
-                cx,
-            );
+            editor.set_value(trf("workspace.welcome_sql", &[&run_hint]), window, cx);
         });
         this.tabs.push(tab);
         this
@@ -92,7 +98,7 @@ impl Workspace {
         self._subscriptions.push(subscription);
         QueryTab {
             id,
-            title: format!("查询 {id}").into(),
+            title: trf("workspace.tab.default_title", &[&id.to_string()]).into(),
             editor,
         }
     }
@@ -190,7 +196,7 @@ impl Workspace {
 
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("重命名查询")
+                .title(tr("dialog.rename.title"))
                 .w(px(360.))
                 .child(Input::new(&input))
                 .footer(
@@ -199,13 +205,13 @@ impl Workspace {
                         .child(
                             Button::new("cancel")
                                 .outline()
-                                .label("取消")
+                                .label(tr("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("confirm-rename")
                                 .primary()
-                                .label("重命名")
+                                .label(tr("dialog.rename.confirm"))
                                 .on_click({
                                     let input = input.clone();
                                     let view = view.clone();
@@ -230,7 +236,7 @@ impl Workspace {
             return;
         };
         tab.title = if title.is_empty() {
-            format!("查询 {}", tab.id).into()
+            trf("workspace.tab.default_title", &[&tab.id.to_string()]).into()
         } else {
             title.into()
         };
@@ -242,7 +248,7 @@ impl Workspace {
     }
 
     fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.running {
+        if self.running || self.explaining {
             return;
         }
         let Some(sql) = self.active_sql(cx) else {
@@ -343,13 +349,15 @@ impl Workspace {
     }
 
     fn explain_active(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.running {
+        if self.explaining || self.running {
             return;
         }
         let Some(sql) = self.active_sql(cx) else {
             return;
         };
+        self.explaining = true;
         self.results.update(cx, |results, cx| results.set_running(cx));
+        cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
             let explain_sql = sql.clone();
@@ -358,9 +366,11 @@ impl Workspace {
             })
             .await;
             this.update_in(cx, move |this, window, cx| {
+                this.explaining = false;
                 this.results.update(cx, |results, cx| {
                     results.set_explain(result, window, cx);
                 });
+                cx.notify();
             })
             .ok();
         })
@@ -395,16 +405,14 @@ impl Workspace {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip("新建查询")
+                    .tooltip(tr("workspace.new_query"))
                     .on_click(cx.listener(Self::add_tab)),
             )
     }
 
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let server = self.state.read(cx).server.clone();
-        let run_tooltip = Keystroke::parse("cmd-enter")
-            .map(|k| format!("运行查询 ({})", Kbd::format(&k)))
-            .unwrap_or_else(|_| "运行查询".to_string());
+        let run_keystroke = Keystroke::parse(RUN_QUERY_KEYSTROKE).ok();
 
         h_flex()
             .w_full()
@@ -419,10 +427,10 @@ impl Workspace {
                     .primary()
                     .small()
                     .icon(IconName::Play)
-                    .label("运行")
+                    .label(tr("workspace.run"))
                     .loading(self.running)
-                    .tooltip(run_tooltip)
-                    .when_some(Keystroke::parse("cmd-enter").ok(), |this, keystroke| {
+                    .tooltip(tr("workspace.run.tooltip"))
+                    .when_some(run_keystroke, |this, keystroke| {
                         this.child(Kbd::new(keystroke))
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -433,8 +441,8 @@ impl Workspace {
                 Button::new("format-sql")
                     .outline()
                     .small()
-                    .label("格式化")
-                    .tooltip("格式化当前 SQL")
+                    .label(tr("workspace.format"))
+                    .tooltip(tr("workspace.format.tooltip"))
                     .on_click(cx.listener(Self::format_active)),
             )
             .child(
@@ -442,16 +450,17 @@ impl Workspace {
                     .outline()
                     .small()
                     .label("EXPLAIN")
-                    .tooltip("查看查询计划")
+                    .loading(self.explaining)
+                    .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
             )
             .child(div().flex_1())
             .child(
                 Button::new("rename-tab")
                     .ghost()
-                    .xsmall()
-                    .label("重命名")
-                    .tooltip("重命名当前查询 Tab")
+                    .small()
+                    .label(tr("workspace.rename"))
+                    .tooltip(tr("workspace.rename.tooltip"))
                     .on_click(cx.listener(Self::open_rename_dialog)),
             )
             .when_some(server, |this, server| {
@@ -459,9 +468,9 @@ impl Workspace {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(format!(
-                            "线程 {} · 内存上限 {}",
-                            server.threads, server.memory_limit
+                        .child(trf(
+                            "workspace.server_info",
+                            &[&server.threads, &server.memory_limit],
                         )),
                 )
             })
@@ -498,8 +507,8 @@ impl Render for Workspace {
                         )
                         .child(
                             resizable_panel()
-                                .size(px(320.))
-                                .size_range(px(160.)..px(640.))
+                                .size(px(RESULTS_PANEL_DEFAULT))
+                                .size_range(px(RESULTS_PANEL_MIN)..px(RESULTS_PANEL_MAX))
                                 .child(self.results.clone()),
                         ),
                 ),
