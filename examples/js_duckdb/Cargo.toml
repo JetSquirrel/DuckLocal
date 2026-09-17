@@ -1,0 +1,19 @@
+[package]
+name = "ducklocal-js-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
+gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
+duckdb = { version = "=1.10505.0", features = ["bundled"] }
+tracing-subscriber = "0.3"
+
+[patch.crates-io]
+rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
+
+[profile.dev]
+debug = 0
