@@ -87,13 +87,21 @@ fn perf_a_row_materialization() {
     let crate::query::QueryOutcome::Rows(result) = outcome else {
         panic!()
     };
-    println!("   -> {} rows x {} cols", result.rows.len(), result.columns.len());
+    println!(
+        "   -> {} rows x {} cols",
+        result.rows.len(),
+        result.columns.len()
+    );
 
     // Baselines, kept for reference: the row-set copies that the delegate and
     // the chart panel used to make. Both are now `Rc` handles, so nothing in
     // the app pays these any more.
-    probe("A2 baseline: rows.clone() (was per result)", || result.rows.clone());
-    probe("A3 baseline: QueryResult.clone() (was per frame)", || result.clone());
+    probe("A2 baseline: rows.clone() (was per result)", || {
+        result.rows.clone()
+    });
+    probe("A3 baseline: QueryResult.clone() (was per frame)", || {
+        result.clone()
+    });
 }
 
 #[test]

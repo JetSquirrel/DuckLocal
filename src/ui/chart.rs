@@ -10,9 +10,9 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::chart::{AreaChart, BarChart};
-use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::{h_flex, v_flex, Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -332,7 +332,10 @@ impl RenderOnce for ChartPanel {
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(trf("chart.title.point_count", &[&row_count.to_string()])),
+                                    .child(trf(
+                                        "chart.title.point_count",
+                                        &[&row_count.to_string()],
+                                    )),
                             ),
                     )
                     .when_some(notice, |this, notice| {
@@ -395,7 +398,7 @@ fn format_value(value: f64) -> String {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{ChartData, parse_number};
+    use super::{parse_number, ChartData};
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
 
     fn column(name: &str, kind: ColumnKind) -> ColumnMeta {
@@ -479,7 +482,12 @@ mod tests {
     #[test]
     fn dense_time_series_is_downsampled_and_says_so() {
         let rows: Vec<Vec<String>> = (0..20_160)
-            .map(|m| Vec::from([format!("2026-08-19 {:02}:{:02}", m / 60 % 24, m % 60), "10".into()]))
+            .map(|m| {
+                Vec::from([
+                    format!("2026-08-19 {:02}:{:02}", m / 60 % 24, m % 60),
+                    "10".into(),
+                ])
+            })
             .collect();
         let data = ChartData::prepare(&QueryResult {
             columns: Vec::from([
@@ -495,7 +503,10 @@ mod tests {
         // Averaging a constant series leaves the value untouched.
         assert!(data.rows.iter().all(|r| r.values[0] == 10.0));
         assert!(
-            data.notice.as_deref().unwrap_or_default().contains("降采样"),
+            data.notice
+                .as_deref()
+                .unwrap_or_default()
+                .contains("降采样"),
             "a downsampled chart must say so, got {:?}",
             data.notice
         );

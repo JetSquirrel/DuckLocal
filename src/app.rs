@@ -1,18 +1,18 @@
 //! Root view: composes title bar, sidebar, workspace, and status bar, owns the
 //! shared `AppState` entity, and renders the Root overlay layers.
 
-use gpui_kit::component::Root;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
-use gpui_kit::component::{ActiveTheme, WindowExt, v_flex};
+use gpui_kit::component::Root;
+use gpui_kit::component::{v_flex, ActiveTheme, WindowExt};
 use gpui_kit::*;
 
-use crate::db::DatabaseTarget;
 use crate::i18n::trf;
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
+use crate::ui::{apply_open_outcome, open_paths};
 
 pub struct DuckLocalApp {
     #[allow(dead_code)]
@@ -24,44 +24,33 @@ pub struct DuckLocalApp {
 }
 
 impl DuckLocalApp {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `paths` are the command-line arguments: data files, folders, patterns,
+    /// or a database file to open instead of the in-memory connection.
+    pub fn new(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(AppState::new);
         let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), workspace.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBarView::new(state.clone(), cx));
         let status_bar = cx.new(|cx| StatusBarView::new(state.clone(), cx));
 
-        let app_state = state.clone();
+        let open_state = state.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = smol::unblock(|| -> anyhow::Result<_> {
+            let result = smol::unblock(move || {
                 crate::history::init().ok();
-                crate::db::open_memory()?;
-                state::reattach_registered_files();
-                let server = crate::db::server_info(DatabaseTarget::Memory)?;
-                let (catalog, history) = state::load_sidebar_data();
-                let attached = state::load_attached_files();
-                Ok((server, catalog, history, attached))
+                state::open_request(&paths, true)
             })
             .await;
 
-            this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok((server, catalog, history, attached)) => {
-                        app_state.update(cx, |s, cx| {
-                            s.set_connection(DatabaseTarget::Memory, server, catalog, cx);
-                            s.set_history(history, cx);
-                            s.set_attached_files(attached, cx);
-                        });
-                        this.workspace.update(cx, |ws, cx| {
-                            ws.focus_active_editor(window, cx);
-                        });
-                    }
-                    Err(e) => {
-                        window.push_notification(
-                            trf("notify.init_memory.failed", &[&e.to_string()]),
-                            cx,
-                        );
-                    }
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(outcome) => {
+                    apply_open_outcome(open_state, outcome, window, cx);
+                    this.workspace.update(cx, |ws, cx| {
+                        ws.focus_active_editor(window, cx);
+                    });
+                }
+                Err(e) => {
+                    window
+                        .push_notification(trf("notify.init_memory.failed", &[&e.to_string()]), cx);
                 }
             })
             .ok();
@@ -76,6 +65,17 @@ impl DuckLocalApp {
             status_bar,
         }
     }
+
+    /// Files and folders dropped on the window: the same request the command
+    /// line and the pickers make.
+    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let requested = paths
+            .paths()
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        open_paths(self.state.clone(), requested, window, cx);
+    }
 }
 
 impl Render for DuckLocalApp {
@@ -84,6 +84,14 @@ impl Render for DuckLocalApp {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            // The whole window accepts data files, so a drop lands wherever
+            // the pointer happens to be. The border is always present — only
+            // its color changes while an external drag is over the window —
+            // so highlighting does not shift the layout.
+            .on_drop(cx.listener(Self::drop_paths))
+            .border_2()
+            .border_color(cx.theme().background)
+            .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().primary))
             .child(self.title_bar.clone())
             .child(
                 div().flex_1().min_h_0().child(

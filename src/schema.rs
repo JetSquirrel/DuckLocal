@@ -90,7 +90,12 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
     let mut columns_by_table = columns_by_table(conn)?;
 
     let mut databases: Vec<DatabaseInfo> = Vec::new();
-    let mut push_table = |database: String, schema: String, name: String, kind: NodeKind, estimated_rows: Option<i64>, comment: Option<String>| {
+    let mut push_table = |database: String,
+                          schema: String,
+                          name: String,
+                          kind: NodeKind,
+                          estimated_rows: Option<i64>,
+                          comment: Option<String>| {
         let columns = columns_by_table
             .remove(&(database.clone(), schema.clone(), name.clone()))
             .unwrap_or_default();
@@ -178,4 +183,3 @@ mod tests {
         assert_eq!(view.kind, NodeKind::View);
     }
 }
-

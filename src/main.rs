@@ -1,4 +1,5 @@
 mod app;
+mod cli;
 mod db;
 mod history;
 mod i18n;
@@ -7,6 +8,7 @@ mod perf_probe;
 mod query;
 mod s3;
 mod schema;
+mod sources;
 mod state;
 mod ui;
 
@@ -16,6 +18,11 @@ use gpui_kit::*;
 use crate::app::DuckLocalApp;
 
 fn main() {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some(code) = cli::dispatch(&args) {
+        std::process::exit(code);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -29,6 +36,14 @@ fn main() {
     // Nothing is persisted until the user explicitly switches language.
     crate::history::init().ok();
     i18n::set_current(i18n::initial_language());
+
+    // Paths named on the command line: data files, folders, patterns, or a
+    // database to open instead of the in-memory connection. `-psn_…` is what
+    // macOS appends when the app is launched from Finder or the Dock.
+    let paths: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|arg| !arg.starts_with("-psn_"))
+        .collect();
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -50,7 +65,7 @@ fn main() {
                     ..TitleBar::window_options()
                 };
                 cx.open_window(options, |window, cx| {
-                    let view = cx.new(|cx| DuckLocalApp::new(window, cx));
+                    let view = cx.new(|cx| DuckLocalApp::new(paths, window, cx));
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("Failed to open window");

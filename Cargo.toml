@@ -2,14 +2,14 @@
 name = "ducklocal"
 version = "0.1.0"
 edition = "2021"
-description = "A local-first DuckDB desktop client built with GPUI Kit"
+description = "A local-first workspace for querying and exploring your data, built natively on DuckDB"
 license = "Apache-2.0"
-keywords = ["duckdb", "sql", "database", "client", "gui"]
+keywords = ["duckdb", "sql", "parquet", "csv", "analytics"]
 categories = ["database", "gui"]
 
 [dependencies]
 gpui-kit = { version = "0.6.0", features = ["tree-sitter-languages"] }
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
 smol = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

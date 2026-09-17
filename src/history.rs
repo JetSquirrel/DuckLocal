@@ -57,10 +57,23 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn with_test_history(f: impl FnOnce()) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            *HISTORY_CONNECTION.lock().unwrap() = None;
+        }
+    }
+    let conn = Connection::open_in_memory().unwrap();
+    prepare_schema(&conn).unwrap();
+    *HISTORY_CONNECTION.lock().unwrap() = Some(conn);
+    let _reset = Reset;
+    f();
+}
+
 fn prepare_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version(version BIGINT NOT NULL);",
-    )?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version(version BIGINT NOT NULL);")?;
     let version: i64 = conn
         .query_row("SELECT max(version) FROM schema_version", [], |r| {
             r.get::<_, Option<i64>>(0)
@@ -102,7 +115,10 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
                 value VARCHAR
             );",
         )?;
-        conn.execute("INSERT INTO schema_version(version) VALUES (?1)", [SCHEMA_VERSION])?;
+        conn.execute(
+            "INSERT INTO schema_version(version) VALUES (?1)",
+            [SCHEMA_VERSION],
+        )?;
     }
     Ok(())
 }
@@ -168,7 +184,9 @@ pub fn now_timestamp() -> String {
 }
 
 /// Register a data file (replacing any previous registration of the same
-/// path). Called after `db::attach_data_file` succeeds.
+/// path). Called by `state::attach_data_files` the first time a file is
+/// attached; later opens reuse the registration, so the sidebar keeps its
+/// order instead of moving the file to the end.
 pub fn register_attached_file(path: &str, view_name: &str, kind: &str) -> Result<()> {
     with_connection(|conn| register_attached_file_to(conn, path, view_name, kind))
 }
@@ -194,9 +212,8 @@ pub fn attached_files() -> Result<Vec<AttachedFile>> {
 }
 
 pub fn attached_files_of(conn: &Connection) -> Result<Vec<AttachedFile>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, path, view_name, kind, attached_at FROM attached_files ORDER BY id",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id, path, view_name, kind, attached_at FROM attached_files ORDER BY id")?;
     let files = stmt
         .query_map([], |row| {
             Ok(AttachedFile {
@@ -326,9 +343,15 @@ mod tests {
         prepare_schema(&conn).unwrap();
         assert_eq!(get_setting_of(&conn, "language").unwrap(), None);
         set_setting_of(&conn, "language", "en").unwrap();
-        assert_eq!(get_setting_of(&conn, "language").unwrap(), Some("en".into()));
+        assert_eq!(
+            get_setting_of(&conn, "language").unwrap(),
+            Some("en".into())
+        );
         // Re-setting the same key replaces the old value.
         set_setting_of(&conn, "language", "zh").unwrap();
-        assert_eq!(get_setting_of(&conn, "language").unwrap(), Some("zh".into()));
+        assert_eq!(
+            get_setting_of(&conn, "language").unwrap(),
+            Some("zh".into())
+        );
     }
 }

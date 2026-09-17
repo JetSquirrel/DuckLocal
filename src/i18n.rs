@@ -108,10 +108,7 @@ fn translate(lang: Language, key: &'static str) -> &'static str {
         Language::Zh => &*ZH,
         Language::En => &*EN,
     };
-    map.get(key)
-        .or_else(|| ZH.get(key))
-        .copied()
-        .unwrap_or(key)
+    map.get(key).or_else(|| ZH.get(key)).copied().unwrap_or(key)
 }
 
 /// Translate `key` and substitute sequential `{}` placeholders with `args`
@@ -148,8 +145,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.refresh_schema", "刷新 Schema", "Refresh schema"),
     (
         "sidebar.schema.empty",
-        "当前数据库没有表或视图。\n通过“打开数据库…”导入数据文件，或运行 CREATE TABLE 后点击刷新。",
-        "No tables or views in this database.\nImport a data file from “Open database…”, or run CREATE TABLE and click refresh.",
+        "当前没有表或视图。\n拖入数据文件、通过“打开数据…”导入，或运行 CREATE TABLE 后点击刷新。",
+        "No tables or views yet.\nDrop a data file in, import one from “Open data…”, or run CREATE TABLE and click refresh.",
     ),
     (
         "sidebar.history.empty",
@@ -211,7 +208,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("notify.export.failed", "导出失败：{}", "Export failed: {}"),
 
     // ── src/ui/title_bar.rs ─────────────────────────────────────────────
-    ("title_bar.open_database", "打开数据库…", "Open database…"),
+    ("title_bar.open_data", "打开数据…", "Open data…"),
     ("title_bar.configure_s3", "配置 S3 数据源（httpfs）", "Configure S3 source (httpfs)"),
     ("title_bar.toggle_theme", "切换明暗主题", "Toggle light/dark theme"),
     ("title_bar.toggle_language", "切换语言", "Switch language"),
@@ -237,20 +234,40 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "S3 configured. Browse buckets in the sidebar or query s3:// paths.",
     ),
     ("notify.s3.failed", "S3 配置失败：{}", "Failed to configure S3: {}"),
-    ("dialog.open_db.title", "打开数据库", "Open database"),
+    ("dialog.open_source.title", "打开数据", "Open data"),
     (
-        "dialog.open_db.description",
-        "输入 .duckdb 文件路径，或直接导入 CSV / Parquet / JSON 数据文件为视图。",
-        "Enter a .duckdb file path, or import a CSV / Parquet / JSON data file directly as a view.",
+        "dialog.open_source.description",
+        "输入路径，或浏览选择数据文件、文件夹或 .duckdb 数据库。数据文件会作为视图加入当前连接，文件夹会递归展开。输入新的 .duckdb 路径可创建数据库及其父目录。",
+        "Enter a path, or browse to a data file, a folder, or a .duckdb database. Data files join the current connection as views; folders are expanded recursively. Enter a new .duckdb path to create a database and its parent folders.",
     ),
-    ("dialog.open_db.browse", "浏览…", "Browse…"),
-    ("dialog.open_db.picker_prompt", "选择数据库或数据文件", "Choose a database or data file"),
-    ("dialog.open_db.memory", "内存模式", "In-memory"),
-    ("dialog.open_db.open_file", "打开文件", "Open"),
+    ("dialog.open_source.browse", "浏览…", "Browse…"),
+    (
+        "dialog.open_source.picker_prompt",
+        "选择数据文件、文件夹或数据库",
+        "Choose data files, a folder, or a database",
+    ),
+    ("dialog.open_source.memory", "内存模式", "In-memory"),
+    ("dialog.open_source.open_file", "打开", "Open"),
     ("notify.attach.success", "已创建视图 {}", "Created view {}."),
+    ("notify.attach.count", "已导入 {} 个数据文件", "Imported {} data files."),
+    ("notify.attach.truncated", "文件过多，只导入了前 {} 个。", "Too many files; imported the first {}."),
+    ("notify.attach.more_failed", "另有 {} 个文件导入失败。", "{} more files could not be imported."),
     ("notify.attach.failed", "无法导入数据文件：{}", "Could not import data file: {}"),
+    (
+        "error.relative_attachment",
+        "无法恢复相对路径 {}：原工作目录未知。请移除该记录并重新打开文件。",
+        "Cannot restore relative path {}: its original working directory is unknown. Remove the registration and open the file again.",
+    ),
     ("notify.connect.success", "已连接到 {}", "Connected to {}."),
     ("notify.connect.failed", "无法打开数据库：{}", "Could not open database: {}"),
+
+    // ── src/sources.rs ──────────────────────────────────────────────────
+    ("error.glob_no_match", "没有匹配的文件：{}", "No files match: {}"),
+    (
+        "error.no_data_files",
+        "目录中没有可导入的数据文件：{}",
+        "No data files in that folder: {}",
+    ),
 
     // ── src/ui/workspace.rs ─────────────────────────────────────────────
     (
@@ -270,6 +287,21 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.server_info", "线程 {} · 内存上限 {}", "Threads {} · memory limit {}"),
     ("dialog.rename.title", "重命名查询", "Rename query"),
     ("dialog.rename.confirm", "重命名", "Rename"),
+    ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
+    (
+        "workspace.empty.description",
+        "拖入 CSV、TSV、Parquet、JSON 文件，或整个文件夹。数据只留在这台机器上。",
+        "Drag in CSV, TSV, Parquet, or JSON files — or a whole folder. Your data stays on this machine.",
+    ),
+    ("workspace.empty.open_files", "打开文件…", "Open files…"),
+    ("workspace.empty.open_folder", "打开文件夹…", "Open folder…"),
+    ("workspace.empty.files_prompt", "选择数据文件", "Choose data files"),
+    ("workspace.empty.folder_prompt", "选择数据文件夹", "Choose a data folder"),
+    (
+        "workspace.empty.cli_hint",
+        "也可以从命令行打开：ducklocal ./logs/",
+        "Or from a terminal: ducklocal ./logs/",
+    ),
 
     // ── src/ui/chart.rs ─────────────────────────────────────────────────
     (
@@ -323,6 +355,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "初始化内存数据库失败：{}",
         "Failed to initialize the in-memory database: {}",
     ),
+    ("notify.open.failed", "打开数据失败：{}", "Could not open the data: {}"),
 
     // ── src/db.rs ───────────────────────────────────────────────────────
     ("error.file_not_found", "文件不存在: {}", "File not found: {}"),
@@ -343,7 +376,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{Language, format_template, translate};
+    use super::{format_template, translate, Language};
 
     #[test]
     fn language_codes_roundtrip() {
@@ -373,10 +406,16 @@ mod tests {
 
     #[test]
     fn format_template_substitutes_sequentially() {
-        assert_eq!(format_template("{} rows · {} cols", &["3", "2"]), "3 rows · 2 cols");
+        assert_eq!(
+            format_template("{} rows · {} cols", &["3", "2"]),
+            "3 rows · 2 cols"
+        );
         // Leftover placeholders stay; extra args are ignored.
         assert_eq!(format_template("{} {}", &["a"]), "a {}");
         assert_eq!(format_template("{}", &["a", "b"]), "a");
-        assert_eq!(format_template("no placeholders", &["a"]), "no placeholders");
+        assert_eq!(
+            format_template("no placeholders", &["a"]),
+            "no placeholders"
+        );
     }
 }

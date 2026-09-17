@@ -21,6 +21,142 @@ pub const MAX_ROWS: usize = 100_000;
 /// hang. Budgeting cells keeps wide results as responsive as tall ones.
 pub const MAX_CELLS: usize = 2_000_000;
 
+#[derive(serde::Serialize)]
+pub struct CliColumn {
+    name: String,
+    #[serde(rename = "type")]
+    arrow_type: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct CliResult {
+    columns: Vec<CliColumn>,
+    rows: Vec<Vec<serde_json::Value>>,
+    row_count: usize,
+    truncated: bool,
+    elapsed_ms: u128,
+}
+
+pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResult> {
+    let started = Instant::now();
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query([])?;
+    let executed = rows
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Statement handle unavailable"))?;
+    let column_count = executed.column_count();
+    let mut columns = Vec::with_capacity(column_count);
+    for ix in 0..column_count {
+        let ty = executed.column_type(ix);
+        columns.push(CliColumn {
+            name: executed.column_name(ix)?.clone(),
+            arrow_type: format!("{ty:?}"),
+        });
+    }
+    let row_budget = limit.min(MAX_CELLS / column_count.max(1));
+    let mut out = Vec::new();
+    let mut truncated = false;
+    while let Some(row) = rows.next()? {
+        if out.len() >= row_budget {
+            truncated = true;
+            break;
+        }
+        let mut cells = Vec::with_capacity(column_count);
+        for ix in 0..column_count {
+            cells.push(cli_value(row.get_ref(ix)?)?);
+        }
+        out.push(cells);
+    }
+    Ok(CliResult {
+        columns,
+        row_count: out.len(),
+        rows: out,
+        truncated,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn cli_integer(value: i128) -> serde_json::Value {
+    if (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&value) {
+        serde_json::json!(value as i64)
+    } else {
+        serde_json::json!({"encoding": "integer", "value": value.to_string()})
+    }
+}
+
+fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
+    use serde_json::json;
+    Ok(match value {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Boolean(v) => json!(v),
+        ValueRef::TinyInt(v) => cli_integer(v.into()),
+        ValueRef::SmallInt(v) => cli_integer(v.into()),
+        ValueRef::Int(v) => cli_integer(v.into()),
+        ValueRef::BigInt(v) => cli_integer(v.into()),
+        ValueRef::HugeInt(v) => cli_integer(v),
+        ValueRef::UTinyInt(v) => cli_integer(v.into()),
+        ValueRef::USmallInt(v) => cli_integer(v.into()),
+        ValueRef::UInt(v) => cli_integer(v.into()),
+        ValueRef::UBigInt(v) => cli_integer(v.into()),
+        ValueRef::UHugeInt(v) => {
+            if v <= 9_007_199_254_740_991 {
+                json!(v as u64)
+            } else {
+                json!({"encoding": "integer", "value": v.to_string()})
+            }
+        }
+        ValueRef::Float(v) => cli_float(v.into()),
+        ValueRef::Double(v) => cli_float(v),
+        ValueRef::Decimal(v) => json!({"encoding": "decimal", "value": v.to_string()}),
+        ValueRef::Text(v) => json!(std::str::from_utf8(v)?),
+        ValueRef::Enum(..) => json!(value.as_str().map_err(|e| anyhow::anyhow!("{e:?}"))?),
+        ValueRef::Blob(v) | ValueRef::Geometry(v) => {
+            let hex: String = v.iter().map(|byte| format!("{byte:02x}")).collect();
+            json!({"encoding": "hex", "value": hex})
+        }
+        ValueRef::Date32(v) => json!({"encoding": "date", "unit": "Day", "value": v.to_string()}),
+        ValueRef::Timestamp(unit, v) => {
+            json!({"encoding": "timestamp", "unit": format!("{unit:?}"), "value": v.to_string()})
+        }
+        ValueRef::Time64(unit, v) => {
+            json!({"encoding": "time", "unit": format!("{unit:?}"), "value": v.to_string()})
+        }
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => {
+            json!({"encoding": "interval", "months": months, "days": days, "nanos": nanos.to_string()})
+        }
+        ValueRef::List(..)
+        | ValueRef::Array(..)
+        | ValueRef::Struct(..)
+        | ValueRef::Map(..)
+        | ValueRef::Union(..) => cli_owned(&Value::from(value))?,
+        _ => anyhow::bail!("Unsupported result type; CAST the value to VARCHAR explicitly"),
+    })
+}
+
+fn cli_float(value: f64) -> serde_json::Value {
+    if value.is_finite() {
+        serde_json::json!(value)
+    } else {
+        serde_json::json!({"encoding": "float", "value": value.to_string()})
+    }
+}
+
+fn cli_owned(value: &Value) -> Result<serde_json::Value> {
+    use serde_json::json;
+    Ok(match value {
+        Value::List(values) | Value::Array(values) => json!(values.iter().map(cli_owned).collect::<Result<Vec<_>>>()?),
+        Value::Struct(fields) => json!({"encoding": "struct", "fields": fields.iter().map(|(name, value)| Ok(json!([name, cli_owned(value)?]))).collect::<Result<Vec<_>>>()?}),
+        Value::Map(entries) => json!({"encoding": "map", "entries": entries.iter().map(|(key, value)| Ok(json!([cli_owned(key)?, cli_owned(value)?]))).collect::<Result<Vec<_>>>()?}),
+        Value::Union(value) => json!({"encoding": "union-value", "value": cli_owned(value)?}),
+        Value::HugeInt(_) => anyhow::bail!("Nested HUGEINT/UHUGEINT/DECIMAL(38,0) has ambiguous Arrow metadata; CAST it to VARCHAR explicitly"),
+        other => cli_value(ValueRef::from(other))?,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ColumnKind {
     Numeric,
@@ -49,7 +185,10 @@ pub struct QueryResult {
 pub enum QueryOutcome {
     Rows(QueryResult),
     /// DDL/DML that returned no result set; `0` when the count is unknown.
-    Affected { count: u64, elapsed_ms: u128 },
+    Affected {
+        count: u64,
+        elapsed_ms: u128,
+    },
 }
 
 impl QueryResult {
@@ -144,7 +283,11 @@ pub fn explain_of(conn: &Connection, sql: &str) -> Result<(Vec<String>, u128)> {
         let text: String = row
             .get::<_, Value>(1)
             .map(|v| value_to_string(&v))
-            .unwrap_or_else(|_| row.get::<_, Value>(0).map(|v| value_to_string(&v)).unwrap_or_default());
+            .unwrap_or_else(|_| {
+                row.get::<_, Value>(0)
+                    .map(|v| value_to_string(&v))
+                    .unwrap_or_default()
+            });
         lines.push(text);
     }
     Ok((lines, started.elapsed().as_millis()))
@@ -168,6 +311,16 @@ impl ExportFormat {
             ExportFormat::Parquet => "PARQUET",
         }
     }
+
+    /// `HEADER` is a CSV-only `COPY` option. The parquet writer does not
+    /// declare it, and DuckDB rejects an undeclared option outright, so
+    /// sending it unconditionally makes every parquet export fail.
+    fn copy_options(self) -> &'static str {
+        match self {
+            ExportFormat::Csv => ", HEADER true",
+            ExportFormat::Parquet => "",
+        }
+    }
 }
 
 pub fn export_of(conn: &Connection, sql: &str, path: &str, format: ExportFormat) -> Result<()> {
@@ -175,8 +328,9 @@ pub fn export_of(conn: &Connection, sql: &str, path: &str, format: ExportFormat)
     let escaped_path = path.replace('\'', "''");
     let expanded = crate::db::expand_tilde(&escaped_path);
     conn.execute_batch(&format!(
-        "COPY ({trimmed}) TO '{expanded}' (FORMAT {}, HEADER true)",
-        format.duckdb_format()
+        "COPY ({trimmed}) TO '{expanded}' (FORMAT {}{})",
+        format.duckdb_format(),
+        format.copy_options()
     ))?;
     Ok(())
 }
@@ -199,8 +353,19 @@ fn returns_rows(sql: &str) -> bool {
         .to_lowercase();
     matches!(
         keyword.as_str(),
-        "select" | "with" | "show" | "describe" | "desc" | "explain" | "pragma" | "summarize"
-            | "values" | "from" | "table" | "pivot" | "call"
+        "select"
+            | "with"
+            | "show"
+            | "describe"
+            | "desc"
+            | "explain"
+            | "pragma"
+            | "summarize"
+            | "values"
+            | "from"
+            | "table"
+            | "pivot"
+            | "call"
     )
 }
 
@@ -208,10 +373,36 @@ fn returns_rows(sql: &str) -> bool {
 /// schema sidebar shows — the table/view list, their columns, or the row
 /// estimates that DML moves.
 const MUTATING_KEYWORDS: &[&str] = &[
-    "insert", "update", "delete", "create", "drop", "alter", "attach", "detach", "truncate",
-    "replace", "copy", "install", "load", "set", "reset", "call", "pragma", "use", "comment",
-    "grant", "revoke", "begin", "commit", "rollback", "vacuum", "checkpoint", "export", "import",
-    "execute", "analyze",
+    "insert",
+    "update",
+    "delete",
+    "create",
+    "drop",
+    "alter",
+    "attach",
+    "detach",
+    "truncate",
+    "replace",
+    "copy",
+    "install",
+    "load",
+    "set",
+    "reset",
+    "call",
+    "pragma",
+    "use",
+    "comment",
+    "grant",
+    "revoke",
+    "begin",
+    "commit",
+    "rollback",
+    "vacuum",
+    "checkpoint",
+    "export",
+    "import",
+    "execute",
+    "analyze",
 ];
 
 /// Whether running `sql` warrants reloading the catalog.
@@ -416,8 +607,10 @@ mod tests {
     #[test]
     fn select_returns_typed_columns() {
         let conn = mem();
-        conn.execute_batch("CREATE TABLE t(a INTEGER, b VARCHAR, c DOUBLE); INSERT INTO t VALUES (1, 'x', 2.5);")
-            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t(a INTEGER, b VARCHAR, c DOUBLE); INSERT INTO t VALUES (1, 'x', 2.5);",
+        )
+        .unwrap();
         let outcome = run_of(&conn, "SELECT * FROM t").unwrap();
         let QueryOutcome::Rows(result) = outcome else {
             panic!("expected rows");
@@ -446,10 +639,41 @@ mod tests {
     fn export_csv_writes_file() {
         let conn = mem();
         let dir = std::env::temp_dir().join("ducklocal_test_export.csv");
-        export_of(&conn, "SELECT 1 AS a, 'x' AS b", dir.to_str().unwrap(), ExportFormat::Csv).unwrap();
+        export_of(
+            &conn,
+            "SELECT 1 AS a, 'x' AS b",
+            dir.to_str().unwrap(),
+            ExportFormat::Csv,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&dir).unwrap();
         assert!(content.contains("a,b"));
         std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn export_parquet_writes_readable_file() {
+        let conn = mem();
+        let path = std::env::temp_dir().join("ducklocal_test_export.parquet");
+        let path = path.to_str().unwrap();
+        export_of(
+            &conn,
+            "SELECT 1 AS a, 'x' AS b",
+            path,
+            ExportFormat::Parquet,
+        )
+        .unwrap();
+        // Reading it back proves the writer accepted the options and produced
+        // parquet, rather than the file merely being non-empty.
+        let rows: i64 = conn
+            .query_row(
+                &format!("SELECT count(*) FROM read_parquet('{path}')"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        std::fs::remove_file(path).ok();
     }
 
     /// `run_of` formats cells from a borrowed `ValueRef`; this pins the output
@@ -460,10 +684,7 @@ mod tests {
         let conn = mem();
         // 400 columns: the row cap alone would allow 40M cells.
         let selects: Vec<String> = (0..400).map(|ix| format!("i + {ix} AS c{ix}")).collect();
-        let sql = format!(
-            "SELECT {} FROM range(200000) t(i)",
-            selects.join(", ")
-        );
+        let sql = format!("SELECT {} FROM range(200000) t(i)", selects.join(", "));
         let QueryOutcome::Rows(result) = run_of(&conn, &sql).unwrap() else {
             panic!("expected rows");
         };

@@ -28,33 +28,196 @@ const MAX_ITEMS: usize = MAX_CATALOG_ITEMS + MAX_FUNCTION_ITEMS + MAX_KEYWORD_IT
 const MAX_PREFIX_SCAN: usize = 64;
 
 const KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "GROUP BY", "ORDER BY", "LIMIT", "OFFSET", "JOIN", "LEFT JOIN",
-    "RIGHT JOIN", "INNER JOIN", "FULL OUTER JOIN", "CROSS JOIN", "ON", "AS", "AND", "OR", "NOT",
-    "NULL", "IN", "IS", "LIKE", "ILIKE", "BETWEEN", "CASE", "WHEN", "THEN", "ELSE", "END",
-    "DISTINCT", "UNION", "UNION ALL", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM",
-    "CREATE TABLE", "CREATE VIEW", "CREATE OR REPLACE VIEW", "DROP TABLE", "ALTER TABLE",
-    "HAVING", "EXISTS", "CAST", "ASC", "DESC", "WITH", "COPY", "ATTACH", "DETACH", "USE",
-    "DESCRIBE", "SHOW TABLES", "EXPLAIN", "PRAGMA", "SUMMARIZE", "PIVOT", "UNPIVOT", "QUALIFY",
-    "OVER", "PARTITION BY", "RETURNING", "PRIMARY KEY", "DEFAULT", "BEGIN TRANSACTION", "COMMIT",
-    "ROLLBACK", "INTERVAL", "DATE", "TIMESTAMP", "BOOLEAN", "INTEGER", "BIGINT", "DOUBLE",
-    "DECIMAL", "VARCHAR", "BLOB", "UUID", "JSON",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP BY",
+    "ORDER BY",
+    "LIMIT",
+    "OFFSET",
+    "JOIN",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "INNER JOIN",
+    "FULL OUTER JOIN",
+    "CROSS JOIN",
+    "ON",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "NULL",
+    "IN",
+    "IS",
+    "LIKE",
+    "ILIKE",
+    "BETWEEN",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "DISTINCT",
+    "UNION",
+    "UNION ALL",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "CREATE TABLE",
+    "CREATE VIEW",
+    "CREATE OR REPLACE VIEW",
+    "DROP TABLE",
+    "ALTER TABLE",
+    "HAVING",
+    "EXISTS",
+    "CAST",
+    "ASC",
+    "DESC",
+    "WITH",
+    "COPY",
+    "ATTACH",
+    "DETACH",
+    "USE",
+    "DESCRIBE",
+    "SHOW TABLES",
+    "EXPLAIN",
+    "PRAGMA",
+    "SUMMARIZE",
+    "PIVOT",
+    "UNPIVOT",
+    "QUALIFY",
+    "OVER",
+    "PARTITION BY",
+    "RETURNING",
+    "PRIMARY KEY",
+    "DEFAULT",
+    "BEGIN TRANSACTION",
+    "COMMIT",
+    "ROLLBACK",
+    "INTERVAL",
+    "DATE",
+    "TIMESTAMP",
+    "BOOLEAN",
+    "INTEGER",
+    "BIGINT",
+    "DOUBLE",
+    "DECIMAL",
+    "VARCHAR",
+    "BLOB",
+    "UUID",
+    "JSON",
 ];
 
 const FUNCTIONS: &[&str] = &[
-    "count", "sum", "avg", "min", "max", "round", "abs", "ceil", "floor", "coalesce", "nullif",
-    "ifnull", "upper", "lower", "length", "trim", "replace", "substring", "concat", "concat_ws",
-    "split_part", "regexp_matches", "regexp_replace", "starts_with", "ends_with", "contains",
-    "left", "right", "lpad", "rpad", "repeat", "reverse", "md5", "hash", "now", "current_date",
-    "current_timestamp", "date_trunc", "date_part", "extract", "epoch", "strftime", "strptime",
-    "date_diff", "date_add", "last_day", "monthname", "dayname", "year", "month", "day", "hour",
-    "minute", "second", "string_agg", "list", "bool_and", "bool_or", "median", "quantile", "mode",
-    "stddev", "variance", "first", "last", "arg_max", "arg_min", "approx_count_distinct",
-    "histogram", "row_number", "rank", "dense_rank", "ntile", "lag", "lead", "first_value",
-    "last_value", "cume_dist", "percent_rank", "power", "sqrt", "exp", "ln", "log10", "pi",
-    "random", "greatest", "least", "read_parquet", "read_csv", "read_csv_auto", "read_json",
-    "parquet_scan", "typeof", "try_cast", "version", "gen_random_uuid", "unnest", "range",
-    "generate_series", "struct_pack", "struct_extract", "list_value", "list_extract",
-    "json_extract", "json_extract_string", "map_extract",
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "round",
+    "abs",
+    "ceil",
+    "floor",
+    "coalesce",
+    "nullif",
+    "ifnull",
+    "upper",
+    "lower",
+    "length",
+    "trim",
+    "replace",
+    "substring",
+    "concat",
+    "concat_ws",
+    "split_part",
+    "regexp_matches",
+    "regexp_replace",
+    "starts_with",
+    "ends_with",
+    "contains",
+    "left",
+    "right",
+    "lpad",
+    "rpad",
+    "repeat",
+    "reverse",
+    "md5",
+    "hash",
+    "now",
+    "current_date",
+    "current_timestamp",
+    "date_trunc",
+    "date_part",
+    "extract",
+    "epoch",
+    "strftime",
+    "strptime",
+    "date_diff",
+    "date_add",
+    "last_day",
+    "monthname",
+    "dayname",
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "string_agg",
+    "list",
+    "bool_and",
+    "bool_or",
+    "median",
+    "quantile",
+    "mode",
+    "stddev",
+    "variance",
+    "first",
+    "last",
+    "arg_max",
+    "arg_min",
+    "approx_count_distinct",
+    "histogram",
+    "row_number",
+    "rank",
+    "dense_rank",
+    "ntile",
+    "lag",
+    "lead",
+    "first_value",
+    "last_value",
+    "cume_dist",
+    "percent_rank",
+    "power",
+    "sqrt",
+    "exp",
+    "ln",
+    "log10",
+    "pi",
+    "random",
+    "greatest",
+    "least",
+    "read_parquet",
+    "read_csv",
+    "read_csv_auto",
+    "read_json",
+    "parquet_scan",
+    "typeof",
+    "try_cast",
+    "version",
+    "gen_random_uuid",
+    "unnest",
+    "range",
+    "generate_series",
+    "struct_pack",
+    "struct_extract",
+    "list_value",
+    "list_extract",
+    "json_extract",
+    "json_extract_string",
+    "map_extract",
 ];
 
 pub struct SqlCompletionProvider {
@@ -93,19 +256,29 @@ pub fn collect_candidates(catalog: &[DatabaseInfo], prefix_lower: &str) -> Vec<C
 
     'catalog: for database in catalog {
         for table in &database.tables {
-            push_match(&mut names, &mut seen, prefix_lower, MAX_CATALOG_ITEMS, &table.name, || {
-                CandidateSource::Table {
+            push_match(
+                &mut names,
+                &mut seen,
+                prefix_lower,
+                MAX_CATALOG_ITEMS,
+                &table.name,
+                || CandidateSource::Table {
                     schema: table.schema.clone(),
                     database: database.name.clone(),
-                }
-            });
+                },
+            );
             for column in &table.columns {
-                push_match(&mut names, &mut seen, prefix_lower, MAX_CATALOG_ITEMS, &column.name, || {
-                    CandidateSource::Column {
+                push_match(
+                    &mut names,
+                    &mut seen,
+                    prefix_lower,
+                    MAX_CATALOG_ITEMS,
+                    &column.name,
+                    || CandidateSource::Column {
                         data_type: column.data_type.clone(),
                         table: table.name.clone(),
-                    }
-                });
+                    },
+                );
             }
             if names.len() >= MAX_CATALOG_ITEMS {
                 break 'catalog;
@@ -117,15 +290,25 @@ pub fn collect_candidates(catalog: &[DatabaseInfo], prefix_lower: &str) -> Vec<C
     // it is a floor when the catalog is wide and grows when it is narrow.
     let function_cap = names.len() + MAX_FUNCTION_ITEMS;
     for function in FUNCTIONS {
-        push_match(&mut names, &mut seen, prefix_lower, function_cap, function, || {
-            CandidateSource::Function
-        });
+        push_match(
+            &mut names,
+            &mut seen,
+            prefix_lower,
+            function_cap,
+            function,
+            || CandidateSource::Function,
+        );
     }
     let keyword_cap = names.len() + MAX_KEYWORD_ITEMS;
     for keyword in KEYWORDS {
-        push_match(&mut names, &mut seen, prefix_lower, keyword_cap, keyword, || {
-            CandidateSource::Keyword
-        });
+        push_match(
+            &mut names,
+            &mut seen,
+            prefix_lower,
+            keyword_cap,
+            keyword,
+            || CandidateSource::Keyword,
+        );
     }
 
     debug_assert!(names.len() <= MAX_ITEMS);
@@ -248,12 +431,9 @@ impl CompletionProvider for SqlCompletionProvider {
                         3,
                         format!("{}(", candidate.name),
                     ),
-                    CandidateSource::Keyword => (
-                        CompletionItemKind::KEYWORD,
-                        None,
-                        4,
-                        candidate.name.clone(),
-                    ),
+                    CandidateSource::Keyword => {
+                        (CompletionItemKind::KEYWORD, None, 4, candidate.name.clone())
+                    }
                 };
                 CompletionItem {
                     label: candidate.name,
@@ -283,7 +463,9 @@ impl CompletionProvider for SqlCompletionProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{CandidateSource, MAX_CATALOG_ITEMS, MAX_ITEMS, collect_candidates, identifier_insert};
+    use super::{
+        collect_candidates, identifier_insert, CandidateSource, MAX_CATALOG_ITEMS, MAX_ITEMS,
+    };
     use crate::schema::{ColumnInfo, DatabaseInfo, NodeKind, TableInfo};
 
     fn catalog(table_count: usize) -> Vec<DatabaseInfo> {
@@ -365,10 +547,12 @@ mod tests {
         assert!(found.len() <= MAX_ITEMS);
         let catalog_count = found
             .iter()
-            .filter(|c| matches!(
-                c.source,
-                CandidateSource::Table { .. } | CandidateSource::Column { .. }
-            ))
+            .filter(|c| {
+                matches!(
+                    c.source,
+                    CandidateSource::Table { .. } | CandidateSource::Column { .. }
+                )
+            })
             .count();
         assert_eq!(catalog_count, MAX_CATALOG_ITEMS);
         assert!(
@@ -380,11 +564,9 @@ mod tests {
 
         // Same for functions: "sum" collides with nothing in this catalog.
         let found = collect_candidates(&catalog(5_000), "s");
-        assert!(
-            found
-                .iter()
-                .any(|c| matches!(c.source, CandidateSource::Function) && c.name == "sum"),
-        );
+        assert!(found
+            .iter()
+            .any(|c| matches!(c.source, CandidateSource::Function) && c.name == "sum"),);
     }
 
     #[test]

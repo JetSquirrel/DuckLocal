@@ -6,15 +6,12 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
-    ActiveTheme, IconName, Sizable, Theme, ThemeMode, TitleBar, WindowExt, h_flex, v_flex,
+    h_flex, v_flex, ActiveTheme, IconName, Sizable, Theme, ThemeMode, TitleBar, WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
-use crate::db::{DatabaseTarget, ServerInfo};
-use crate::history::HistoryEntry;
-use crate::i18n::{Language, tr, trf};
-use crate::schema::DatabaseInfo;
+use crate::i18n::{tr, trf, Language};
 use crate::state::AppState;
 
 const DIALOG_WIDTH: Pixels = px(440.);
@@ -70,9 +67,7 @@ impl TitleBarView {
 
     fn open_s3_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let inputs = S3Inputs {
-            endpoint: cx.new(|cx| {
-                InputState::new(window, cx).default_value("s3.amazonaws.com")
-            }),
+            endpoint: cx.new(|cx| InputState::new(window, cx).default_value("s3.amazonaws.com")),
             region: cx.new(|cx| InputState::new(window, cx).default_value("us-east-1")),
             key_id: cx.new(|cx| InputState::new(window, cx).placeholder("AKIA…")),
             secret: cx.new(|cx| {
@@ -109,9 +104,21 @@ impl TitleBarView {
                         .child(
                             v_flex()
                                 .gap_2()
-                                .child(labeled_field(tr("dialog.s3.field.endpoint"), Input::new(&endpoint).into_any_element(), cx))
-                                .child(labeled_field(tr("dialog.s3.field.region"), Input::new(&region).into_any_element(), cx))
-                                .child(labeled_field(tr("dialog.s3.field.access_key_id"), Input::new(&key_id).into_any_element(), cx))
+                                .child(labeled_field(
+                                    tr("dialog.s3.field.endpoint"),
+                                    Input::new(&endpoint).into_any_element(),
+                                    cx,
+                                ))
+                                .child(labeled_field(
+                                    tr("dialog.s3.field.region"),
+                                    Input::new(&region).into_any_element(),
+                                    cx,
+                                ))
+                                .child(labeled_field(
+                                    tr("dialog.s3.field.access_key_id"),
+                                    Input::new(&key_id).into_any_element(),
+                                    cx,
+                                ))
                                 .child(labeled_field(
                                     tr("dialog.s3.field.secret_access_key"),
                                     Input::new(&secret)
@@ -135,25 +142,29 @@ impl TitleBarView {
                             Button::new("save-s3")
                                 .primary()
                                 .label(tr("dialog.s3.confirm"))
-                                .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                    let endpoint = endpoint.read(cx).value().trim().to_string();
-                                    let region = region.read(cx).value().trim().to_string();
-                                    let key_id = key_id.read(cx).value().trim().to_string();
-                                    let secret = secret.read(cx).value().to_string();
-                                    if key_id.is_empty() || secret.is_empty() {
-                                        window.push_notification(
-                                            Notification::error(tr("notify.s3.missing_keys")),
-                                            cx,
-                                        );
-                                        return;
-                                    }
-                                    window.close_dialog(cx);
-                                    if let Some(view) = confirm_view.upgrade() {
-                                        view.update(cx, |this, cx| {
-                                            this.configure_s3(endpoint, region, key_id, secret, window, cx);
-                                        });
-                                    }
-                                }),
+                                .on_click(
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        let endpoint = endpoint.read(cx).value().trim().to_string();
+                                        let region = region.read(cx).value().trim().to_string();
+                                        let key_id = key_id.read(cx).value().trim().to_string();
+                                        let secret = secret.read(cx).value().to_string();
+                                        if key_id.is_empty() || secret.is_empty() {
+                                            window.push_notification(
+                                                Notification::error(tr("notify.s3.missing_keys")),
+                                                cx,
+                                            );
+                                            return;
+                                        }
+                                        window.close_dialog(cx);
+                                        if let Some(view) = confirm_view.upgrade() {
+                                            view.update(cx, |this, cx| {
+                                                this.configure_s3(
+                                                    endpoint, region, key_id, secret, window, cx,
+                                                );
+                                            });
+                                        }
+                                    },
+                                ),
                         ),
                 )
         });
@@ -203,30 +214,26 @@ impl TitleBarView {
                     });
                     window.push_notification(tr("notify.s3.configured"), cx);
                 }
-                Err(e) => {
-                    window.push_notification(
-                        Notification::error(trf("notify.s3.failed", &[&e.to_string()])),
-                        cx,
-                    )
-                }
+                Err(e) => window.push_notification(
+                    Notification::error(trf("notify.s3.failed", &[&e.to_string()])),
+                    cx,
+                ),
             })
             .ok();
         })
         .detach();
     }
 
-    fn open_db_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("~/warehouse/analytics.duckdb")
-        });
+    fn open_data_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("~/data/*.parquet"));
         self.db_path_input = Some(input.clone());
-        let view = cx.entity().downgrade();
+        let state = self.state.clone();
 
         window.open_dialog(cx, move |dialog, _, cx| {
-            let open_file_view = view.clone();
-            let memory_view = view.clone();
+            let memory_state = state.clone();
+            let open_state = state.clone();
             dialog
-                .title(tr("dialog.open_db.title"))
+                .title(tr("dialog.open_source.title"))
                 .w(DIALOG_WIDTH)
                 .child(
                     v_flex()
@@ -235,7 +242,7 @@ impl TitleBarView {
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(tr("dialog.open_db.description")),
+                                .child(tr("dialog.open_source.description")),
                         )
                         .child(
                             h_flex()
@@ -246,15 +253,15 @@ impl TitleBarView {
                                 .child(
                                     Button::new("browse")
                                         .outline()
-                                        .label(tr("dialog.open_db.browse"))
+                                        .label(tr("dialog.open_source.browse"))
                                         .on_click({
                                             let input = input.clone();
                                             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                                                 let rx = cx.prompt_for_paths(PathPromptOptions {
                                                     files: true,
-                                                    directories: false,
+                                                    directories: true,
                                                     multiple: false,
-                                                    prompt: Some(tr("dialog.open_db.picker_prompt").into()),
+                                                    prompt: Some(tr("dialog.open_source.picker_prompt").into()),
                                                 });
                                                 let input = input.clone();
                                                 window
@@ -288,127 +295,35 @@ impl TitleBarView {
                         .child(
                             Button::new("memory")
                                 .outline()
-                                .label(tr("dialog.open_db.memory"))
+                                .label(tr("dialog.open_source.memory"))
                                 .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                                     window.close_dialog(cx);
-                                    if let Some(view) = memory_view.upgrade() {
-                                        view.update(cx, |this, cx| {
-                                            this.connect(DatabaseTarget::Memory, window, cx);
-                                        });
-                                    }
+                                    crate::ui::open_memory(memory_state.clone(), window, cx);
                                 }),
                         )
                         .child(
                             Button::new("open-file")
                                 .primary()
-                                .label(tr("dialog.open_db.open_file"))
+                                .label(tr("dialog.open_source.open_file"))
                                 .on_click({
                                     let input = input.clone();
                                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                        let path = input.read(cx).value().to_string();
-                                        if path.trim().is_empty() {
+                                        let path = input.read(cx).value().trim().to_string();
+                                        if path.is_empty() {
                                             return;
                                         }
                                         window.close_dialog(cx);
-                                        if let Some(view) = open_file_view.upgrade() {
-                                            view.update(cx, |this, cx| {
-                                                if crate::db::is_data_file(&path) {
-                                                    this.attach_data(path.clone(), window, cx);
-                                                } else {
-                                                    this.connect(
-                                                        DatabaseTarget::File(path.clone()),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }
-                                            });
-                                        }
+                                        crate::ui::open_dialog_path(
+                                            open_state.clone(),
+                                            path,
+                                            window,
+                                            cx,
+                                        );
                                     }
                                 }),
                         ),
                 )
         });
-    }
-
-    /// Attach a CSV/Parquet/JSON file as a view in the current connection,
-    /// register it for future sessions, then refresh catalog and history.
-    fn attach_data(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let attach_path = path.clone();
-            let result = smol::unblock(
-                move || -> anyhow::Result<(String, Vec<DatabaseInfo>, Vec<HistoryEntry>, Vec<crate::state::AttachedFileView>)> {
-                    let view = crate::db::attach_data_file(&attach_path)?;
-                    if let Some(kind) = crate::db::data_file_kind(&attach_path) {
-                        crate::history::register_attached_file(&attach_path, &view, kind).ok();
-                    }
-                    let (catalog, history) = crate::state::load_sidebar_data();
-                    let attached = crate::state::load_attached_files();
-                    Ok((view, catalog, history, attached))
-                },
-            )
-            .await;
-
-            this.update_in(cx, move |_, window, cx| match result {
-                Ok((view, catalog, history, attached)) => {
-                    state.update(cx, |s, cx| {
-                        s.set_catalog(catalog, cx);
-                        s.set_history(history, cx);
-                        s.set_attached_files(attached, cx);
-                    });
-                    window.push_notification(trf("notify.attach.success", &[&view]), cx);
-                }
-                Err(e) => window.push_notification(
-                    Notification::error(trf("notify.attach.failed", &[&e.to_string()])),
-                    cx,
-                ),
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Open the target database, re-attach registered data files, then refresh
-    /// server info, catalog, and history.
-    fn connect(&mut self, target: DatabaseTarget, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.clone();
-        let label = target.display_label();
-        cx.spawn_in(window, async move |this, cx| {
-            let opened = target.clone();
-            let result = smol::unblock(
-                move || -> anyhow::Result<(ServerInfo, Vec<DatabaseInfo>, Vec<HistoryEntry>, Vec<crate::state::AttachedFileView>)> {
-                    match &opened {
-                        DatabaseTarget::File(path) => crate::db::open_file(path)?,
-                        DatabaseTarget::Memory => crate::db::open_memory()?,
-                    }
-                    crate::state::reattach_registered_files();
-                    let server = crate::db::server_info(opened)?;
-                    let (catalog, history) = crate::state::load_sidebar_data();
-                    let attached = crate::state::load_attached_files();
-                    Ok((server, catalog, history, attached))
-                },
-            )
-            .await;
-
-            this.update_in(cx, move |_, window, cx| match result {
-                Ok((server, catalog, history, attached)) => {
-                    state.update(cx, |s, cx| {
-                        s.set_connection(target, server, catalog, cx);
-                        s.set_history(history, cx);
-                        s.set_attached_files(attached, cx);
-                    });
-                    window.push_notification(trf("notify.connect.success", &[&label]), cx);
-                }
-                Err(e) => {
-                    window.push_notification(
-                        Notification::error(trf("notify.connect.failed", &[&e.to_string()])),
-                        cx,
-                    )
-                }
-            })
-            .ok();
-        })
-        .detach();
     }
 }
 
@@ -432,12 +347,12 @@ impl Render for TitleBarView {
                         .justify_start()
                         .gap_2()
                         .child(
-                            Button::new("open-db")
+                            Button::new("open-data")
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::FolderOpen)
-                                .label(tr("title_bar.open_database"))
-                                .on_click(cx.listener(Self::open_db_dialog)),
+                                .label(tr("title_bar.open_data"))
+                                .on_click(cx.listener(Self::open_data_dialog)),
                         )
                         .child(
                             Button::new("configure-s3")

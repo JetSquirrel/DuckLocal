@@ -12,8 +12,8 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState, tree};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::tree::{tree, TreeEvent, TreeItem, TreeState};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -21,8 +21,8 @@ use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
 use crate::schema::{DatabaseInfo, NodeKind, TableInfo};
 use crate::state::{
-    AppState, AttachedFileView, AttachedFilesChanged, ConnectionChanged, HistoryChanged,
-    S3ConfigChanged, format_rows,
+    format_rows, AppState, AttachedFileView, AttachedFilesChanged, ConnectionChanged,
+    HistoryChanged, S3ConfigChanged,
 };
 use crate::ui::completion::identifier_insert;
 use crate::ui::workspace::Workspace;
@@ -303,7 +303,11 @@ impl Sidebar {
                 this.on_tree_event(event, cx);
             }),
         ];
-        let s3_browse = state.read(cx).s3_config.as_ref().map(|_| S3Browse::default());
+        let s3_browse = state
+            .read(cx)
+            .s3_config
+            .as_ref()
+            .map(|_| S3Browse::default());
         Self {
             state,
             workspace,
@@ -373,7 +377,8 @@ impl Sidebar {
         let request = match &target {
             S3LoadTarget::Root => None,
             S3LoadTarget::Node(id) => self.s3_browse.as_ref().and_then(|browse| {
-                find_s3_node(&browse.children, id).map(|node| (node.bucket.clone(), node.prefix.clone()))
+                find_s3_node(&browse.children, id)
+                    .map(|node| (node.bucket.clone(), node.prefix.clone()))
             }),
         };
         cx.spawn(async move |this, cx| {
@@ -523,7 +528,8 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(column.data_type.clone()));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).default_value(column.data_type.clone()));
         let view = cx.entity().downgrade();
 
         window.open_dialog(cx, move |dialog, _, _| {
@@ -533,14 +539,10 @@ impl Sidebar {
                 .child(
                     v_flex()
                         .gap_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(trf(
-                                    "dialog.alter_type.current_type",
-                                    &[&column.table.name, &column.name, &column.data_type],
-                                )),
-                        )
+                        .child(div().text_xs().child(trf(
+                            "dialog.alter_type.current_type",
+                            &[&column.table.name, &column.name, &column.data_type],
+                        )))
                         .child(Input::new(&input)),
                 )
                 .footer(
@@ -765,9 +767,7 @@ impl Sidebar {
             let column = node_meta.and_then(|m| m.column.clone());
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
-            let editable_column = column
-                .clone()
-                .filter(|column| !column.table.is_view);
+            let editable_column = column.clone().filter(|column| !column.table.is_view);
             ListItem::new(ix)
                 .selected(selected)
                 .pl(INDENT_PER_DEPTH * entry.depth() + px(12.))
@@ -963,54 +963,45 @@ impl Render for Sidebar {
             )
             .when(self.tab == SidebarTab::Schema, |this| {
                 this.child(
-                    h_flex()
-                        .px_2()
-                        .pb_1()
-                        .justify_end()
-                        .child(
-                            Button::new("refresh-schema")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::RotateCw)
-                                .tooltip(tr("sidebar.refresh_schema"))
-                                .on_click(cx.listener(Self::refresh_schema)),
-                        ),
+                    h_flex().px_2().pb_1().justify_end().child(
+                        Button::new("refresh-schema")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::RotateCw)
+                            .tooltip(tr("sidebar.refresh_schema"))
+                            .on_click(cx.listener(Self::refresh_schema)),
+                    ),
                 )
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(match self.tab {
-                        SidebarTab::Schema => self.render_schema(window, cx),
-                        SidebarTab::History => {
-                            if history.is_empty() {
-                                v_flex()
-                                    .size_full()
-                                    .items_center()
-                                    .justify_center()
-                                    .p_4()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_center()
-                                            .child(tr("sidebar.history.empty")),
-                                    )
-                                    .into_any_element()
-                            } else {
-                                v_flex()
-                                    .id("history-list")
-                                    .size_full()
-                                    .overflow_y_scroll()
-                                    .children(history.iter().enumerate().map(|(ix, entry)| {
-                                        self.render_history_item(entry, ix + 1 == history.len(), cx)
-                                    }))
-                                    .into_any_element()
-                            }
-                        }
-                    }),
-            )
+            .child(div().flex_1().min_h_0().child(match self.tab {
+                SidebarTab::Schema => self.render_schema(window, cx),
+                SidebarTab::History => {
+                    if history.is_empty() {
+                        v_flex()
+                            .size_full()
+                            .items_center()
+                            .justify_center()
+                            .p_4()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_center()
+                                    .child(tr("sidebar.history.empty")),
+                            )
+                            .into_any_element()
+                    } else {
+                        v_flex()
+                            .id("history-list")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .children(history.iter().enumerate().map(|(ix, entry)| {
+                                self.render_history_item(entry, ix + 1 == history.len(), cx)
+                            }))
+                            .into_any_element()
+                    }
+                }
+            }))
     }
 }
 
@@ -1084,7 +1075,10 @@ fn build_tree_items(
         let s3_id: SharedString = "s3:root".into();
         meta.insert(
             s3_id.clone(),
-            SchemaNodeMeta::new(SchemaNodeKind::S3Status, Some(tr("sidebar.s3.configured").into())),
+            SchemaNodeMeta::new(
+                SchemaNodeKind::S3Status,
+                Some(tr("sidebar.s3.configured").into()),
+            ),
         );
         let children = s3_children_items(&s3_id, &browse.children, &mut meta);
         items.push(
@@ -1153,7 +1147,10 @@ fn s3_children_items(
 ) -> Vec<TreeItem> {
     let mut placeholder = |suffix: &str, label: String| {
         let id: SharedString = format!("{parent_id}/{suffix}").into();
-        meta.insert(id.clone(), SchemaNodeMeta::new(SchemaNodeKind::S3Message, None));
+        meta.insert(
+            id.clone(),
+            SchemaNodeMeta::new(SchemaNodeKind::S3Message, None),
+        );
         TreeItem::new(id, label).disabled(true)
     };
     match children {
@@ -1333,8 +1330,8 @@ mod tests {
     // No `use super::*;`: the module's `gpui_kit::*` glob would drag gpui's
     // `test` attribute macro into scope and shadow the built-in `#[test]`.
     use super::{
-        ColumnRef, S3Children, S3Node, S3NodeKind, TableRef, alter_column_type_sql, find_s3_node,
-        format_size, select_column_sql, select_s3_file_sql, select_star_sql,
+        alter_column_type_sql, find_s3_node, format_size, select_column_sql, select_s3_file_sql,
+        select_star_sql, ColumnRef, S3Children, S3Node, S3NodeKind, TableRef,
     };
 
     fn table_ref(name: &str, is_view: bool) -> TableRef {

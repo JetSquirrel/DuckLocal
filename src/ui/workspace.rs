@@ -7,7 +7,7 @@ use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputSt
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -16,11 +16,16 @@ use crate::query::QueryOutcome;
 use crate::state::{AppState, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
-use crate::ui::{RUN_QUERY_KEYSTROKE, RunQuery, WORKSPACE_KEY_CONTEXT};
+use crate::ui::{pick_paths, PickerTarget, RunQuery, RUN_QUERY_KEYSTROKE, WORKSPACE_KEY_CONTEXT};
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
 const RESULTS_PANEL_MIN: f32 = 160.;
 const RESULTS_PANEL_MAX: f32 = 640.;
+
+/// Line length the first-run description wraps at. Wide enough for the
+/// sentence to read as one thought, narrow enough that the eye does not have
+/// to travel the whole window.
+const FIRST_RUN_TEXT_WIDTH: Pixels = px(400.);
 
 pub struct QueryTab {
     pub id: u64,
@@ -35,6 +40,9 @@ pub struct Workspace {
     next_tab_id: u64,
     running: bool,
     explaining: bool,
+    /// Set once the user asks for the editor on a connection with no data yet,
+    /// which is otherwise the first-run screen's job to keep out of the way.
+    editor_shown: bool,
     results: Entity<ResultsPanel>,
     rename_input: Option<Entity<InputState>>,
     _subscriptions: Vec<Subscription>,
@@ -50,11 +58,12 @@ impl Workspace {
             next_tab_id: 1,
             running: false,
             explaining: false,
+            editor_shown: false,
             results,
             rename_input: None,
-            _subscriptions: vec![cx.subscribe(&state, |_, _, _: &ConnectionChanged, cx| {
-                cx.notify()
-            })],
+            _subscriptions: vec![
+                cx.subscribe(&state, |_, _, _: &ConnectionChanged, cx| cx.notify())
+            ],
         };
         let tab = this.new_tab_editor(window, cx);
         let run_hint = Keystroke::parse(RUN_QUERY_KEYSTROKE)
@@ -90,7 +99,13 @@ impl Workspace {
         // is focused; the PressEnter event is the only signal left. The
         // newline is already inserted by then, so undo it before running.
         let subscription = cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
-            if matches!(event, InputEvent::PressEnter { secondary: true, .. }) {
+            if matches!(
+                event,
+                InputEvent::PressEnter {
+                    secondary: true,
+                    ..
+                }
+            ) {
                 Self::remove_secondary_enter_newline(&editor, window, cx);
                 this.run_active(window, cx);
             }
@@ -117,6 +132,8 @@ impl Workspace {
         tab.editor.update(cx, |editor, cx| {
             editor.set_value(sql, window, cx);
         });
+        self.editor_shown = true;
+        cx.notify();
         self.focus_active_editor(window, cx);
     }
 
@@ -159,6 +176,7 @@ impl Workspace {
         let tab = self.new_tab_editor(window, cx);
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
+        self.editor_shown = true;
         cx.notify();
         self.focus_active_editor(window, cx);
     }
@@ -254,8 +272,12 @@ impl Workspace {
         let Some(sql) = self.active_sql(cx) else {
             return;
         };
+        // ⌘↵ on the first-run screen means "I want to write SQL": show the
+        // editor the results belong to instead of running behind it.
+        self.editor_shown = true;
         self.running = true;
-        self.results.update(cx, |results, cx| results.set_running(cx));
+        self.results
+            .update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
         let state = self.state.clone();
@@ -266,9 +288,12 @@ impl Workspace {
                 let reload_catalog = crate::query::may_change_catalog(&run_sql);
                 let outcome = crate::query::run(&run_sql);
                 let (duration_ms, row_count, ok, error) = match &outcome {
-                    Ok(QueryOutcome::Rows(result)) => {
-                        (result.elapsed_ms as i64, Some(result.row_count() as i64), true, None)
-                    }
+                    Ok(QueryOutcome::Rows(result)) => (
+                        result.elapsed_ms as i64,
+                        Some(result.row_count() as i64),
+                        true,
+                        None,
+                    ),
                     Ok(QueryOutcome::Affected { count, elapsed_ms }) => {
                         (*elapsed_ms as i64, Some(*count as i64), true, None)
                     }
@@ -356,7 +381,8 @@ impl Workspace {
             return;
         };
         self.explaining = true;
-        self.results.update(cx, |results, cx| results.set_running(cx));
+        self.results
+            .update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
@@ -479,7 +505,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor = self.tabs.get(self.active).map(|tab| tab.editor.clone());
+        let first_run = self.is_first_run(cx);
 
         v_flex()
             .id("workspace")
@@ -487,31 +513,123 @@ impl Render for Workspace {
             .min_w_0()
             .key_context(WORKSPACE_KEY_CONTEXT)
             .on_action(cx.listener(Self::run_query_action))
-            .child(self.render_tab_bar(cx))
-            .child(self.render_toolbar(cx))
-            .child(
-                div().flex_1().min_h_0().child(
-                    v_resizable("editor-results")
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .size_full()
-                                    .when_some(editor, |this, editor| {
+            .when(first_run, |this| this.child(self.render_first_run(cx)))
+            .when(!first_run, |this| {
+                let editor = self.tabs.get(self.active).map(|tab| tab.editor.clone());
+                this.child(self.render_tab_bar(cx))
+                    .child(self.render_toolbar(cx))
+                    .child(
+                        div().flex_1().min_h_0().child(
+                            v_resizable("editor-results")
+                                .child(resizable_panel().child(div().size_full().when_some(
+                                    editor,
+                                    |this, editor| {
                                         this.child(
-                                            Editor::new(&editor)
-                                                .h(relative(1.))
-                                                .bordered(false),
+                                            Editor::new(&editor).h(relative(1.)).bordered(false),
                                         )
-                                    }),
-                            ),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size(px(RESULTS_PANEL_DEFAULT))
-                                .size_range(px(RESULTS_PANEL_MIN)..px(RESULTS_PANEL_MAX))
-                                .child(self.results.clone()),
+                                    },
+                                )))
+                                .child(
+                                    resizable_panel()
+                                        .size(px(RESULTS_PANEL_DEFAULT))
+                                        .size_range(px(RESULTS_PANEL_MIN)..px(RESULTS_PANEL_MAX))
+                                        .child(self.results.clone()),
+                                ),
                         ),
-                ),
+                    )
+            })
+    }
+}
+
+impl Workspace {
+    /// The first-run screen stands where the editor would be: only once
+    /// startup has landed, only while there is nothing to query, and only
+    /// until the user asks for the editor instead.
+    fn is_first_run(&self, cx: &App) -> bool {
+        let state = self.state.read(cx);
+        !self.editor_shown && state.is_ready() && !state.has_data()
+    }
+
+    /// What the app opens onto before any data is around: the drop zone. The
+    /// window accepts drops anywhere, so this is the invitation rather than the
+    /// only target.
+    fn render_first_run(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = self.state.clone();
+        let picker_state = state.clone();
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(
+                // Drawn from the bundle the app ships: the wider Lucide
+                // catalog names icons whose SVGs are not embedded.
+                Icon::new(IconName::FolderOpen)
+                    .large()
+                    // Deliberately faded: the icon is decoration, not data.
+                    .text_color(cx.theme().muted_foreground.alpha(0.5)),
+            )
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(tr("workspace.empty.title")),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .max_w(FIRST_RUN_TEXT_WIDTH)
+                    .text_center()
+                    .child(tr("workspace.empty.description")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("first-run-open-files")
+                            .primary()
+                            .label(tr("workspace.empty.open_files"))
+                            .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                pick_paths(
+                                    state.clone(),
+                                    PickerTarget::Files,
+                                    tr("workspace.empty.files_prompt"),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        Button::new("first-run-open-folder")
+                            .outline()
+                            .label(tr("workspace.empty.open_folder"))
+                            .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                pick_paths(
+                                    picker_state.clone(),
+                                    PickerTarget::Folder,
+                                    tr("workspace.empty.folder_prompt"),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        Button::new("first-run-new-query")
+                            .ghost()
+                            .label(tr("workspace.new_query"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.editor_shown = true;
+                                cx.notify();
+                                this.focus_active_editor(window, cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(tr("workspace.empty.cli_hint")),
             )
     }
 }

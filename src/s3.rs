@@ -4,7 +4,7 @@
 //! sidebar talks to the S3 REST API directly (ListBuckets / ListObjectsV2).
 //! All functions here are blocking; UI code must call them via `smol::unblock`.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
@@ -291,10 +291,7 @@ fn sigv4_authorization(
 
     let mut signed: Vec<(String, String)> = headers.to_vec();
     signed.sort();
-    let canonical_headers: String = signed
-        .iter()
-        .map(|(k, v)| format!("{k}:{v}\n"))
-        .collect();
+    let canonical_headers: String = signed.iter().map(|(k, v)| format!("{k}:{v}\n")).collect();
     let signed_headers: Vec<&str> = signed.iter().map(|(k, _)| k.as_str()).collect();
     let signed_headers = signed_headers.join(";");
     let canonical_request = format!(
@@ -423,7 +420,10 @@ mod tests {
     fn uri_encode_leaves_unreserved_and_encodes_rest() {
         assert_eq!(uri_encode("abc-DEF_019.~"), "abc-DEF_019.~");
         assert_eq!(uri_encode("a/b c+d"), "a%2Fb%20c%2Bd");
-        assert_eq!(uri_encode("日志/文件.csv"), "%E6%97%A5%E5%BF%97%2F%E6%96%87%E4%BB%B6.csv");
+        assert_eq!(
+            uri_encode("日志/文件.csv"),
+            "%E6%97%A5%E5%BF%97%2F%E6%96%87%E4%BB%B6.csv"
+        );
     }
 
     #[test]

@@ -13,14 +13,16 @@ use gpui_kit::component::label::Label;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, ExportFormat, QueryOutcome, QueryResult};
-use crate::ui::RUN_QUERY_KEYSTROKE;
 use crate::ui::chart::{ChartData, ChartPanel};
+use crate::ui::RUN_QUERY_KEYSTROKE;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResultsTab {
@@ -32,9 +34,15 @@ enum ResultView {
     Empty,
     Running,
     Rows(Rc<QueryResult>),
-    Affected { count: u64, elapsed_ms: u128 },
+    Affected {
+        count: u64,
+        elapsed_ms: u128,
+    },
     Failed(String),
-    Explain { lines: Vec<String>, elapsed_ms: u128 },
+    Explain {
+        lines: Vec<String>,
+        elapsed_ms: u128,
+    },
 }
 
 /// Row-number column header.
@@ -154,7 +162,10 @@ impl ResultTableDelegate {
     }
 
     fn rows(&self) -> &[Vec<String>] {
-        self.result.as_ref().map(|r| r.rows.as_slice()).unwrap_or(&[])
+        self.result
+            .as_ref()
+            .map(|r| r.rows.as_slice())
+            .unwrap_or(&[])
     }
 
     fn set_filter(&mut self, filter: String) {
@@ -221,7 +232,9 @@ impl TableDelegate for ResultTableDelegate {
                     .text_sm()
                     .font_family(cx.theme().mono_font_family.clone())
                     .font_weight(FontWeight::BOLD)
-                    .when(is_index, |this| this.text_color(cx.theme().muted_foreground))
+                    .when(is_index, |this| {
+                        this.text_color(cx.theme().muted_foreground)
+                    })
                     .flex_1(),
             )
     }
@@ -313,7 +326,8 @@ pub struct ResultsPanel {
 impl ResultsPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| TableState::new(ResultTableDelegate::new(), window, cx));
-        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("results.filter.placeholder")));
+        let filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("results.filter.placeholder")));
         let subscription =
             cx.subscribe_in(&filter_input, window, |this, state, event, window, cx| {
                 match event {
@@ -493,16 +507,21 @@ impl ResultsPanel {
         cx.spawn_in(window, async move |this, cx| {
             let export_sql = sql.clone();
             let export_path = path.clone();
-            let result = smol::unblock(move || {
-                crate::query::export(&export_sql, &export_path, format)
-            })
-            .await;
+            let result =
+                smol::unblock(move || crate::query::export(&export_sql, &export_path, format))
+                    .await;
             this.update_in(cx, move |_, window, cx| match result {
                 Ok(()) => {
-                    window.push_notification(Notification::info(trf("notify.export.success", &[&path])), cx);
+                    window.push_notification(
+                        Notification::info(trf("notify.export.success", &[&path])),
+                        cx,
+                    );
                 }
                 Err(e) => {
-                    window.push_notification(Notification::error(trf("notify.export.failed", &[&e.to_string()])), cx);
+                    window.push_notification(
+                        Notification::error(trf("notify.export.failed", &[&e.to_string()])),
+                        cx,
+                    );
                 }
             })
             .ok();
@@ -529,7 +548,10 @@ impl ResultsPanel {
         let summary = has_rows.then(|| {
             trf(
                 "results.summary",
-                &[&self.rows_count().to_string(), &self.columns_count().to_string()],
+                &[
+                    &self.rows_count().to_string(),
+                    &self.columns_count().to_string(),
+                ],
             )
         });
 
@@ -595,9 +617,11 @@ impl ResultsPanel {
 
     fn render_table_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match &self.view {
-            ResultView::Empty => {
-                empty_state(tr("results.empty.title"), Some(tr("results.empty.hint_prefix")), cx)
-            }
+            ResultView::Empty => empty_state(
+                tr("results.empty.title"),
+                Some(tr("results.empty.hint_prefix")),
+                cx,
+            ),
             ResultView::Running => running_state(cx),
             ResultView::Rows(result) => {
                 let truncated = result.truncated;
@@ -609,7 +633,10 @@ impl ResultsPanel {
                                 "truncated-notice",
                                 // The real count: a wide result is cut by the
                                 // cell budget well before the row cap.
-                                trf("results.truncated", &[&format_thousands(result.row_count())]),
+                                trf(
+                                    "results.truncated",
+                                    &[&format_thousands(result.row_count())],
+                                ),
                             )
                             .banner()
                             .small(),
@@ -636,38 +663,33 @@ impl ResultsPanel {
                         .large()
                         .text_color(cx.theme().success),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .child(trf(
-                            "results.affected",
-                            &[
-                                &count.to_string(),
-                                &crate::state::format_duration(*elapsed_ms as i64),
-                            ],
-                        )),
-                )
+                .child(div().text_sm().child(trf(
+                    "results.affected",
+                    &[
+                        &count.to_string(),
+                        &crate::state::format_duration(*elapsed_ms as i64),
+                    ],
+                )))
                 .into_any_element(),
             ResultView::Failed(message) => div()
                 .size_full()
                 .p_3()
-                .child(Alert::error("query-error", message.clone()).title(tr("results.failed.title")))
+                .child(
+                    Alert::error("query-error", message.clone()).title(tr("results.failed.title")),
+                )
                 .into_any_element(),
             ResultView::Explain { lines, elapsed_ms } => v_flex()
                 .size_full()
                 .child(
-                    h_flex()
-                        .px_3()
-                        .py_2()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(trf(
-                                    "results.explain.elapsed",
-                                    &[&crate::state::format_duration(*elapsed_ms as i64)],
-                                )),
-                        ),
+                    h_flex().px_3().py_2().child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(trf(
+                                "results.explain.elapsed",
+                                &[&crate::state::format_duration(*elapsed_ms as i64)],
+                            )),
+                    ),
                 )
                 .child(
                     v_flex()
@@ -702,7 +724,11 @@ impl ResultsPanel {
                 ChartPanel::new(data).into_any_element()
             }
             ResultView::Running => running_state(cx),
-            _ => empty_state(tr("results.empty_chart.title"), Some(tr("results.empty.hint_prefix")), cx),
+            _ => empty_state(
+                tr("results.empty_chart.title"),
+                Some(tr("results.empty.hint_prefix")),
+                cx,
+            ),
         }
     }
 
@@ -736,7 +762,10 @@ impl ResultsPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(trf("results.filter.counts", &[&visible.to_string(), &total.to_string()])),
+                        .child(trf(
+                            "results.filter.counts",
+                            &[&visible.to_string(), &total.to_string()],
+                        )),
                 )
             })
     }
@@ -749,12 +778,10 @@ impl Render for ResultsPanel {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(self.render_header(cx))
-            .child(
-                div().flex_1().min_h_0().child(match self.tab {
-                    ResultsTab::Table => self.render_table_content(cx),
-                    ResultsTab::Chart => self.render_chart_content(cx),
-                }),
-            )
+            .child(div().flex_1().min_h_0().child(match self.tab {
+                ResultsTab::Table => self.render_table_content(cx),
+                ResultsTab::Chart => self.render_chart_content(cx),
+            }))
     }
 }
 
