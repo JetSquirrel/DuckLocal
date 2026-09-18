@@ -1,11 +1,13 @@
 //! Root view: composes title bar, sidebar, workspace, and status bar, owns the
 //! shared `AppState` entity, and renders the Root overlay layers.
 
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::Root;
 use gpui_kit::component::{v_flex, ActiveTheme, WindowExt};
 use gpui_kit::*;
 
+use crate::analysis::panels;
 use crate::i18n::trf;
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
@@ -25,7 +27,8 @@ pub struct DuckLocalApp {
 
 impl DuckLocalApp {
     /// `paths` are the command-line arguments: data files, folders, patterns,
-    /// or a database file to open instead of the in-memory connection.
+    /// a database file to open instead of the in-memory connection, or a panel
+    /// directory to open as a tab.
     pub fn new(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(AppState::new);
         let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
@@ -37,16 +40,38 @@ impl DuckLocalApp {
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || {
                 crate::history::init().ok();
-                state::open_request(&paths, true)
+                // A directory with the panel entry file in it is a panel, not a
+                // folder of data: it opens as a tab, and the rest of the
+                // command line keeps the behaviour it had.
+                let (from_command_line, data) = panels::split_paths(&paths);
+                let outcome = state::open_request(&data, true)?;
+                // Read here rather than in the workspace: this is the one place
+                // in the app that is already off the UI thread and has the
+                // history store open.
+                let remembered = panels::restore();
+                Ok::<_, anyhow::Error>((from_command_line, remembered, outcome))
             })
             .await;
 
             this.update_in(cx, |this, window, cx| match result {
-                Ok(outcome) => {
+                Ok((from_command_line, remembered, outcome)) => {
                     apply_open_outcome(open_state, outcome, window, cx);
                     this.workspace.update(cx, |ws, cx| {
+                        let mut directories = from_command_line;
+                        directories.extend(
+                            remembered
+                                .panels
+                                .iter()
+                                .map(|panel| std::path::PathBuf::from(&panel.path)),
+                        );
+                        ws.open_panels(directories, window, cx);
                         ws.focus_active_editor(window, cx);
                     });
+                    // A remembered panel that is gone, or is no longer a panel,
+                    // is named rather than silently dropped.
+                    for problem in remembered.problems {
+                        window.push_notification(Notification::error(problem), cx);
+                    }
                 }
                 Err(e) => {
                     window
@@ -66,15 +91,23 @@ impl DuckLocalApp {
         }
     }
 
-    /// Files and folders dropped on the window: the same request the command
-    /// line and the pickers make.
+    /// Paths dropped on the window: a panel directory opens a panel tab, and
+    /// everything else is the same request the command line and the pickers
+    /// make.
     fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        let requested = paths
+        let requested: Vec<String> = paths
             .paths()
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect();
-        open_paths(self.state.clone(), requested, window, cx);
+        let (directories, data) = panels::split_paths(&requested);
+        for directory in directories {
+            self.workspace
+                .update(cx, |ws, cx| ws.open_panel(directory, window, cx));
+        }
+        if !data.is_empty() {
+            open_paths(self.state.clone(), data, window, cx);
+        }
     }
 }
 

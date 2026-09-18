@@ -12,6 +12,7 @@ const pages = [
   'schema-and-history',
   'results-and-charts',
   'settings-and-data',
+  'analysis-panel',
   'development',
 ]
 
@@ -41,6 +42,7 @@ function sidebar(zh = false): DefaultTheme.SidebarItem[] {
       text: zh ? '开发' : 'Development',
       items: [
         item('cli', 'AI CLI and official skill', 'AI CLI 与官方 skill'),
+        item('analysis-panel', 'Analysis panels', '分析面板'),
         item('development', 'Development guide', '开发指南'),
       ],
     },

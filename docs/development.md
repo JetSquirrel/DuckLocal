@@ -134,6 +134,7 @@ set to “GitHub Actions”.
 | `src/db.rs` | The DuckDB connection, attaching files, server info |
 | `src/query.rs` | Query execution, result serialization, export |
 | `src/schema.rs` | Catalog introspection for the sidebar |
+| `src/analysis/` | JavaScript analysis panels: the script runtime, the `ducklocal` host module, the panel tab, the reload watcher |
 | `src/history.rs` | The app's own database: history, registered files, settings |
 | `src/s3.rs` | SigV4 signing and S3 listing |
 | `src/i18n.rs` | The string table and language selection |

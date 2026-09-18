@@ -21,20 +21,24 @@ pub const MAX_ROWS: usize = 100_000;
 /// hang. Budgeting cells keeps wide results as responsive as tall ones.
 pub const MAX_CELLS: usize = 2_000_000;
 
+/// Field visibility is crate-wide because the structured encoding below is
+/// what any second reader of a result must reuse: the analysis panel's
+/// `query()` host function hands these same values to JavaScript, and a
+/// second encoder is how a big integer quietly becomes a float.
 #[derive(serde::Serialize)]
 pub struct CliColumn {
-    name: String,
+    pub name: String,
     #[serde(rename = "type")]
-    arrow_type: String,
+    pub arrow_type: String,
 }
 
 #[derive(serde::Serialize)]
 pub struct CliResult {
-    columns: Vec<CliColumn>,
-    rows: Vec<Vec<serde_json::Value>>,
-    row_count: usize,
-    truncated: bool,
-    elapsed_ms: u128,
+    pub columns: Vec<CliColumn>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    pub row_count: usize,
+    pub truncated: bool,
+    pub elapsed_ms: u128,
 }
 
 pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResult> {

@@ -101,6 +101,7 @@ npm --prefix docs run preview    # http://localhost:4173/DuckLocal/
 | `src/db.rs` | DuckDB 连接、挂载文件、服务器信息 |
 | `src/query.rs` | 查询执行、结果序列化、导出 |
 | `src/schema.rs` | 为侧栏做 catalog 内省 |
+| `src/analysis/` | JavaScript 分析面板：脚本运行时、`ducklocal` host 模块、面板标签页、重载监控 |
 | `src/history.rs` | 应用自己的数据库：查询历史、已登记的文件、设置 |
 | `src/s3.rs` | SigV4 签名与 S3 列举 |
 | `src/i18n.rs` | 字符串表和语言选择 |

@@ -372,6 +372,114 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "S3 请求失败（HTTP {}）：{}",
         "S3 request failed (HTTP {}): {}",
     ),
+
+    // ── src/analysis/ ───────────────────────────────────────────────────
+    (
+        "analysis.empty.title",
+        "这个面板没有目录",
+        "This panel has no folder",
+    ),
+    (
+        "analysis.empty.hint",
+        "面板是包含 main.js 的文件夹，里面的 JavaScript 会查询当前连接的数据。",
+        "A panel is a folder with a main.js; its JavaScript queries the current connection.",
+    ),
+    (
+        "analysis.picker.prompt",
+        "选择分析面板目录（包含 main.js）",
+        "Choose a panel folder (one with a main.js)",
+    ),
+    (
+        "analysis.loading",
+        "正在加载分析面板…",
+        "Loading the analysis panel…",
+    ),
+    ("analysis.reload", "重新加载", "Reload"),
+    (
+        "analysis.reload.tooltip",
+        "重新加载面板；保存 .js 文件也会自动重新加载",
+        "Reload the panel; saving a .js file reloads it too",
+    ),
+    (
+        "analysis.load_failed",
+        "分析面板加载失败",
+        "The analysis panel could not be loaded",
+    ),
+    (
+        "analysis.load_failed.hint",
+        "修复目录中的 main.js 后点击「重新加载」。",
+        "Fix main.js in the folder and press Reload.",
+    ),
+    (
+        "analysis.no_runtime",
+        "脚本运行时不可用，无法加载面板。",
+        "The script runtime is unavailable, so the panel cannot load.",
+    ),
+    (
+        "analysis.not_updated",
+        "面板未更新",
+        "Panel not updated",
+    ),
+    (
+        "analysis.rejected.not_a_folder",
+        "{} 不是文件夹。",
+        "{} is not a folder.",
+    ),
+    (
+        "analysis.rejected.no_entry",
+        "{} 里没有 main.js。",
+        "{} has no main.js.",
+    ),
+    (
+        "analysis.rejected.no_longer_there",
+        "{} 已不存在。",
+        "{} is no longer there.",
+    ),
+    (
+        "analysis.restore.not_a_folder",
+        "上次打开的面板 {}（{}）已不是文件夹，未重新打开。",
+        "The panel {} ({}) is no longer a folder; it was not reopened.",
+    ),
+    (
+        "analysis.restore.no_entry",
+        "上次打开的面板 {}（{}）里没有 main.js，未重新打开。",
+        "The panel {} ({}) has no main.js; it was not reopened.",
+    ),
+    (
+        "analysis.definition.show",
+        "视图定义",
+        "View definition",
+    ),
+    (
+        "analysis.definition.back",
+        "返回面板",
+        "Back to panel",
+    ),
+    (
+        "analysis.definition.tooltip",
+        "读取这个面板的 JavaScript 源码",
+        "Read this panel's JavaScript source",
+    ),
+    (
+        "analysis.definition.hint",
+        "面板是留在该目录里的一个 JavaScript 视图——由 agent 或你自己编写；保存文件即会重新加载。",
+        "A panel is a JavaScript view left in that folder — by an agent, or by you. Saving the file reloads it.",
+    ),
+    (
+        "analysis.definition.unreadable",
+        "无法读取 {}：{}",
+        "Could not read {}: {}",
+    ),
+    (
+        "workspace.open_panel",
+        "打开分析面板…",
+        "Open panel…",
+    ),
+    (
+        "workspace.add_tab.tooltip",
+        "新建查询，或打开一个分析面板",
+        "New query, or open a panel",
+    ),
 ];
 
 #[cfg(test)]

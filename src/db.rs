@@ -1,7 +1,10 @@
 //! DuckDB connection management.
 //!
-//! Single global connection behind a mutex: `duckdb::Connection` is `Send`
-//! but not `Sync`, so all access serializes through `with_connection`.
+//! One global connection behind a mutex: `duckdb::Connection` is `Send` but
+//! not `Sync`, so all access serializes through `with_connection`. Analysis
+//! panels take a second connection to the same database instead — see
+//! [`PANEL_CONNECTION`] — so a panel's SQL and the window's do not wait on each
+//! other.
 //! All functions here are blocking; UI code must call them via `smol::unblock`.
 
 use std::collections::HashSet;
@@ -15,6 +18,26 @@ use crate::i18n::trf;
 
 lazy_static! {
     static ref CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
+    /// The connection analysis panels run their SQL on.
+    ///
+    /// A second connection to the same database, not a second database: DuckDB
+    /// serves many connections from one instance, so a panel sees the catalog
+    /// the window sees — the views DuckLocal registers included — without
+    /// taking the lock the window's own queries take. Sharing the one
+    /// connection meant a dashboard refreshing six statements held that lock
+    /// for as long as it ran, and the SQL editor was frozen for exactly that
+    /// long.
+    ///
+    /// What a second connection does not carry is connection-local state:
+    /// `TEMP` tables and `SET` values belong to the connection they were made
+    /// on. All panels share this one, so they still serialize among
+    /// themselves — a host function is handed arguments, not a caller, so
+    /// nothing at the moment a query runs says which panel asked.
+    ///
+    /// It is cloned on demand and dropped by [`replace`], which is what keeps a
+    /// closed database closed: a clone left behind would answer queries against
+    /// a database the window has let go of, and for a file would hold it open.
+    static ref PANEL_CONNECTION: Mutex<Option<Connection>> = Mutex::new(None);
 }
 
 /// How the current database was opened.
@@ -68,22 +91,30 @@ pub fn open_file(path: &str) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let conn = Connection::open(&expanded)?;
-    let mut guard = lock()?;
-    *guard = Some(conn);
-    Ok(())
+    replace(Some(Connection::open(&expanded)?))
 }
 
 /// Open an in-memory database, replacing any current connection.
 pub fn open_memory() -> Result<()> {
-    let mut guard = lock()?;
-    *guard = Some(Connection::open_in_memory()?);
-    Ok(())
+    replace(Some(Connection::open_in_memory()?))
 }
 
 pub fn close() -> Result<()> {
+    replace(None)
+}
+
+/// Put the process on `connection`, releasing whatever it was on.
+///
+/// The panel connection is dropped first, and both locks are taken in that
+/// order everywhere — here and in [`with_panel_connection`] — so the two never
+/// wait on each other in opposite directions. Opening another database while a
+/// panel is mid-query therefore waits for that query: a connection cannot be
+/// released out from under a statement that is still running.
+fn replace(connection: Option<Connection>) -> Result<()> {
+    let mut panel = panel_lock()?;
+    *panel = None;
     let mut guard = lock()?;
-    *guard = None;
+    *guard = connection;
     Ok(())
 }
 
@@ -100,10 +131,36 @@ pub fn with_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T>
     f(conn)
 }
 
+/// Run `f` on the connection analysis panels use, cloning one if there is none.
+///
+/// See [`PANEL_CONNECTION`] for why panels do not use [`with_connection`].
+/// Blocking, and the panel lock is held for as long as `f` runs, so callers
+/// belong off the UI thread like every other caller here.
+pub fn with_panel_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let mut panel = panel_lock()?;
+    if panel.is_none() {
+        let guard = lock()?;
+        let conn = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("No database connected"))?;
+        *panel = Some(conn.try_clone()?);
+    }
+    let conn = panel
+        .as_ref()
+        .expect("a panel connection was just cloned into place");
+    f(conn)
+}
+
 fn lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
     CONNECTION
         .lock()
         .map_err(|e| anyhow!("Database lock poisoned: {e}"))
+}
+
+fn panel_lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
+    PANEL_CONNECTION
+        .lock()
+        .map_err(|e| anyhow!("Panel database lock poisoned: {e}"))
 }
 
 /// Serializes tests that use the process-global connection: `open_memory` and
@@ -149,7 +206,7 @@ pub fn server_info(target: DatabaseTarget) -> Result<ServerInfo> {
 }
 
 /// DuckDB table-function reader for a data file extension, if supported.
-fn data_file_reader(path: &str) -> Option<&'static str> {
+pub(crate) fn data_file_reader(path: &str) -> Option<&'static str> {
     let ext = std::path::Path::new(path)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())?;

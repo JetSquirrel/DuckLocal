@@ -58,6 +58,7 @@ macOS 12 or later, Apple silicon. Free and open source under Apache-2.0.
 | [Results and charts](results-and-charts.md) | The results grid, filtering, copying, export, and the built-in charts |
 | [Settings and app data](settings-and-data.md) | Where DuckLocal keeps its files, what survives a restart, themes, language, and troubleshooting |
 | [AI CLI and official skill](cli.md) | Run headless SQL, inspect the JSON contract, and install the official agent skill |
+| [Analysis panels](analysis-panel.md) | Open a window whose contents are a JavaScript panel you wrote, over the same connection |
 | [Development](development.md) | Build, test, bundle a `.app`, and cut a signed and notarized release |
 
 ## At a glance
