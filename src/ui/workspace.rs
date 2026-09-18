@@ -3,9 +3,9 @@
 //! split vertically by a resizable handle.
 //!
 //! A tab is either a query — an editor and the results of running it — or a
-//! panel, an agent-authored JavaScript view over the same connection. They are
-//! peers: the tab strip mixes them, closing one is closing a tab, and renaming
-//! works on both. What differs is the region and the toolbar behind the tab
+//! panel, an agent-authored JavaScript view over the database the window is on.
+//! They are peers: the tab strip mixes them, closing one is closing a tab, and
+//! renaming works on both. What differs is the region and the toolbar behind the
 //! strip, which is why every path that reaches for "the active editor" goes
 //! through `as_query` rather than assuming one.
 
