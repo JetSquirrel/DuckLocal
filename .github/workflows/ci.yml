@@ -21,5 +21,10 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      # Before the build, because a mixed revision fails as a wall of trait
+      # errors that names no cause, and this names it in a second.
+      - name: Check dependency pinning
+        run: ./scripts/check-deps.sh
+
       - name: Run tests
         run: cargo test --locked

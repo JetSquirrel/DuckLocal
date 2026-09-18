@@ -14,6 +14,25 @@ DuckDB 从随仓库携带的源码构建，因此首次构建耗时很长，还�
 
 **工具链。** 仓库里既没有 `rust-toolchain.toml`，也没有 `rust-version` 字段，因此实际的版本下限由依赖决定：`duckdb` 要求 `1.85.1`。CI 直接使用 stable。
 
+## 被钉住的工具链
+
+UI 工具包、分析面板所依赖的脚本运行时、面板绘制所用的组件目录，是同一个仓库
+`longbridge/gpui-kit` 里的三个 crate，`rquickjs` 也被 patch 到同一个仓库。四者一起钉在同一个
+revision 是有意为之：两个 revision 会让构建里出现两份 `gpui-base` 或两份 `rquickjs`，报出来的是
+一大片 trait 不匹配，而其中没有一条会说出原因。
+
+```bash
+./scripts/check-deps.sh
+```
+
+它检查 Cargo 不会替你检查的三件事：依赖与 `[patch]` 用的是同一个 revision、`Cargo.lock` 与之一致、
+没有任何 crate 在构建里出现两次（一次来自该仓库，一次来自 crates.io）。它只读这两个清单文件，
+所以离线、即时。CI 会在跑测试之前执行它。要升级工具包，请把 `Cargo.toml` 里所有 `rev` 一起改掉，
+执行 `cargo update`，再跑一次这个脚本。
+
+按 revision 钉依赖，也是这个 crate 无法发布到 crates.io 的原因：git 依赖和 `[patch]` 在那里都不被接受。
+分发走的是下面的 macOS 签名包。
+
 ## 打包 macOS 应用
 
 ```bash
@@ -53,7 +72,7 @@ scripts/package-macos.sh <binary> <output.dmg> <version>
 
 | 工作流 | 触发条件 | 作用 |
 | --- | --- | --- |
-| `ci.yml` | 推送到 `main`、任意 pull request | 在 `macos-latest` 上执行 `cargo test --locked` |
+| `ci.yml` | 推送到 `main`、任意 pull request | 在 `macos-latest` 上先执行 `scripts/check-deps.sh`，再执行 `cargo test --locked` |
 | `release.yml` | 匹配 `v*` 的 tag，或手动指定版本触发 | 构建 `aarch64-apple-darwin`，把签名证书导入临时钥匙串，运行 `package-macos.sh`，上传 `ducklocal-macos-arm64.dmg`，然后用自动生成的说明创建 GitHub 发布 |
 | `gh-pages.yml` | `main` 分支上 `docs/` 或工作流有改动时，或手动触发 | 使用 Node.js 24 构建文档站并部署到 GitHub Pages |
 
@@ -109,7 +128,7 @@ npm --prefix docs run preview    # http://localhost:4173/DuckLocal/
 | `src/ui/` | 编辑器、结果表格、图表、侧栏、对话框、标题栏和状态栏 |
 | `docs/` | 英文指南、`zh/` 下的中文指南，以及 VitePress 依赖、配置与主题 |
 | `assets/` | 图标、`Info.plist`、README 与文档使用的示意图 |
-| `scripts/` | `bundle.sh`、`package-macos.sh`、授权文件 |
+| `scripts/` | `bundle.sh`、`package-macos.sh`、`check-deps.sh`、授权文件 |
 
 ## 测试说明
 

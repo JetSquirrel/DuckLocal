@@ -19,6 +19,30 @@ development loop usable — only `ducklocal` itself recompiles afterwards.
 the effective floor is set by dependencies: `1.85.1`, required by `duckdb`.
 CI uses plain stable.
 
+## The pinned toolkit
+
+The UI toolkit, the script runtime that analysis panels run on, and the
+component catalog they draw from are three crates out of one repository,
+`longbridge/gpui-kit`, and `rquickjs` is patched to the same one. All four are
+pinned to a single revision on purpose: two revisions put two copies of
+`gpui-base`, or of `rquickjs`, in the build, and that fails as a wall of trait
+mismatches naming neither cause.
+
+```bash
+./scripts/check-deps.sh
+```
+
+It checks the three things Cargo will not: one revision across the
+dependencies and the `[patch]`, a `Cargo.lock` that agrees with it, and no
+crate in the build twice — once from the repository and once from crates.io.
+It reads the two manifests and nothing else, so it is offline and immediate.
+CI runs it before the tests. To move to a newer toolkit, change every `rev` in
+`Cargo.toml` together, run `cargo update`, and run the script.
+
+Pinning by revision is also why this crate is not publishable to crates.io: a
+git dependency and a `[patch]` are both refused there. Distribution is the
+signed macOS bundle below.
+
 ## Bundle a macOS app
 
 ```bash
@@ -73,7 +97,7 @@ because DuckDB `dlopen`s its extensions — `httpfs` among them.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | Push to `main`, any pull request | `cargo test --locked` on `macos-latest` |
+| `ci.yml` | Push to `main`, any pull request | `scripts/check-deps.sh`, then `cargo test --locked`, on `macos-latest` |
 | `release.yml` | Tag matching `v*`, or manual dispatch with a version | Builds `aarch64-apple-darwin`, imports the signing certificate into a throwaway keychain, runs `package-macos.sh`, uploads `ducklocal-macos-arm64.dmg`, then creates the GitHub release with generated notes |
 | `gh-pages.yml` | Push to `main` touching `docs/` or the workflow, or manual dispatch | Builds the documentation site with Node.js 24 and deploys it to GitHub Pages |
 
@@ -142,7 +166,7 @@ set to “GitHub Actions”.
 | `src/ui/` | Editor, results grid, charts, sidebar, dialogs, title and status bars |
 | `docs/` | English guides, Chinese guides in `zh/`, and the VitePress package, config, and theme |
 | `assets/` | Icon, `Info.plist`, the diagram the README and docs use |
-| `scripts/` | `bundle.sh`, `package-macos.sh`, entitlements |
+| `scripts/` | `bundle.sh`, `package-macos.sh`, `check-deps.sh`, entitlements |
 
 ## Testing notes
 
