@@ -6,7 +6,7 @@ use std::ptr;
 use duckdb::{ffi, AccessMode, Config, Connection};
 use serde_json::json;
 
-const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named query must be written ./query.\n";
+const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal profile TARGET [--database PATH]  Per-column statistics, JSON\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named query or profile must be written ./query, ./profile.\n\nProfile: TARGET is a data file (csv/tsv/parquet/json) or, with --database,\na table or view name. Per column it reports type, nulls, distinct, min, max;\nfor numbers the decimals actually used, the median and max_over_median; for\ndates covered_days, span_days and missing_days. Statistics are exact and read\nthe whole relation.\n";
 
 #[derive(Debug)]
 struct CliError {
@@ -199,11 +199,21 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
         }
     };
     validate_sql(&sql)?;
+    let conn = open(options.database, options.read_write)?;
+    let result = crate::query::run_cli_of(&conn, &sql, options.limit)
+        .map_err(|e| CliError::failure("sql", e))?;
+    serde_json::to_string(&result).map_err(|e| CliError::failure("output", e))
+}
+
+/// The connection every subcommand runs on: its own, never the GUI's, with
+/// extension auto-installation off and a file database read-only unless the
+/// caller asked for writes.
+fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connection, CliError> {
     let config = Config::default()
         .with("autoinstall_known_extensions", "false")
         .map_err(|e| CliError::failure("database", e))?;
-    let conn = if let Some(path) = options.database {
-        if !options.read_write {
+    if let Some(path) = database {
+        if !read_write {
             let metadata =
                 std::fs::metadata(&path).map_err(|e| CliError::failure("database", e))?;
             if !metadata.is_file() {
@@ -213,7 +223,7 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
                 ));
             }
         }
-        let mode = if options.read_write {
+        let mode = if read_write {
             AccessMode::ReadWrite
         } else {
             AccessMode::ReadOnly
@@ -227,15 +237,66 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     } else {
         Connection::open_in_memory_with_flags(config)
     }
-    .map_err(|e| CliError::failure("database", e))?;
-    let result = crate::query::run_cli_of(&conn, &sql, options.limit)
-        .map_err(|e| CliError::failure("sql", e))?;
-    serde_json::to_string(&result).map_err(|e| CliError::failure("output", e))
+    .map_err(|e| CliError::failure("database", e))
+}
+
+/// `ducklocal profile TARGET [--database PATH]`.
+///
+/// One positional argument, because the thing being profiled is the whole
+/// request; `--database` only says where to look for a name.
+fn profile(args: &[OsString]) -> Result<String, CliError> {
+    let mut args = args.iter();
+    let target = args
+        .next()
+        .ok_or_else(|| CliError::argument("Name a data file, a table or a view to profile"))?;
+    let target = target
+        .to_str()
+        .ok_or_else(|| CliError::argument("TARGET must be UTF-8"))?;
+    if target.starts_with("--") {
+        return Err(CliError::argument(
+            "The first profile argument is the target, not an option",
+        ));
+    }
+    let mut database = None;
+    while let Some(flag) = args.next() {
+        match flag.to_str() {
+            Some("--database") => {
+                if database.is_some() {
+                    return Err(CliError::argument("Duplicate option: --database"));
+                }
+                let value = args
+                    .next()
+                    .filter(|value| !value.is_empty() && !value.to_string_lossy().starts_with("--"))
+                    .ok_or_else(|| CliError::argument("Missing value for --database"))?;
+                if value == ":memory:" {
+                    return Err(CliError::argument(
+                        "Omit --database for an in-memory database",
+                    ));
+                }
+                database = Some(PathBuf::from(value));
+            }
+            _ => {
+                return Err(CliError::argument(format!(
+                    "Unknown profile option: {}",
+                    flag.to_string_lossy()
+                )))
+            }
+        }
+    }
+    // Resolved before the connection is opened: a target that names nothing is
+    // a mistake in the arguments, and reporting it as a SQL failure would send
+    // a caller looking at their data instead of at their command line.
+    let relation = crate::profile::relation_of(target)
+        .map_err(|error| CliError::argument(error.to_string()))?;
+    let conn = open(database, false)?;
+    let profile = crate::profile::run(&conn, target, &relation)
+        .map_err(|error| CliError::failure("sql", error))?;
+    serde_json::to_string(&profile).map_err(|e| CliError::failure("output", e))
 }
 
 pub fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
-    if !matches!(first, "query" | "--help" | "--version") && !first.starts_with("--") {
+    if !matches!(first, "query" | "profile" | "--help" | "--version") && !first.starts_with("--") {
         return None;
     }
     let result = match (first, args.len()) {
@@ -243,6 +304,8 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("--version", 1) => Ok(format!("ducklocal {}", env!("CARGO_PKG_VERSION"))),
         ("query", 2) if args[1] == "--help" => Ok(HELP.to_string()),
         ("query", _) => query(&args[1..]),
+        ("profile", 2) if args[1] == "--help" => Ok(HELP.to_string()),
+        ("profile", _) => profile(&args[1..]),
         _ => Err(CliError::argument(
             "Unknown or extra arguments; use ducklocal --help",
         )),

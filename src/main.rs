@@ -5,6 +5,7 @@ mod history;
 mod i18n;
 #[cfg(test)]
 mod perf_probe;
+mod profile;
 mod query;
 mod s3;
 mod schema;

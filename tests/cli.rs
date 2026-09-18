@@ -72,6 +72,26 @@ impl Sandbox {
         value
     }
 
+    /// A profile is an object too, but it describes columns rather than
+    /// returning rows, so it does not answer the row/`row_count` assertion
+    /// `decode_success` makes of a query.
+    fn profile(&self, args: &[&str]) -> Value {
+        let output = self.run(args, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(value["elapsed_ms"].is_number());
+        value
+    }
+
     fn error(&self, args: &[&str], code: i32, kind: &str) -> Value {
         let output = self.run(args, None);
         assert_eq!(
@@ -456,5 +476,95 @@ fn skill_file_workflow_sql_files_stdin_and_conversion() {
             "SELECT current_setting('autoinstall_known_extensions')"
         ])["rows"],
         json!([[false]])
+    );
+}
+
+/// `profile` exists to answer the questions that decide a chart before one is
+/// drawn: how much time the data covers and whether it is continuous, how far
+/// apart the values are, and how many decimals a number really uses. Those
+/// three answers are what this asserts; the rest of the shape comes along.
+#[test]
+fn profile_reports_the_shape_that_decides_a_chart() {
+    let s = Sandbox::new();
+    // A gap in the middle of the range, a column spanning three orders of
+    // magnitude, money at two decimals, and a column with a hole in it.
+    std::fs::write(
+        s.0.join("usage.csv"),
+        "day,kind,amount,note\n         2026-09-01,hit,2497.69,a\n         2026-09-01,miss,6108704.00,b\n         2026-09-13,out,5229204.00,\n         2026-09-15,req,4994.00,d\n",
+    )
+    .unwrap();
+
+    let profile = s.profile(&["profile", "usage.csv"]);
+    assert_eq!(profile["target"], "usage.csv");
+    assert_eq!(profile["row_count"], 4);
+    let columns = profile["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), 4);
+
+    // Column order is the relation's, not whatever the union came back in.
+    let names: Vec<&str> = columns
+        .iter()
+        .map(|column| column["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["day", "kind", "amount", "note"]);
+
+    let day = &columns[0];
+    assert_eq!(day["type"], "DATE");
+    assert_eq!(day["min"], "2026-09-01");
+    assert_eq!(day["max"], "2026-09-15");
+    // Three days named across a fifteen-day span: twelve days a line would
+    // draw straight through.
+    assert_eq!(day["covered_days"], 3);
+    assert_eq!(day["span_days"], 15);
+    assert_eq!(day["missing_days"], 12);
+
+    let amount = &columns[2];
+    // Two decimals used, whatever the reader inferred for the type.
+    assert_eq!(amount["decimals"], 2);
+    assert_eq!(amount["min"], "2497.69");
+    assert_eq!(amount["max"], "6108704.0");
+    // The middle value is one the column holds, not an interpolation between
+    // two of them, so it carries no invented digits.
+    assert_eq!(amount["median"], "4994.0");
+    // Three orders of magnitude between the middle and the largest: a linear
+    // axis would round the small values to nothing.
+    assert!(
+        amount["max_over_median"].as_f64().unwrap() > 1000.0,
+        "{amount}"
+    );
+    assert_eq!(amount["nulls"], 0);
+    assert_eq!(amount["unique"], true);
+
+    let note = &columns[3];
+    assert_eq!(note["nulls"], 1);
+    assert_eq!(note["distinct"], 3);
+    // Nothing numeric or temporal is claimed about text.
+    assert!(note.get("decimals").is_none());
+    assert!(note.get("covered_days").is_none());
+    assert!(note.get("unique").is_none());
+
+    // A table in a database, named so that quoting is the only thing that
+    // makes it readable.
+    s.success(&[
+        "query",
+        "--database",
+        "orders.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE \"my orders\" AS SELECT * FROM read_csv_auto('usage.csv')",
+    ]);
+    let table = s.profile(&["profile", "my orders", "--database", "orders.duckdb"]);
+    assert_eq!(table["row_count"], 4);
+    assert_eq!(table["relation"], "\"my orders\"");
+
+    // A target that names nothing is a mistake in the command line, not a SQL
+    // failure, and the exit code says which.
+    s.error(&["profile", "no-such-file.csv"], 2, "argument");
+    s.error(&["profile"], 2, "argument");
+    s.error(&["profile", "--database", "orders.duckdb"], 2, "argument");
+    s.error(&["profile", "usage.csv", "--rows"], 2, "argument");
+    s.error(
+        &["profile", "absent", "--database", "orders.duckdb"],
+        1,
+        "sql",
     );
 }

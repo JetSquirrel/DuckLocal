@@ -58,6 +58,36 @@ ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 
 A database lock conflict is an error. Close the other writer (including the GUI), or use an authorized copy; never delete lock files or silently create a different database.
 
+## Profile a relation
+
+`ducklocal profile` answers the questions that decide a chart, a scale and a number format, before anything is built on them. `DESCRIBE` says a column is a `DOUBLE`; a profile says it uses two decimals, that its largest value is a thousand times its median, and that its dates skip eleven days in the middle.
+
+```bash
+ducklocal profile sales.csv
+ducklocal profile orders.parquet
+ducklocal profile "my orders" --database warehouse.duckdb
+```
+
+TARGET is a data file — `csv`, `tsv`, `txt`, `parquet`, `json`, `ndjson`, `jsonl` — or, with `--database`, a table or view name. A dotted name is read as `schema.table` and each part is quoted, so a name with a space or a capital letter works as written. A target that names nothing is an argument error (exit 2), not a SQL one.
+
+One JSON object comes back: `target`, `relation` (the SQL the statistics ran against), `row_count`, `elapsed_ms`, and `columns` in the relation's own order. Per column:
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `type` | as `DESCRIBE` reports them |
+| `nulls` | rows where the column is `NULL` |
+| `distinct` | exact, not estimated |
+| `unique` | present and `true` when `distinct` equals `row_count` |
+| `min`, `max` | as text, so a `DECIMAL` keeps its digits |
+| `decimals` | digits after the point the column **actually uses**, which is not its declared scale |
+| `median` | a value the column holds, not an interpolation between two of them |
+| `max_over_median` | how many times the middle value the largest one is — the number that decides a linear axis from a logarithmic one |
+| `covered_days`, `span_days`, `missing_days` | days the column names, days between its ends, and the difference: `0` is a continuous series, anything else is holes a line would draw over |
+
+`decimals`, `median` and `max_over_median` appear on numeric columns; the day fields on dates and timestamps. `LIST`, `STRUCT`, `MAP` and `UNION` columns report `nulls` only — `min` and `max` are not defined on them.
+
+Statistics are exact and read the whole relation, so a profile costs a full scan. `--limit` does not apply: a profile of a sample is not a profile.
+
 ## JSON contract
 
 Successful queries write exactly one JSON object to stdout, followed by a newline:

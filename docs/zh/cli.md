@@ -58,6 +58,36 @@ ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 
 数据库锁冲突直接报错。关闭其他写入者（包括 GUI），或使用授权的副本；不要删锁文件、不要偷偷换成别的数据库。
 
+## 数据画像
+
+`ducklocal profile` 回答的是「该画什么图、用什么刻度、怎么格式化数字」这一类在动手之前必须确定的问题。`DESCRIBE` 只告诉你某列是 `DOUBLE`；画像会告诉你它实际只用两位小数、最大值是中位数的一千倍、日期在中间断了十一天。
+
+```bash
+ducklocal profile sales.csv
+ducklocal profile orders.parquet
+ducklocal profile "my orders" --database warehouse.duckdb
+```
+
+TARGET 是数据文件（`csv`、`tsv`、`txt`、`parquet`、`json`、`ndjson`、`jsonl`），或者配合 `--database` 时是表名/视图名。带点的名字按 `schema.table` 拆开并逐段加引号，所以带空格或大写的名字可以照原样写。TARGET 指向不存在的东西是参数错误（退出码 2），不是 SQL 错误。
+
+返回一个 JSON 对象：`target`、`relation`（统计实际执行的 SQL 关系）、`row_count`、`elapsed_ms`，以及按关系自身列序排列的 `columns`。每列包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `name`、`type` | 与 `DESCRIBE` 一致 |
+| `nulls` | 该列为 `NULL` 的行数 |
+| `distinct` | 精确值，不是估算 |
+| `unique` | 当 `distinct` 等于 `row_count` 时出现且为 `true` |
+| `min`、`max` | 以文本给出，`DECIMAL` 因此不丢位数 |
+| `decimals` | 小数点后**实际用到**的位数，不是声明的 scale |
+| `median` | 该列真实存在的一个值，不是两个值之间的插值 |
+| `max_over_median` | 最大值是中位数的多少倍 —— 决定用线性刻度还是对数刻度的那个数 |
+| `covered_days`、`span_days`、`missing_days` | 该列出现过的天数、首尾之间的天数、以及两者之差：`0` 表示连续，非零就是折线会直接画过去的空洞 |
+
+`decimals`、`median`、`max_over_median` 只出现在数值列，日期三项只出现在 DATE/TIMESTAMP 列。`LIST`、`STRUCT`、`MAP`、`UNION` 列只报 `nulls` —— 这些类型没有定义 `min`/`max`。
+
+统计是精确的，会完整扫描整个关系，所以一次画像等于一次全表扫描。`--limit` 对它不适用：对样本做画像不算画像。
+
 ## JSON 契约
 
 成功时 stdout 为单个 JSON 对象，末尾换行：

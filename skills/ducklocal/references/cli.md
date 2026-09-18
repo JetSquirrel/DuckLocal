@@ -18,6 +18,21 @@ Use exactly one `--sql`/`--sql-file`. A file is UTF-8, `-` means stdin. Exactly 
 
 Without `--database`, each call has a new in-memory database. `--database PATH` opens an existing file read-only. `--read-write` requires `--database` and authorizes database writes/creation at that path, not parent directory creation. Do not silently fall back to memory after open/lock errors. No GUI history/settings/registered views are read or changed. A GUI path named `query` uses `./query`.
 
+## Profile a relation
+
+```bash
+ducklocal profile sales.csv
+ducklocal profile "my orders" --database warehouse.duckdb
+```
+
+TARGET is a data file or, with `--database`, a table/view name; a dotted name is `schema.table` and each part is quoted. It takes no other options. A target that names nothing is an argument error (exit 2).
+
+One JSON object: `target`, `relation`, `row_count`, `elapsed_ms`, and `columns` in relation order. Per column `name`, `type`, `nulls`, `distinct`, `unique` (only when `distinct` equals `row_count`), `min`, `max` as text; numeric columns add `decimals` (the digits after the point actually used, not the declared scale), `median` (a value the column holds, never an interpolation) and `max_over_median`; DATE/TIMESTAMP columns add `covered_days`, `span_days` and `missing_days`. `LIST`/`STRUCT`/`MAP`/`UNION` columns report `nulls` only.
+
+Read it before choosing how to present a column. `missing_days` above 0 means the series has holes, so a continuous line or an evenly spaced axis would misstate it. A large `max_over_median` means a linear scale rounds the small values to nothing. `decimals` is what a number should be formatted to; `DECIMAL(38,10)` holding two-decimal money reports 2.
+
+Statistics are exact and scan the whole relation; `--limit` does not apply. It is a read, but a full one: on a very large file it costs a full pass.
+
 ## Discover, aggregate, convert
 
 Confirm the actual schema before using `amount`:
