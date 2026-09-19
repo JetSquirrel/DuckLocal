@@ -43,6 +43,26 @@ ducklocal './data/2026-0*/*.parquet'
 
 未加引号的通配符会先被你的 shell 展开，DuckLocal 看到的是展开后的结果，这没有问题 —— 只有当你希望由 DuckLocal 自己做展开时才需要加引号（例如 shell 匹配不到、否则会直接报错的情况）。
 
+## 一次读取多个 CSV
+
+DuckLocal 挂载的每个文件都是独立的视图，各自有各自嗅探出的 schema，所以两个互不一致的 CSV 不会互相影响。陷阱出现在一条 SQL 同时读取多个文件时：
+
+```sql
+SELECT * FROM read_csv('data/*.csv', union_by_name = true)
+```
+
+- **各文件的类型嗅探可能互相矛盾。** 读取函数根据样本推断列类型；某列在绝大多数文件里都是数值，却在某一个文件里混进了字符串 `'NULL'`，整个读取就会因转换错误而失败——此时在 `SELECT` 里做 cast 已经太迟，因为出错的是读取本身。应把所有列按文本读入，再在 SQL 里转换：
+
+  ```sql
+  SELECT try_cast(amount AS DOUBLE) AS amount
+  FROM read_csv('data/*.csv', union_by_name = true, all_varchar = true)
+  ```
+
+  `union_by_name = true` 同时还能容忍各文件列集合不一致的情况。
+- **字符串 `'NULL'` 不是 `NULL`。** CSV 里的字面量 `'NULL'`（或 `'N/A'`、`'null'`）只是普通文本，`WHERE amount IS NOT NULL` 过滤不掉它。请用 `NULLIF(amount, 'NULL')`，或者 `WHERE amount <> 'NULL'`。
+
+两个修法可以合并：`try_cast(NULLIF(amount, 'NULL') AS DOUBLE)`。
+
 ## 数据库文件
 
 任何**存在**且不是数据文件的路径，都会被当作 DuckDB 数据库打开，而不是作为视图挂载。扩展名无关紧要：`.db`、`.duckdb` 乃至 `.md` 路径都会被当作数据库，能否真正打开由 DuckDB 决定。

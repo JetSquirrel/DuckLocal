@@ -55,6 +55,12 @@ A reload that fails **keeps the last panel that loaded** and reports the error a
 inside the tab. A load that fails on a panel that has never loaded shows the error as the
 tab's whole body instead.
 
+A reload restarts the panel's JavaScript, not its connection. The panel connection is one
+long-lived connection shared by every panel, so state a panel made on it — an `ATTACH`, a
+`SET`, a `TEMP` table — is still there after the reload. Write a panel's setup so that
+running it twice is safe (`ATTACH IF NOT EXISTS …`, `CREATE OR REPLACE TEMP TABLE …`)
+rather than assuming a clean connection on every load.
+
 ## Host functions
 
 Import them from the `ducklocal` module:
@@ -83,8 +89,10 @@ interface CatalogEntry {
 }
 ```
 
-Every table and view of the current database except DuckDB's own catalogs
-(`information_schema`, `pg_catalog`, `system`). Tables come before views. DuckDB resolves
+Every table and view of every database on the connection — the one the window opened and
+anything `ATTACH`ed, by the window or by the panel itself — except DuckDB's own catalogs
+(`information_schema`, `pg_catalog`, `system`). `entry.database` says which database an
+entry belongs to; use it when you qualify a name. Tables come before views. DuckDB resolves
 identifiers case-insensitively and keeps tables and views in one namespace, so qualify a
 name when you build SQL from it, and quote it with `sqlIdentifier`.
 
@@ -102,7 +110,8 @@ interface QueryResult {
 }
 ```
 
-- `limit` defaults to **1000** and is clamped to 1…100000. A 2,000,000-cell budget applies
+- `limit` defaults to **1000**; a value below 1 is refused and anything above 100000 is
+  clamped. A 2,000,000-cell budget applies
   as well, so a very wide result returns fewer rows than `limit`. **Read `truncated`.**
 - `type` is the Arrow type as rendered by the app, e.g. `Int64`, `Utf8`,
   `Decimal(38, 10)`, `Timestamp(Microsecond, None)`.
@@ -223,9 +232,11 @@ What a panel does **not** get is anything else the process could do:
 
 ## Export a panel as HTML
 
-`ducklocal dash export --html <folder>` runs a panel once and writes what it asked the database into one self-contained HTML file, for sending a panel's numbers to someone who does not have DuckLocal. The command, its options and its exit codes are in [the CLI guide](cli.md#export-a-panel-as-a-static-html-file).
+`ducklocal dash export --html <folder>` runs a panel once and writes what it asked the database into one self-contained HTML file, for sending a panel's numbers to someone who does not have DuckLocal. The command, its options and its exit codes are in [the CLI guide](cli.md#export-a-panel-as-a-static-html-file). The capture ends when the panel has gone quiet, or at `--timeout` seconds (default 15), whichever comes first; in the deadline case the JSON's `stop_reason` is `deadline` and the report carries a visible warning that it may be incomplete.
 
-The report is the panel's data, not its interface. It holds the statements `query()` issued while the panel loaded, each with its result as a table, and a bar chart where a result is a name and a number per row; a `catalog()` call becomes an appendix of tables and columns. It does not hold the panel's layout or its charts, because a panel draws native components and their contents are decided while they are laid out — nothing describes a chart's bars well enough to reproduce them — so the file does not pretend to be the panel.
+The report is the panel's data, not its interface. Only what `query()` returned is exported, in call order, one section per distinct statement — an identical statement run again collapses into its section, marked as run that many times — and every call is captured, including statements that are not `SELECT`, such as `ATTACH`. A `catalog()` call becomes an appendix of tables and columns rather than a numbered statement. A leading `-- title: …` comment on the statement's first line names its section ("Statement N — title"); the SQL itself shows verbatim. Each result shows as a table, with an inline bar chart above it when the result is a label and a number per row: exactly two columns, at most 25 rows, and a non-negative numeric second column (the first column labels the bars). Anything else is only a table.
+
+What the report does **not** hold is anything the panel drew: KPI cards, charts, and tables built from JavaScript constants never reach the file, because the export records queries, not the render — a panel draws native components and their contents are decided while they are laid out, so nothing describes a chart's bars well enough to reproduce them. Constants a report must show can be sent through SQL instead: `SELECT * FROM (VALUES ('Q1', 120), ('Q2', 95)) AS t(quarter, total)`.
 
 Because it is the loading state, a statement a panel only runs on a click is not in the report, and neither is anything after a reload. The panel's JavaScript runs with the same privileges as always: exporting is running the panel, exactly as opening it in a tab is.
 

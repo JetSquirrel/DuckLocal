@@ -79,6 +79,16 @@ ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 
 A database lock conflict is an error. Close the other writer (including the GUI), or use an authorized copy; never delete lock files or silently create a different database.
 
+## JSONL and nested JSON
+
+`read_ndjson_objects` is the reader for newline-delimited JSON (one object per line, `.jsonl`/`.ndjson`); `read_json`/`read_json_auto` read JSON documents (an array or a single object). Name the reader explicitly for a JSONL file rather than relying on auto-detection. `json_extract_string(col, '$.a.b[0].c')` walks a nested path — object keys and array indexes — and answers VARCHAR:
+
+```bash
+ducklocal query --sql "SELECT json_extract_string(event, '$.payload.items[0].sku') AS sku, count(*) AS n FROM read_ndjson_objects('events.jsonl') GROUP BY 1 ORDER BY n DESC"
+```
+
+Use `json_extract` instead when the leaf is not a string and you want it as JSON.
+
 ## Profile a relation
 
 `ducklocal profile` answers the questions that decide a chart, a scale and a number format, before anything is built on them. `DESCRIBE` says a column is a `DOUBLE`; a profile says it uses two decimals, that its largest value is a thousand times its median, and that its dates skip eleven days in the middle.
@@ -121,15 +131,16 @@ ducklocal dash export --html --out report.html --database warehouse.duckdb panel
 - `--html` is required, and is the only format there is. PANEL is a panel folder (one holding `main.js`) or its `main.js`, resolved the way the app resolves it; a path that names neither is an argument error (exit 2).
 - `--out FILE` names the destination and defaults to `./<panel folder>.html` in the working directory. An existing file is refused unless `--force` is given — checked before the panel runs, so a refusal costs nothing.
 - `--database PATH` and `--read-write` mean exactly what they mean for `query`: an existing file, read-only unless asked otherwise, in memory when omitted. The panel runs on that connection, so a panel that writes needs `--read-write`.
-- The command starts the window platform, because a panel renders and rendering needs a window. The window is hidden and never appears; the command finishes when the panel has stopped asking the database, or after 15 seconds.
+- `--timeout SECONDS` is a positive integer, default 15: the capture stops when the panel has stopped asking the database for a moment, or at the deadline, whichever comes first.
+- The command starts the window platform, because a panel renders and rendering needs a window. The window is hidden and never appears.
 
 One JSON object goes to stdout:
 
 ```json
-{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630}
+{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630,"stop_reason":"settled"}
 ```
 
-`queries` counts the captured statements, `rows` the rows across those that succeeded, and `panel_errors` what the panel logged as an error while it ran.
+`queries` counts the captured statements, `rows` the rows across those that succeeded, and `panel_errors` what the panel logged as an error while it ran. `stop_reason` is `settled` when the panel went quiet on its own, `deadline` when `--timeout` cut the capture short — then the report may be missing statements, and the HTML shows a visible warning saying so.
 
 The report holds the panel folder, the database it ran against, the export time, and one section per statement: the SQL, its columns and their Arrow types, the result as a table, and a bar chart when a result is a name and a number per row. A `catalog()` call becomes an appendix of tables, views and columns. Statements a panel runs more than once appear once, with the last result.
 
@@ -170,7 +181,7 @@ Cell encodings:
 | Map | `{"encoding":"map","entries":[[KEY,VALUE],...]}`; not a JSON object, so keys retain their types |
 | Union | `{"encoding":"union-value","value":VALUE}`; active value only, member tag is not retained |
 
-Temporal counts avoid dropping fractional precision; date/timestamp infinity sentinels remain raw counts, not formatted dates. Arrow metadata carries any timezone. Because the pinned DuckDB Arrow wrapper cannot distinguish nested HUGEINT, UHUGEINT, and DECIMAL(38,0), non-null occurrences produce a clear error instead of silently changing sign or precision. Explicitly cast such fields to VARCHAR in SQL. Unknown unsupported types also produce an error; do not mistake an error for an empty result. Union encoding is an active-value representation, not a lossless union round trip.
+Temporal counts avoid dropping fractional precision; date/timestamp infinity sentinels remain raw counts, not formatted dates. Arrow metadata carries any timezone. When a person reads the output rather than a program — a report, a dashboard — `CAST(made_at AS VARCHAR)` in SQL returns the ISO text instead of the count; `--format md` already renders dates and timestamps readably without a cast. Because the pinned DuckDB Arrow wrapper cannot distinguish nested HUGEINT, UHUGEINT, and DECIMAL(38,0), non-null occurrences produce a clear error instead of silently changing sign or precision. Explicitly cast such fields to VARCHAR in SQL. Unknown unsupported types also produce an error; do not mistake an error for an empty result. Union encoding is an active-value representation, not a lossless union round trip.
 
 Errors write one JSON object to **stderr**, leaving stdout empty:
 

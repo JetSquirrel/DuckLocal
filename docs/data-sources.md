@@ -55,6 +55,34 @@ Unquoted patterns are expanded by your shell before DuckLocal sees them, which
 is fine — quote them only when you want DuckLocal to do the expansion (for
 example when a shell has no match and would otherwise error out).
 
+## Many CSV files at once
+
+Each file DuckLocal attaches becomes its own view with its own sniffed schema,
+so two CSVs that disagree never break each other. The pitfalls show up when one
+SQL read spans many files:
+
+```sql
+SELECT * FROM read_csv('data/*.csv', union_by_name = true)
+```
+
+- **Type sniffing can disagree across files.** The reader infers a column's
+  type from a sample; a column that is numeric everywhere but holds a stray
+  `'NULL'` string in one file fails the whole read with a conversion error, and
+  a cast in the `SELECT` list comes too late — the read itself errors. Read
+  every column as text and cast in SQL instead:
+
+  ```sql
+  SELECT try_cast(amount AS DOUBLE) AS amount
+  FROM read_csv('data/*.csv', union_by_name = true, all_varchar = true)
+  ```
+
+  `union_by_name = true` also tolerates files whose column sets differ.
+- **The string `'NULL'` is not `NULL`.** A literal `'NULL'` (or `'N/A'`,
+  `'null'`) in a CSV is ordinary text, so `WHERE amount IS NOT NULL` does not
+  filter it. Use `NULLIF(amount, 'NULL')`, or `WHERE amount <> 'NULL'`.
+
+The two fixes compose: `try_cast(NULLIF(amount, 'NULL') AS DOUBLE)`.
+
 ## Database files
 
 Any path that **exists** and is not a data file is opened as a DuckDB database

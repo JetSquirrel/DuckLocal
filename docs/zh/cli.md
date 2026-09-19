@@ -79,6 +79,16 @@ ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 
 数据库锁冲突直接报错。关闭其他写入者（包括 GUI），或使用授权的副本；不要删锁文件、不要偷偷换成别的数据库。
 
+## JSONL 与嵌套 JSON
+
+`read_ndjson_objects` 是换行分隔 JSON（每行一个对象，`.jsonl`/`.ndjson`）的读取函数；`read_json`/`read_json_auto` 读取的是 JSON 文档（一个数组或单个对象）。读 JSONL 文件时请显式写出读取函数，不要依赖自动探测。`json_extract_string(col, '$.a.b[0].c')` 沿嵌套路径——对象键与数组下标——取值并返回 VARCHAR：
+
+```bash
+ducklocal query --sql "SELECT json_extract_string(event, '$.payload.items[0].sku') AS sku, count(*) AS n FROM read_ndjson_objects('events.jsonl') GROUP BY 1 ORDER BY n DESC"
+```
+
+叶子不是字符串、想要 JSON 形式时改用 `json_extract`。
+
 ## 数据画像
 
 `ducklocal profile` 回答的是「该画什么图、用什么刻度、怎么格式化数字」这一类在动手之前必须确定的问题。`DESCRIBE` 只告诉你某列是 `DOUBLE`；画像会告诉你它实际只用两位小数、最大值是中位数的一千倍、日期在中间断了十一天。
@@ -121,15 +131,16 @@ ducklocal dash export --html --out report.html --database warehouse.duckdb panel
 - `--html` 必填，也是目前唯一的格式。PANEL 是面板目录（其中含 `main.js`）或指向该 `main.js`，按 app 的解析方式解析；两者都不是则报参数错误（退出码 2）。
 - `--out FILE` 指定输出路径，默认写到工作目录下的 `./<面板目录名>.html`。目标已存在时必须加 `--force`，且这项检查发生在运行面板之前——拒绝不花任何代价。
 - `--database PATH` 与 `--read-write` 的含义与 `query` 完全一致：已有文件默认只读，省略则为内存库。面板就在这条连接上运行，所以需要写库的面板要加 `--read-write`。
-- 该命令会启动窗口平台：面板要渲染，渲染需要窗口。窗口是隐藏的、不会出现；面板不再查询后（或 15 秒后）命令结束。
+- `--timeout SECONDS` 为正整数，默认 15：面板停止查询片刻后捕获结束，或到达时限结束，以先到者为准。
+- 该命令会启动窗口平台：面板要渲染，渲染需要窗口。窗口是隐藏的、不会出现。
 
 stdout 为单个 JSON 对象：
 
 ```json
-{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630}
+{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630,"stop_reason":"settled"}
 ```
 
-`queries` 是捕获到的语句数，`rows` 是其中成功语句的行数合计，`panel_errors` 是面板运行期间记录的报错条数。
+`queries` 是捕获到的语句数，`rows` 是其中成功语句的行数合计，`panel_errors` 是面板运行期间记录的报错条数。`stop_reason` 为 `settled` 表示面板自己安静了下来，`deadline` 表示被 `--timeout` 时限截断——此时报告可能缺少语句，HTML 中会出现明显的警告说明这一点。
 
 报告包含：面板目录、所用数据库、导出时间，以及每条语句一节——SQL、列名与 Arrow 类型、结果表格，并在结果是「每行一个名称 + 一个数值」时附一张柱状图。`catalog()` 调用会成为一节表/视图/列清单。同一语句被反复执行只出现一次，展示最后一次结果。
 
@@ -170,7 +181,7 @@ stdout 为单个 JSON 对象：
 | Map | `{"encoding":"map","entries":[[KEY,VALUE],...]}`，键保留类型，不转换为 JSON 对象 |
 | Union | `{"encoding":"union-value","value":VALUE}`，仅活动值，不保留成员标签 |
 
-时间使用原始计数，不丢小数精度；日期/时间戳的无穷哨兵也保留为原始计数，不格式化。时区信息在 Arrow 元数据中。当前 DuckDB Arrow 封装无法区分嵌套 HUGEINT、UHUGEINT 和 DECIMAL(38,0)，遇到这类非空值会明确报错，不悄悄改符号或精度；请在 SQL 中显式 CAST 为 VARCHAR。未知不支持类型也会报错，不能当空结果。Union 只是活动值表示，不能用于无损往返恢复 union 标签。
+时间使用原始计数，不丢小数精度；日期/时间戳的无穷哨兵也保留为原始计数，不格式化。时区信息在 Arrow 元数据中。当读输出的是人而不是程序时——报表、看板——在 SQL 里 `CAST(made_at AS VARCHAR)` 可以得到 ISO 文本而不是计数；`--format md` 无需 cast 就已把日期和时间戳渲染得可读。当前 DuckDB Arrow 封装无法区分嵌套 HUGEINT、UHUGEINT 和 DECIMAL(38,0)，遇到这类非空值会明确报错，不悄悄改符号或精度；请在 SQL 中显式 CAST 为 VARCHAR。未知不支持类型也会报错，不能当空结果。Union 只是活动值表示，不能用于无损往返恢复 union 标签。
 
 错误时 stdout 留空，**stderr** 输出单个 JSON 对象：
 

@@ -41,9 +41,10 @@ Statistics are exact and scan the whole relation; `--limit` does not apply. It i
 ```bash
 ducklocal dash export --html panels/sales
 ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
+ducklocal dash export --html --timeout 60 panels/sales
 ```
 
-Runs an analysis panel once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<panel folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. One JSON object on stdout names the file and counts `queries`, `rows` and `panel_errors`. The report holds the panel's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `panel` means the panel failed; when it failed after loading, the report is still written and the message names it.
+Runs an analysis panel once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<panel folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. `--timeout SECONDS` is a positive integer, default 15: the capture stops when the panel has gone quiet, or at the deadline, whichever comes first. One JSON object on stdout names the file and counts `queries`, `rows` and `panel_errors`; its `stop_reason` is `"settled"` when the panel went quiet in time and `"deadline"` when the time limit cut the capture short — then the report may be missing statements, and the HTML carries a visible warning saying so. The report holds the panel's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `panel` means the panel failed; when it failed after loading, the report is still written and the message names it.
 
 ## Discover, aggregate, convert
 
@@ -72,6 +73,16 @@ ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 
 CSV, JSON, and Parquet work with bundled support; no extra DuckDB CLI is required. Extensions are not automatically installed, though already installed extensions may autoload. Explicit INSTALL/LOAD requires authorization. Read-only database mode does not prevent filesystem/network side effects: COPY may write output even from a read-only database. Never automatically retry writes.
 
+## JSONL and nested JSON
+
+`read_ndjson_objects` is the reader for newline-delimited JSON (one object per line, `.jsonl`/`.ndjson`); `read_json`/`read_json_auto` read JSON documents (an array or a single object). Name the reader explicitly for a JSONL file rather than relying on auto-detection. `json_extract_string(col, '$.a.b[0].c')` walks a nested path — object keys and array indexes — and answers VARCHAR:
+
+```bash
+ducklocal query --sql "SELECT json_extract_string(event, '$.payload.items[0].sku') AS sku, count(*) AS n FROM read_ndjson_objects('events.jsonl') GROUP BY 1 ORDER BY n DESC"
+```
+
+Use `json_extract` instead when the leaf is not a string and you want it as JSON.
+
 ## Output
 
 Success is one JSON object on stdout:
@@ -91,6 +102,8 @@ Columns/row arrays preserve order and duplicate names. `type` uses Arrow debug n
 - List/array → recursively encoded arrays. Struct → `{"encoding":"struct","fields":[["name",VALUE],...]}`. Map → `{"encoding":"map","entries":[[KEY,VALUE],...]}`. Nested NULL remains null, never the string `"NULL"`.
 - Union → `{"encoding":"union-value","value":VALUE}`; active value only, not the member tag, so not a lossless union round trip.
 - Non-null nested HUGEINT/UHUGEINT/DECIMAL(38,0) fails because the pinned Arrow wrapper cannot reliably distinguish them. Explicitly CAST these fields to VARCHAR in SQL rather than risk precision/sign loss. Other unsupported types fail clearly too.
+
+Temporal values are counts, not text. When a person reads the output rather than a program — a dashboard, a report — CAST the column to VARCHAR in SQL (`CAST(made_at AS VARCHAR)`) for the ISO form. (`--format md` already renders dates and timestamps readably.)
 
 Check exit status before parsing. Codes: 0 success, 2 arguments/statement count, 1 SQL/database/I/O/output error. Errors are one object on stderr with empty stdout:
 
