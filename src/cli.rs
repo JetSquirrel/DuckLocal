@@ -45,6 +45,80 @@ impl CliError {
     }
 }
 
+/// One flag a command accepts: its name and whether it takes a value.
+pub(crate) struct FlagSpec {
+    pub name: &'static str,
+    pub takes_value: bool,
+}
+
+/// A walked argument: a recognized flag with its value, or a positional the
+/// command interprets itself.
+pub(crate) enum Arg {
+    Flag(&'static str, Option<OsString>),
+    Positional(OsString),
+}
+
+/// Walk `args` against `spec` with the checks every command shares —
+/// unknown, duplicate, and missing-value errors worded for `command`.
+///
+/// A value is missing when the next argument is absent, empty, exactly one of
+/// the known flags or `--help`, or — unless the flag is in `dash_value_ok`
+/// (`--sql`, whose text may legitimately start with dashes) — starts with
+/// `--`. Anything not starting with `--` is a positional for the command to
+/// handle itself.
+pub(crate) fn parse_args(
+    command: &str,
+    args: &[OsString],
+    spec: &[FlagSpec],
+    dash_value_ok: &[&str],
+) -> Result<Vec<Arg>, CliError> {
+    let mut parsed = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let text = arg
+            .to_str()
+            .ok_or_else(|| CliError::argument("Option names must be UTF-8"))?;
+        if !text.starts_with("--") {
+            parsed.push(Arg::Positional(arg.clone()));
+            continue;
+        }
+        let Some(flag) = spec.iter().find(|flag| flag.name == text) else {
+            return Err(CliError::argument(format!("Unknown {command} option: {text}")));
+        };
+        if !seen.insert(flag.name) {
+            return Err(CliError::argument(format!("Duplicate option: {}", flag.name)));
+        }
+        if !flag.takes_value {
+            parsed.push(Arg::Flag(flag.name, None));
+            continue;
+        }
+        let value = args
+            .next()
+            .filter(|value| !value.is_empty())
+            .filter(|value| {
+                let text = value.to_str();
+                text != Some("--help") && !spec.iter().any(|flag| Some(flag.name) == text)
+            })
+            .filter(|value| {
+                dash_value_ok.contains(&flag.name) || !value.to_string_lossy().starts_with("--")
+            })
+            .ok_or_else(|| CliError::argument(format!("Missing value for {}", flag.name)))?;
+        parsed.push(Arg::Flag(flag.name, Some(value.clone())));
+    }
+    Ok(parsed)
+}
+
+/// The path half of `--database`: `:memory:` is the default, not a value.
+pub(crate) fn database_path(value: &OsString) -> Result<PathBuf, CliError> {
+    if value == ":memory:" {
+        return Err(CliError::argument(
+            "Omit --database for an in-memory database",
+        ));
+    }
+    Ok(PathBuf::from(value))
+}
+
 #[derive(Debug)]
 struct Options {
     sql: Option<String>,
@@ -66,6 +140,38 @@ enum Format {
     Markdown,
 }
 
+const QUERY_SPEC: &[FlagSpec] = &[
+    FlagSpec {
+        name: "--sql",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--sql-file",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--database",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--read-write",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--limit",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--format",
+        takes_value: true,
+    },
+];
+
+const PROFILE_SPEC: &[FlagSpec] = &[FlagSpec {
+    name: "--database",
+    takes_value: true,
+}];
+
 fn parse(args: &[OsString]) -> Result<Options, CliError> {
     let mut options = Options {
         sql: None,
@@ -75,71 +181,29 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
         limit: 1000,
         format: Format::Json,
     };
-    let mut seen = std::collections::HashSet::new();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let flag = arg
-            .to_str()
-            .ok_or_else(|| CliError::argument("Option names must be UTF-8"))?;
-        if !matches!(
-            flag,
-            "--sql" | "--sql-file" | "--database" | "--read-write" | "--limit" | "--format"
-        ) {
-            return Err(CliError::argument(format!("Unknown query option: {flag}")));
-        }
-        if !seen.insert(flag) {
-            return Err(CliError::argument(format!("Duplicate option: {flag}")));
-        }
-        if flag == "--read-write" {
-            options.read_write = true;
-            continue;
-        }
-        let value = args
-            .next()
-            .ok_or_else(|| CliError::argument(format!("Missing value for {flag}")))?;
-        if value.is_empty()
-            || matches!(
-                value.to_str(),
-                Some(
-                    "--sql"
-                        | "--sql-file"
-                        | "--database"
-                        | "--read-write"
-                        | "--limit"
-                        | "--format"
-                        | "--help"
-                )
-            )
-            || (flag != "--sql" && value.to_string_lossy().starts_with("--"))
-        {
-            return Err(CliError::argument(format!("Missing value for {flag}")));
-        }
-        match flag {
-            "--sql" => {
+    for arg in parse_args("query", args, QUERY_SPEC, &["--sql"])? {
+        match arg {
+            Arg::Flag("--sql", Some(value)) => {
                 options.sql = Some(
                     value
                         .to_str()
                         .ok_or_else(|| CliError::argument("SQL must be UTF-8"))?
                         .to_string(),
-                )
+                );
             }
-            "--sql-file" => options.sql_file = Some(value.into()),
-            "--database" => {
-                if value == ":memory:" {
-                    return Err(CliError::argument(
-                        "Omit --database for an in-memory database",
-                    ));
-                }
-                options.database = Some(value.into());
+            Arg::Flag("--sql-file", Some(value)) => options.sql_file = Some(value.into()),
+            Arg::Flag("--database", Some(value)) => {
+                options.database = Some(database_path(&value)?);
             }
-            "--format" => {
+            Arg::Flag("--read-write", None) => options.read_write = true,
+            Arg::Flag("--format", Some(value)) => {
                 options.format = match value.to_str() {
                     Some("json") => Format::Json,
                     Some("md") => Format::Markdown,
                     _ => return Err(CliError::argument("--format must be json or md")),
-                }
+                };
             }
-            "--limit" => {
+            Arg::Flag("--limit", Some(value)) => {
                 let text = value.to_str().unwrap_or("");
                 options.limit = text
                     .parse()
@@ -150,7 +214,18 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                         CliError::argument("--limit must be a positive integer fitting usize")
                     })?;
             }
-            _ => unreachable!(),
+            Arg::Positional(value) => {
+                return Err(CliError::argument(format!(
+                    "Unknown query option: {}",
+                    value.to_string_lossy()
+                )));
+            }
+            _ => {
+                return Err(CliError::failure(
+                    "internal",
+                    "the argument walker produced a flag query does not declare",
+                ));
+            }
         }
     }
     if options.sql.is_some() == options.sql_file.is_some() {
@@ -297,9 +372,8 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
 /// One positional argument, because the thing being profiled is the whole
 /// request; `--database` only says where to look for a name.
 fn profile(args: &[OsString]) -> Result<String, CliError> {
-    let mut args = args.iter();
-    let target = args
-        .next()
+    let (target, rest) = args
+        .split_first()
         .ok_or_else(|| CliError::argument("Name a data file, a table or a view to profile"))?;
     let target = target
         .to_str()
@@ -310,28 +384,20 @@ fn profile(args: &[OsString]) -> Result<String, CliError> {
         ));
     }
     let mut database = None;
-    while let Some(flag) = args.next() {
-        match flag.to_str() {
-            Some("--database") => {
-                if database.is_some() {
-                    return Err(CliError::argument("Duplicate option: --database"));
-                }
-                let value = args
-                    .next()
-                    .filter(|value| !value.is_empty() && !value.to_string_lossy().starts_with("--"))
-                    .ok_or_else(|| CliError::argument("Missing value for --database"))?;
-                if value == ":memory:" {
-                    return Err(CliError::argument(
-                        "Omit --database for an in-memory database",
-                    ));
-                }
-                database = Some(PathBuf::from(value));
-            }
-            _ => {
+    for arg in parse_args("profile", rest, PROFILE_SPEC, &[])? {
+        match arg {
+            Arg::Flag("--database", Some(value)) => database = Some(database_path(&value)?),
+            Arg::Positional(value) => {
                 return Err(CliError::argument(format!(
                     "Unknown profile option: {}",
-                    flag.to_string_lossy()
-                )))
+                    value.to_string_lossy()
+                )));
+            }
+            _ => {
+                return Err(CliError::failure(
+                    "internal",
+                    "the argument walker produced a flag profile does not declare",
+                ));
             }
         }
     }

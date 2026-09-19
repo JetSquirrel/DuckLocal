@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::cli::{CliError, HELP};
+use crate::cli::{parse_args, Arg, CliError, FlagSpec, HELP};
 
 struct Request {
     /// The path as given; resolved to a panel folder before anything runs.
@@ -100,6 +100,29 @@ fn export(args: &[OsString]) -> Result<(), CliError> {
     )
 }
 
+const SPEC: &[FlagSpec] = &[
+    FlagSpec {
+        name: "--html",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--force",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--read-write",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--out",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--database",
+        takes_value: true,
+    },
+];
+
 fn parse(args: &[OsString]) -> Result<Request, CliError> {
     let mut html = false;
     let mut out = None;
@@ -107,60 +130,28 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
     let mut read_write = false;
     let mut force = false;
     let mut panel = None;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        let flag = arg
-            .to_str()
-            .ok_or_else(|| CliError::argument("Option names must be UTF-8"))?;
-        match flag {
-            "--html" => {
-                if html {
-                    return Err(CliError::argument("Duplicate option: --html"));
-                }
-                html = true;
+    for arg in parse_args("dash", args, SPEC, &[])? {
+        match arg {
+            Arg::Flag("--html", None) => html = true,
+            Arg::Flag("--force", None) => force = true,
+            Arg::Flag("--read-write", None) => read_write = true,
+            Arg::Flag("--out", Some(value)) => out = Some(PathBuf::from(value)),
+            Arg::Flag("--database", Some(value)) => {
+                database = Some(crate::cli::database_path(&value)?);
             }
-            "--force" => {
-                if force {
-                    return Err(CliError::argument("Duplicate option: --force"));
-                }
-                force = true;
-            }
-            "--read-write" => {
-                if read_write {
-                    return Err(CliError::argument("Duplicate option: --read-write"));
-                }
-                read_write = true;
-            }
-            "--out" | "--database" => {
-                let value = args
-                    .next()
-                    .filter(|value| !value.is_empty() && !value.to_string_lossy().starts_with("--"))
-                    .ok_or_else(|| CliError::argument(format!("Missing value for {flag}")))?;
-                let slot = if flag == "--out" {
-                    &mut out
-                } else {
-                    if value == ":memory:" {
-                        return Err(CliError::argument(
-                            "Omit --database for an in-memory database",
-                        ));
-                    }
-                    &mut database
-                };
-                if slot.is_some() {
-                    return Err(CliError::argument(format!("Duplicate option: {flag}")));
-                }
-                *slot = Some(PathBuf::from(value));
-            }
-            _ if flag.starts_with("--") => {
-                return Err(CliError::argument(format!("Unknown dash option: {flag}")))
-            }
-            _ => {
+            Arg::Positional(value) => {
                 if panel.is_some() {
                     return Err(CliError::argument(
                         "Name one panel: the export writes one file for one panel",
                     ));
                 }
-                panel = Some(PathBuf::from(arg));
+                panel = Some(PathBuf::from(value));
+            }
+            _ => {
+                return Err(CliError::failure(
+                    "internal",
+                    "the argument walker produced a flag dash does not declare",
+                ));
             }
         }
     }
