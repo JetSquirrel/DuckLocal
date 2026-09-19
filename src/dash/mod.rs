@@ -31,10 +31,11 @@ struct Request {
     database: Option<PathBuf>,
     read_write: bool,
     force: bool,
+    timeout_secs: u64,
 }
 
 /// `ducklocal dash export --html [--out FILE] [--force] [--database PATH]
-/// [--read-write] PANEL`.
+/// [--read-write] [--timeout SECONDS] PANEL`.
 ///
 /// Returns only for `--help` and for a mistake in the arguments: the export
 /// itself finishes inside the application loop, where it writes the file,
@@ -95,6 +96,7 @@ fn export(args: &[OsString]) -> Result<(), CliError> {
         run::Job {
             panel: directory,
             connection,
+            timeout: std::time::Duration::from_secs(request.timeout_secs),
         },
         move |outcome| finish(&request, &panel, &database, outcome),
     )
@@ -121,6 +123,10 @@ const SPEC: &[FlagSpec] = &[
         name: "--database",
         takes_value: true,
     },
+    FlagSpec {
+        name: "--timeout",
+        takes_value: true,
+    },
 ];
 
 fn parse(args: &[OsString]) -> Result<Request, CliError> {
@@ -130,6 +136,7 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
     let mut read_write = false;
     let mut force = false;
     let mut panel = None;
+    let mut timeout_secs = run::DEFAULT_TIMEOUT.as_secs();
     for arg in parse_args("dash", args, SPEC, &[])? {
         match arg {
             Arg::Flag("--html", None) => html = true,
@@ -138,6 +145,17 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
             Arg::Flag("--out", Some(value)) => out = Some(PathBuf::from(value)),
             Arg::Flag("--database", Some(value)) => {
                 database = Some(crate::cli::database_path(&value)?);
+            }
+            Arg::Flag("--timeout", Some(value)) => {
+                let text = value.to_str().unwrap_or("");
+                timeout_secs = text
+                    .parse()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
+                    .ok_or_else(|| {
+                        CliError::argument("--timeout must be a positive integer of seconds")
+                    })?;
             }
             Arg::Positional(value) => {
                 if panel.is_some() {
@@ -183,6 +201,7 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
         database,
         read_write,
         force,
+        timeout_secs,
     })
 }
 

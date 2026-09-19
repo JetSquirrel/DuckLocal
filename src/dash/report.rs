@@ -148,6 +148,20 @@ pub fn build(report: &Report<'_>) -> String {
     out
 }
 
+/// A statement's own name for its section, from a leading `-- title: …`
+/// comment: a report of ten "Statement N" sections reads as a list of
+/// mysteries. Only the first line is considered, and only when it is exactly
+/// that comment — anything else is SQL, not metadata.
+fn title_of(sql: &str) -> Option<String> {
+    let first = sql.lines().next()?.trim();
+    let title = first.strip_prefix("--")?.trim().strip_prefix("title:")?.trim();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.to_string())
+    }
+}
+
 fn write_query(
     out: &mut String,
     index: usize,
@@ -157,7 +171,10 @@ fn write_query(
     runs: usize,
 ) {
     let _ = writeln!(out, "<section class=\"statement\">");
-    let heading = format!("Statement {index}");
+    let heading = match title_of(sql) {
+        Some(title) => format!("Statement {index} — {}", escape(&title)),
+        None => format!("Statement {index}"),
+    };
     match outcome {
         Ok(result) => {
             let rows = result.row_count;
@@ -685,8 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deadline_capture_warns_that_the_panel_may_not_be_done() {
-        let captures = [query(
+    fn a_deadline_capture_warns_that_the_panel_may_not_be_done() {        let captures = [query(
             "SELECT 1 AS n",
             Ok(result(&["n"], vec![vec![json!(1)]])),
         )];
@@ -704,6 +720,34 @@ mod tests {
             stop_reason: "deadline",
         });
         assert!(html.contains("The capture hit the time limit"), "{html}");
+    }
+
+    #[test]
+    fn a_leading_title_comment_names_the_statement_section() {
+        let titled = document(&[query(
+            "-- title: 解码状态\nSELECT status, n FROM t",
+            Ok(result(
+                &["status", "n"],
+                vec![vec![json!("done"), json!(3)]],
+            )),
+        )]);
+        assert!(titled.contains("Statement 1 — 解码状态"), "{titled}");
+        // The SQL itself still shows verbatim, comment included.
+        assert!(titled.contains("-- title: 解码状态"), "{titled}");
+
+        let untitled = document(&[query(
+            "SELECT status, n FROM t",
+            Ok(result(
+                &["status", "n"],
+                vec![vec![json!("done"), json!(3)]],
+            )),
+        )]);
+        assert!(untitled.contains("<h2>Statement 1<span"), "{untitled}");
+        // Only the first line counts, and an empty title is no title.
+        assert_eq!(title_of("SELECT 1\n-- title: late"), None);
+        assert_eq!(title_of("-- title:"), None);
+        assert_eq!(title_of("--title: missing space is fine"), 
+            Some("missing space is fine".to_string()));
     }
 
     #[test]

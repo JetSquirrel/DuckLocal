@@ -733,6 +733,7 @@ export default class App extends View {
     assert_eq!(report["queries"], 2);
     assert_eq!(report["rows"], 2);
     assert_eq!(report["panel_errors"], 0);
+    assert_eq!(report["stop_reason"], "settled");
     assert_eq!(
         report["panel"],
         s.0.join("panel").canonicalize().unwrap().to_str().unwrap()
@@ -813,6 +814,18 @@ fn dash_export_argument_errors_never_start_a_panel() {
         "argument",
     );
     s.error(&["dash", "export", "--html", "absent"], 2, "argument");
+    s.error(
+        &["dash", "export", "--html", "panel", "--timeout"],
+        2,
+        "argument",
+    );
+    for bad in ["abc", "0", "-5", "1.5"] {
+        s.error(
+            &["dash", "export", "--html", "panel", "--timeout", bad],
+            2,
+            "argument",
+        );
+    }
     s.error(
         &[
             "dash",

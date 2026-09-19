@@ -47,9 +47,9 @@ const POLL: Duration = Duration::from_millis(60);
 /// statement missing from the report, which is why there is a deadline as well.
 const QUIET: Duration = Duration::from_millis(400);
 
-/// The longest a panel may take. A panel that polls the database forever must
-/// not make `dash export` a command that never returns.
-const DEADLINE: Duration = Duration::from_secs(15);
+/// The default for `Job::timeout`. A panel that polls the database forever
+/// must not make `dash export` a command that never returns.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The slot the window-open closure fills with the mounted panel, so the code
 /// that waits on it can see whether the mount worked.
@@ -76,6 +76,9 @@ pub struct Job {
     /// The connection the panel's `query()` runs against, already opened with
     /// the access mode the caller asked for.
     pub connection: Connection,
+    /// The longest the panel may take before the capture stops with whatever
+    /// it has; `--timeout` on the command line, [`DEFAULT_TIMEOUT`] otherwise.
+    pub timeout: Duration,
 }
 
 /// What the run found.
@@ -115,6 +118,7 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             let started = Instant::now();
+            let timeout = job.timeout;
             let reported = listen_for_errors();
             if let Err(error) = crate::db::install(job.connection) {
                 stop!(Outcome::Failed(format!("{error:#}")));
@@ -190,7 +194,7 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                     if settled {
                         break "settled";
                     }
-                    if started.elapsed() >= DEADLINE {
+                    if started.elapsed() >= timeout {
                         break "deadline";
                     }
                 };
