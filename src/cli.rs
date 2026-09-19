@@ -239,48 +239,75 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
     Ok(options)
 }
 
-struct Parser {
-    database: ffi::duckdb_database,
-    connection: ffi::duckdb_connection,
-    extracted: ffi::duckdb_extracted_statements,
-}
+/// One raw DuckDB pointer per guard: the moment a pointer exists it has an
+/// owner, so no early return — present or future — can leak it. Wrapped
+/// immediately after the call that produces the pointer, whether or not the
+/// call succeeded, because a failed `duckdb_open`/`duckdb_connect` may still
+/// leave something to destroy behind. Locals drop in reverse declaration
+/// order, which is the required destroy order.
+struct ParserDatabase(ffi::duckdb_database);
 
-impl Drop for Parser {
+impl Drop for ParserDatabase {
     fn drop(&mut self) {
         unsafe {
-            if !self.extracted.is_null() {
-                ffi::duckdb_destroy_extracted(&mut self.extracted);
-            }
-            if !self.connection.is_null() {
-                ffi::duckdb_disconnect(&mut self.connection);
-            }
-            if !self.database.is_null() {
-                ffi::duckdb_close(&mut self.database);
+            if !self.0.is_null() {
+                ffi::duckdb_close(&mut self.0);
             }
         }
     }
 }
 
+struct ParserConnection(ffi::duckdb_connection);
+
+impl Drop for ParserConnection {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.is_null() {
+                ffi::duckdb_disconnect(&mut self.0);
+            }
+        }
+    }
+}
+
+struct ExtractedStatements(ffi::duckdb_extracted_statements);
+
+impl Drop for ExtractedStatements {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.is_null() {
+                ffi::duckdb_destroy_extracted(&mut self.0);
+            }
+        }
+    }
+}
+
+/// Parse-only validation: this must never execute SQL. The real DuckDB parser
+/// runs on a throwaway in-memory connection, so a multi-statement script
+/// (say `COPY ... TO ...; SELECT 2`) is rejected before anything has a chance
+/// to run it.
 fn validate_sql(sql: &str) -> Result<(), CliError> {
     let sql =
         CString::new(sql).map_err(|_| CliError::argument("SQL must not contain NUL bytes"))?;
-    let mut parser = Parser {
-        database: ptr::null_mut(),
-        connection: ptr::null_mut(),
-        extracted: ptr::null_mut(),
-    };
     unsafe {
-        if ffi::duckdb_open(ptr::null(), &mut parser.database) != ffi::DuckDBSuccess
-            || ffi::duckdb_connect(parser.database, &mut parser.connection) != ffi::DuckDBSuccess
-        {
-            return Err(CliError::failure(
-                "database",
-                "Cannot initialize SQL parser",
-            ));
+        let mut raw = ptr::null_mut();
+        let opened = ffi::duckdb_open(ptr::null(), &mut raw);
+        let database = ParserDatabase(raw);
+        if opened != ffi::DuckDBSuccess {
+            return Err(CliError::failure("database", "Cannot initialize SQL parser"));
         }
-        let count =
-            ffi::duckdb_extract_statements(parser.connection, sql.as_ptr(), &mut parser.extracted);
-        let error = ffi::duckdb_extract_statements_error(parser.extracted);
+        let mut raw = ptr::null_mut();
+        let connected = ffi::duckdb_connect(database.0, &mut raw);
+        let connection = ParserConnection(raw);
+        if connected != ffi::DuckDBSuccess {
+            return Err(CliError::failure("database", "Cannot initialize SQL parser"));
+        }
+        let mut raw = ptr::null_mut();
+        let count = ffi::duckdb_extract_statements(connection.0, sql.as_ptr(), &mut raw);
+        let extracted = ExtractedStatements(raw);
+        if extracted.0.is_null() {
+            return Err(CliError::failure("sql", "Cannot parse the SQL"));
+        }
+        let error = ffi::duckdb_extract_statements_error(extracted.0);
         if !error.is_null() && !CStr::from_ptr(error).to_bytes().is_empty() {
             return Err(CliError::failure(
                 "sql",
