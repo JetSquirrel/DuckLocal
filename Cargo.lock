@@ -2187,7 +2187,6 @@ dependencies = [
  "gpui-kit",
  "gpui-shell",
  "hmac 0.12.1",
- "lazy_static",
  "lsp-types",
  "quick-xml 0.36.2",
  "serde",

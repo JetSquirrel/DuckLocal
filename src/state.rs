@@ -336,7 +336,7 @@ fn open_sources(
     };
 
     let problems = reattach_registered_files();
-    let server = crate::db::server_info(target.clone())?;
+    let server = crate::db::server_info()?;
     let mut attach = attach_outcome(&sources);
     attach.report.problems.extend(problems);
     Ok(OpenOutcome::Connected(ConnectOutcome {

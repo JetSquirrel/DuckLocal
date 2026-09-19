@@ -8,37 +8,36 @@
 //! All functions here are blocking; UI code must call them via `smol::unblock`.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
-use lazy_static::lazy_static;
 
 use crate::i18n::trf;
 
-lazy_static! {
-    static ref CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
-    /// The connection analysis panels run their SQL on.
-    ///
-    /// A second connection to the same database, not a second database: DuckDB
-    /// serves many connections from one instance, so a panel sees the catalog
-    /// the window sees — the views DuckLocal registers included — without
-    /// taking the lock the window's own queries take. Sharing the one
-    /// connection meant a dashboard refreshing six statements held that lock
-    /// for as long as it ran, and the SQL editor was frozen for exactly that
-    /// long.
-    ///
-    /// What a second connection does not carry is connection-local state:
-    /// `TEMP` tables and `SET` values belong to the connection they were made
-    /// on. All panels share this one, so they still serialize among
-    /// themselves — a host function is handed arguments, not a caller, so
-    /// nothing at the moment a query runs says which panel asked.
-    ///
-    /// It is cloned on demand and dropped by [`replace`], which is what keeps a
-    /// closed database closed: a clone left behind would answer queries against
-    /// a database the window has let go of, and for a file would hold it open.
-    static ref PANEL_CONNECTION: Mutex<Option<Connection>> = Mutex::new(None);
-}
+static CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(None)));
+
+/// The connection analysis panels run their SQL on.
+///
+/// A second connection to the same database, not a second database: DuckDB
+/// serves many connections from one instance, so a panel sees the catalog
+/// the window sees — the views DuckLocal registers included — without
+/// taking the lock the window's own queries take. Sharing the one
+/// connection meant a dashboard refreshing six statements held that lock
+/// for as long as it ran, and the SQL editor was frozen for exactly that
+/// long.
+///
+/// What a second connection does not carry is connection-local state:
+/// `TEMP` tables and `SET` values belong to the connection they were made
+/// on. All panels share this one, so they still serialize among
+/// themselves — a host function is handed arguments, not a caller, so
+/// nothing at the moment a query runs says which panel asked.
+///
+/// It is cloned on demand and dropped by [`replace`], which is what keeps a
+/// closed database closed: a clone left behind would answer queries against
+/// a database the window has let go of, and for a file would hold it open.
+static PANEL_CONNECTION: LazyLock<Mutex<Option<Connection>>> = LazyLock::new(|| Mutex::new(None));
 
 /// How the current database was opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,8 +98,18 @@ pub fn open_memory() -> Result<()> {
     replace(Some(Connection::open_in_memory()?))
 }
 
+#[cfg(test)]
 pub fn close() -> Result<()> {
     replace(None)
+}
+
+/// Put an already-opened connection in place.
+///
+/// For a caller that opened its own — the CLI does, because it decides access
+/// mode, extension auto-installation and the existence check itself, and none
+/// of that belongs in a second implementation here.
+pub fn install(connection: Connection) -> Result<()> {
+    replace(Some(connection))
 }
 
 /// Put the process on `connection`, releasing whatever it was on.
@@ -118,6 +127,7 @@ fn replace(connection: Option<Connection>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn is_connected() -> bool {
     lock().map(|g| g.is_some()).unwrap_or(false)
 }
@@ -174,18 +184,16 @@ pub(crate) fn connection_guard() -> std::sync::MutexGuard<'static, ()> {
 /// Server metadata for the title bar and status bar.
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
-    pub target: DatabaseTarget,
     pub version: String,
     pub threads: String,
     pub memory_limit: String,
 }
 
-pub fn server_info_of(conn: &Connection, target: DatabaseTarget) -> Result<ServerInfo> {
+pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
     let version: String = conn.query_row("SELECT version()", [], |r| r.get(0))?;
     let threads = setting_or(conn, "threads", "8");
     let memory_limit = setting_or(conn, "memory_limit", "-");
     Ok(ServerInfo {
-        target,
         version,
         threads,
         memory_limit,
@@ -201,8 +209,8 @@ fn setting_or(conn: &Connection, name: &str, default: &str) -> String {
     .unwrap_or_else(|_| default.to_string())
 }
 
-pub fn server_info(target: DatabaseTarget) -> Result<ServerInfo> {
-    with_connection(|conn| server_info_of(conn, target))
+pub fn server_info() -> Result<ServerInfo> {
+    with_connection(server_info_of)
 }
 
 /// DuckDB table-function reader for a data file extension, if supported.

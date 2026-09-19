@@ -17,9 +17,7 @@
 //! re-renders in the new language without per-view subscriptions.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
-
-use lazy_static::lazy_static;
+use std::sync::{LazyLock, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Language {
@@ -90,12 +88,10 @@ pub fn set_language(lang: Language) {
     }
 }
 
-lazy_static! {
-    static ref ZH: HashMap<&'static str, &'static str> =
-        STRINGS.iter().map(|(key, zh, _)| (*key, *zh)).collect();
-    static ref EN: HashMap<&'static str, &'static str> =
-        STRINGS.iter().map(|(key, _, en)| (*key, *en)).collect();
-}
+static ZH: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| STRINGS.iter().map(|(key, zh, _)| (*key, *zh)).collect());
+static EN: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| STRINGS.iter().map(|(key, _, en)| (*key, *en)).collect());
 
 /// Translate `key` in the current language, falling back to the zh value,
 /// then to the key itself. Never panics on a missing key.

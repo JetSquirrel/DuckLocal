@@ -13,7 +13,7 @@ Use the real DuckLocal executable, not GUI automation or a replacement Python sc
 2. Confirm input paths exist, then inspect schema with `ducklocal query --sql "DESCRIBE SELECT * FROM 'sales.csv'"`. Do not guess column names or types.
 3. Preview a bounded sample: `ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20`. When the answer involves presenting a column rather than only computing one — a chart, an axis, a formatted number, a time series — run `ducklocal profile 'sales.csv'` as well: `missing_days` says whether the series is continuous, `max_over_median` whether a linear scale works, and `decimals` how many digits the number really has. A sample shows none of these.
 4. Write one SQL statement using observed names. Compute complete aggregates in SQL, not by adding up sample rows. Read [the CLI reference](references/cli.md) for options, encodings, escaping, database access, and conversion examples.
-5. Check the process exit code before parsing stdout. On success, parse the single JSON object and inspect `truncated`; `row_count` is only the returned row count. A truncated preview is not a complete result or a full-data statistic.
+5. Check the process exit code before parsing stdout. On success, parse the single JSON object and inspect `truncated`; `row_count` is only the returned row count. A truncated preview is not a complete result or a full-data statistic. When a person or a document will read the result, `--format md` prints the same values as a Markdown table (see the reference); JSON remains the form to parse.
 6. Answer from actual returned values, naming the input, query, and relevant completeness limits. For conversions, query the output back to verify schema and counts/aggregates. Do not treat file existence alone as proof.
 
 ## Safety and scope
@@ -23,6 +23,7 @@ Use the real DuckLocal executable, not GUI automation or a replacement Python sc
 - Do not automatically retry writes. A failed command may already have written data, including when output serialization fails. Inspect the result and destination first.
 - Do not save credentials, tokens, or secrets in SQL files, skill files, history, or project configuration. This skill has no credential store.
 - Each CLI invocation is a separate process/connection. GUI registered views and in-memory tables do not carry over. Use explicit `--database` for authorized persistent work; use separate single-statement invocations.
+- `ducklocal dash export --html` runs an analysis panel once and writes its statements and results as one standalone HTML file. It is the only subcommand that starts the window platform (a hidden window, no visible UI). The report carries the panel's data, not its interface or its interactive state.
 - No dedicated S3 browsing, spatial command suite, session memory, or MCP server is provided. Do not invent flags or claim these capabilities.
 
 ## Failures

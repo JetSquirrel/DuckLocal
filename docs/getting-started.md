@@ -45,7 +45,7 @@ You can name several paths at once, and mix them freely.
 There are two more ways in, both equivalent:
 
 - **Open data…** in the title bar opens a dialog where you type or browse for
-  paths. A **内存模式** button in that dialog switches to a plain in-memory
+  paths. An **In-memory** button in that dialog switches to a plain in-memory
   workspace with nothing attached.
 - **Drag files or folders onto the window.**
 

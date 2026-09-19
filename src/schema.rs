@@ -11,11 +11,8 @@ type TableKey = (String, String, String);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeKind {
-    Database,
-    Schema,
     Table,
     View,
-    Column,
 }
 
 #[derive(Clone, Debug)]

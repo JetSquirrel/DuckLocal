@@ -7,10 +7,13 @@ ducklocal --help
 ducklocal --version
 ducklocal query --help
 ducklocal query --sql "SELECT 1 AS n"
+ducklocal query --sql "SELECT 1 AS n" --format md
 ducklocal query --sql-file analysis.sql --limit 100
 ducklocal query --sql-file - < analysis.sql
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
+
+`--format json` (default) is the contract below; `--format md` renders the same result as a Markdown table to read or quote: dates and timestamps in ISO form, DECIMALs with their digits, `NULL` as `NULL`, `|` escaped and newlines as `<br>` so a cell cannot break the table, `_0 rows._` after an empty result and `_Truncated at N rows:…_` when a limit cut it short. Use JSON whenever a program parses the value; the counts and digits are the same either way.
 
 Use exactly one `--sql`/`--sql-file`. A file is UTF-8, `-` means stdin. Exactly one SQL statement is accepted using DuckDB's real parser; comment/quoted semicolons work and scripts are rejected before execution. Flags cannot repeat. Unknown flags, missing values, and invalid limits fail. Use separate option values, not `--flag=value`.
 
@@ -32,6 +35,15 @@ One JSON object: `target`, `relation`, `row_count`, `elapsed_ms`, and `columns` 
 Read it before choosing how to present a column. `missing_days` above 0 means the series has holes, so a continuous line or an evenly spaced axis would misstate it. A large `max_over_median` means a linear scale rounds the small values to nothing. `decimals` is what a number should be formatted to; `DECIMAL(38,10)` holding two-decimal money reports 2.
 
 Statistics are exact and scan the whole relation; `--limit` does not apply. It is a read, but a full one: on a very large file it costs a full pass.
+
+## Export a dashboard as a static HTML file
+
+```bash
+ducklocal dash export --html panels/sales
+ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
+```
+
+Runs an analysis panel once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<panel folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. One JSON object on stdout names the file and counts `queries`, `rows` and `panel_errors`. The report holds the panel's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `panel` means the panel failed; when it failed after loading, the report is still written and the message names it.
 
 ## Discover, aggregate, convert
 
@@ -86,4 +98,4 @@ Check exit status before parsing. Codes: 0 success, 2 arguments/statement count,
 {"error":{"kind":"sql","message":"..."}}
 ```
 
-Kinds: `argument`, `sql`, `database`, `io`, `output`. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.
+Kinds: `argument`, `sql`, `database`, `io`, `output`, and `panel` for a dashboard export whose panel failed. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.

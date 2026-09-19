@@ -157,13 +157,16 @@ set to “GitHub Actions”.
 | `src/sources.rs` | Resolving paths into files to attach and databases to open |
 | `src/db.rs` | The DuckDB connection, attaching files, server info |
 | `src/query.rs` | Query execution, result serialization, export |
+| `src/profile.rs` | Column profiling behind `ducklocal profile` |
 | `src/schema.rs` | Catalog introspection for the sidebar |
 | `src/analysis/` | JavaScript analysis panels: the script runtime, the `ducklocal` host module, the panel tab, the reload watcher |
+| `src/dash/` | `ducklocal dash export`: running a panel headless and writing its statements and results as one standalone HTML file |
 | `src/history.rs` | The app's own database: history, registered files, settings |
 | `src/s3.rs` | SigV4 signing and S3 listing |
 | `src/i18n.rs` | The string table and language selection |
 | `src/state.rs` | Application state shared across views |
 | `src/ui/` | Editor, results grid, charts, sidebar, dialogs, title and status bars |
+| `src/perf_probe.rs` | Test-only performance probe harness: wall time, allocation count, and bytes for paths that scale with data size |
 | `docs/` | English guides, Chinese guides in `zh/`, and the VitePress package, config, and theme |
 | `assets/` | Icon, `Info.plist`, the diagram the README and docs use |
 | `scripts/` | `bundle.sh`, `package-macos.sh`, `check-deps.sh`, entitlements |

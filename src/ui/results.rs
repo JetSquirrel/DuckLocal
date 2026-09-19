@@ -334,10 +334,8 @@ impl ResultsPanel {
                     InputEvent::PressEnter { .. } => this.apply_filter(cx),
                     // The cleanable ✕ emits Change with an empty value — treat
                     // that as clearing the filter so the button always works.
-                    InputEvent::Change => {
-                        if state.read(cx).value().trim().is_empty() {
-                            this.apply_filter(cx);
-                        }
+                    InputEvent::Change if state.read(cx).value().trim().is_empty() => {
+                        this.apply_filter(cx)
                     }
                     _ => {}
                 }

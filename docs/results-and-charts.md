@@ -2,8 +2,7 @@
 
 **[中文](zh/results-and-charts.md)** · [Docs](index.md)
 
-The panel under the editor has two tabs: **结果** (results) and **图表**
-(charts).
+The panel under the editor has two tabs: **Results** and **Chart**.
 
 ## The results grid
 

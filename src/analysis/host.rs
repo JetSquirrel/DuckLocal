@@ -153,15 +153,56 @@ pub fn module() -> HostModule {
 /// window for. Blocking; call through `smol::unblock`.
 pub fn catalog() -> anyhow::Result<HostValue> {
     let databases = crate::db::with_panel_connection(crate::schema::load_catalog_of)?;
+    crate::dash::capture::catalog(captured_tables(&databases));
     Ok(catalog_value(&databases))
+}
+
+/// The catalog in the shape an export writes down: the panel's own view of the
+/// database, without the bridge's types.
+fn captured_tables(databases: &[DatabaseInfo]) -> Vec<crate::dash::capture::Table> {
+    databases
+        .iter()
+        .flat_map(|database| {
+            database
+                .tables
+                .iter()
+                .map(|table| crate::dash::capture::Table {
+                    database: database.name.clone(),
+                    schema: table.schema.clone(),
+                    name: table.name.clone(),
+                    kind: match table.kind {
+                        NodeKind::View => "view",
+                        _ => "table",
+                    },
+                    estimated_rows: table.estimated_rows,
+                    comment: table.comment.clone(),
+                    columns: table
+                        .columns
+                        .iter()
+                        .map(|column| (column.name.clone(), column.data_type.clone()))
+                        .collect(),
+                })
+        })
+        .collect()
 }
 
 /// Run `sql` on the panel connection — the same database the window is on, a
 /// different connection, so a slow statement here does not freeze the SQL
 /// editor. Blocking; call through `smol::unblock`.
 pub fn query(sql: &str, limit: usize) -> anyhow::Result<HostValue> {
-    let result = crate::db::with_panel_connection(|conn| run_cli_of(conn, sql, limit))?;
-    Ok(query_value(&result))
+    match crate::db::with_panel_connection(|conn| run_cli_of(conn, sql, limit)) {
+        Ok(result) => {
+            let value = query_value(&result);
+            crate::dash::capture::query(sql, limit, Ok(&result));
+            Ok(value)
+        }
+        Err(error) => {
+            // A statement that failed is worth recording: a report of a panel
+            // whose query was rejected should say so.
+            crate::dash::capture::query(sql, limit, Err(error.to_string()));
+            Err(error)
+        }
+    }
 }
 
 fn catalog_value(databases: &[DatabaseInfo]) -> HostValue {

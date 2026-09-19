@@ -3,17 +3,15 @@
 //! Blocking functions; call via `smol::unblock` from UI code.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{anyhow, Result};
 use duckdb::{Connection, OptionalExt};
-use lazy_static::lazy_static;
 
 const SCHEMA_VERSION: i64 = 3;
 
-lazy_static! {
-    static ref HISTORY_CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
-}
+static HISTORY_CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(None)));
 
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
@@ -33,8 +31,6 @@ pub struct AttachedFile {
     pub id: i64,
     pub path: String,
     pub view_name: String,
-    pub kind: String,
-    pub attached_at: String,
 }
 
 fn history_path() -> Result<PathBuf> {
@@ -212,16 +208,13 @@ pub fn attached_files() -> Result<Vec<AttachedFile>> {
 }
 
 pub fn attached_files_of(conn: &Connection) -> Result<Vec<AttachedFile>> {
-    let mut stmt = conn
-        .prepare("SELECT id, path, view_name, kind, attached_at FROM attached_files ORDER BY id")?;
+    let mut stmt = conn.prepare("SELECT id, path, view_name FROM attached_files ORDER BY id")?;
     let files = stmt
         .query_map([], |row| {
             Ok(AttachedFile {
                 id: row.get(0)?,
                 path: row.get(1)?,
                 view_name: row.get(2)?,
-                kind: row.get(3)?,
-                attached_at: row.get(4)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -319,8 +312,15 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].view_name, "customers");
         assert_eq!(files[1].view_name, "orders");
-        assert_eq!(files[1].kind, "parquet");
-        assert!(!files[1].attached_at.is_empty());
+        let (kind, attached_at): (String, String) = conn
+            .query_row(
+                "SELECT kind, attached_at FROM attached_files WHERE view_name = 'orders'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "parquet");
+        assert!(!attached_at.is_empty());
 
         remove_attached_file_of(&conn, files[0].id).unwrap();
         let files = attached_files_of(&conn).unwrap();

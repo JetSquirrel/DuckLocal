@@ -221,6 +221,14 @@ What a panel does **not** get is anything else the process could do:
   own connection is configured for it.
 - **The host module is the whole surface.** Only the functions above cross into Rust.
 
+## Export a panel as HTML
+
+`ducklocal dash export --html <folder>` runs a panel once and writes what it asked the database into one self-contained HTML file, for sending a panel's numbers to someone who does not have DuckLocal. The command, its options and its exit codes are in [the CLI guide](cli.md#export-a-panel-as-a-static-html-file).
+
+The report is the panel's data, not its interface. It holds the statements `query()` issued while the panel loaded, each with its result as a table, and a bar chart where a result is a name and a number per row; a `catalog()` call becomes an appendix of tables and columns. It does not hold the panel's layout or its charts, because a panel draws native components and their contents are decided while they are laid out — nothing describes a chart's bars well enough to reproduce them — so the file does not pretend to be the panel.
+
+Because it is the loading state, a statement a panel only runs on a click is not in the report, and neither is anything after a reload. The panel's JavaScript runs with the same privileges as always: exporting is running the panel, exactly as opening it in a tab is.
+
 ## Known limits
 
 - **A panel in a tab has no window-level overlay.** The shell's dialogs, sheets, toasts and

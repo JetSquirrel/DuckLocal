@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod cli;
+mod dash;
 mod db;
 mod history;
 mod i18n;

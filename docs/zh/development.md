@@ -119,13 +119,16 @@ npm --prefix docs run preview    # http://localhost:4173/DuckLocal/
 | `src/sources.rs` | 把路径解析成要挂载的文件和要打开的数据库 |
 | `src/db.rs` | DuckDB 连接、挂载文件、服务器信息 |
 | `src/query.rs` | 查询执行、结果序列化、导出 |
+| `src/profile.rs` | `ducklocal profile` 背后的列画像 |
 | `src/schema.rs` | 为侧栏做 catalog 内省 |
 | `src/analysis/` | JavaScript 分析面板：脚本运行时、`ducklocal` host 模块、面板标签页、重载监控 |
+| `src/dash/` | `ducklocal dash export`：无界面运行面板，把其语句与结果写成一个独立 HTML 文件 |
 | `src/history.rs` | 应用自己的数据库：查询历史、已登记的文件、设置 |
 | `src/s3.rs` | SigV4 签名与 S3 列举 |
 | `src/i18n.rs` | 字符串表和语言选择 |
 | `src/state.rs` | 各视图共享的应用状态 |
 | `src/ui/` | 编辑器、结果表格、图表、侧栏、对话框、标题栏和状态栏 |
+| `src/perf_probe.rs` | 仅测试用的性能探针：为随数据规模增长的路径报告耗时、分配次数与分配字节数 |
 | `docs/` | 英文指南、`zh/` 下的中文指南，以及 VitePress 依赖、配置与主题 |
 | `assets/` | 图标、`Info.plist`、README 与文档使用的示意图 |
 | `scripts/` | `bundle.sh`、`package-macos.sh`、`check-deps.sh`、授权文件 |

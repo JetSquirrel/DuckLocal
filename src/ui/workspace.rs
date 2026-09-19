@@ -234,7 +234,7 @@ impl Workspace {
                     ..
                 }
             ) {
-                Self::remove_secondary_enter_newline(&editor, window, cx);
+                Self::remove_secondary_enter_newline(editor, window, cx);
                 this.run_active(window, cx);
             }
         });

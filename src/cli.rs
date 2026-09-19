@@ -6,17 +6,29 @@ use std::ptr;
 use duckdb::{ffi, AccessMode, Config, Connection};
 use serde_json::json;
 
-const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal profile TARGET [--database PATH]  Per-column statistics, JSON\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named query or profile must be written ./query, ./profile.\n\nProfile: TARGET is a data file (csv/tsv/parquet/json) or, with --database,\na table or view name. Per column it reports type, nulls, distinct, min, max;\nfor numbers the decimals actually used, the median and max_over_median; for\ndates covered_days, span_days and missing_days. Statistics are exact and read\nthe whole relation.\n";
+pub(crate) const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal profile TARGET [--database PATH]  Per-column statistics, JSON\n  ducklocal dash export --html [OPTIONS] PANEL  Panel data as a standalone HTML file\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --format FORMAT    json (default) or md, a Markdown table to read and quote\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation. --format md\nrenders the same values as readable text: dates and timestamps in ISO form,\nDECIMALs with their digits, NULL as NULL. It is a rendering, not the contract;\nuse JSON where a caller parses the result.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named `query`, `profile` or `dash` must be written `./query`, `./profile`, `./dash`.\n\nProfile: TARGET is a data file (csv/tsv/parquet/json) or, with --database,\na table or view name. Per column it reports type, nulls, distinct, min, max;\nfor numbers the decimals actually used, the median and max_over_median; for\ndates covered_days, span_days and missing_days. Statistics are exact and read\nthe whole relation.\n\nDash export: PANEL is an analysis panel folder (main.js) or its entry file.\nThe panel is run once, in a hidden window, and the statements its query()\ncalls issue are captured with their results. Output is one JSON object naming\nthe written file; the file itself is self-contained HTML with no JavaScript.\nDash export options:\n  --html             Required; the only format\n  --out FILE         Destination; defaults to ./<panel folder>.html\n  --force            Replace an existing destination\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n";
 
 #[derive(Debug)]
-struct CliError {
+pub(crate) struct CliError {
     kind: &'static str,
     message: String,
     code: i32,
 }
 
 impl CliError {
-    fn argument(message: impl Into<String>) -> Self {
+    pub(crate) fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub(crate) fn code(&self) -> i32 {
+        self.code
+    }
+
+    pub(crate) fn argument(message: impl Into<String>) -> Self {
         Self {
             kind: "argument",
             message: message.into(),
@@ -24,7 +36,7 @@ impl CliError {
         }
     }
 
-    fn failure(kind: &'static str, error: impl std::fmt::Display) -> Self {
+    pub(crate) fn failure(kind: &'static str, error: impl std::fmt::Display) -> Self {
         Self {
             kind,
             message: error.to_string(),
@@ -40,6 +52,18 @@ struct Options {
     database: Option<PathBuf>,
     read_write: bool,
     limit: usize,
+    format: Format,
+}
+
+/// How a result is written to stdout.
+///
+/// `Json` is the contract a caller parses; `Markdown` is the same result
+/// rendered to be read — by a person, or by an agent writing it into a
+/// document. The values are the same values; only the framing differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Json,
+    Markdown,
 }
 
 fn parse(args: &[OsString]) -> Result<Options, CliError> {
@@ -49,6 +73,7 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
         database: None,
         read_write: false,
         limit: 1000,
+        format: Format::Json,
     };
     let mut seen = std::collections::HashSet::new();
     let mut args = args.iter();
@@ -58,7 +83,7 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
             .ok_or_else(|| CliError::argument("Option names must be UTF-8"))?;
         if !matches!(
             flag,
-            "--sql" | "--sql-file" | "--database" | "--read-write" | "--limit"
+            "--sql" | "--sql-file" | "--database" | "--read-write" | "--limit" | "--format"
         ) {
             return Err(CliError::argument(format!("Unknown query option: {flag}")));
         }
@@ -75,7 +100,15 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
         if value.is_empty()
             || matches!(
                 value.to_str(),
-                Some("--sql" | "--sql-file" | "--database" | "--read-write" | "--limit" | "--help")
+                Some(
+                    "--sql"
+                        | "--sql-file"
+                        | "--database"
+                        | "--read-write"
+                        | "--limit"
+                        | "--format"
+                        | "--help"
+                )
             )
             || (flag != "--sql" && value.to_string_lossy().starts_with("--"))
         {
@@ -98,6 +131,13 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                     ));
                 }
                 options.database = Some(value.into());
+            }
+            "--format" => {
+                options.format = match value.to_str() {
+                    Some("json") => Format::Json,
+                    Some("md") => Format::Markdown,
+                    _ => return Err(CliError::argument("--format must be json or md")),
+                }
             }
             "--limit" => {
                 let text = value.to_str().unwrap_or("");
@@ -186,7 +226,12 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     let sql = match options.sql {
         Some(sql) => sql,
         None => {
-            let path = options.sql_file.as_ref().unwrap();
+            let Some(path) = options.sql_file.as_ref() else {
+                return Err(CliError::failure(
+                    "internal",
+                    "argument parsing accepted neither --sql nor --sql-file",
+                ));
+            };
             if path.as_os_str() == "-" {
                 let mut sql = String::new();
                 std::io::stdin()
@@ -202,13 +247,20 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     let conn = open(options.database, options.read_write)?;
     let result = crate::query::run_cli_of(&conn, &sql, options.limit)
         .map_err(|e| CliError::failure("sql", e))?;
-    serde_json::to_string(&result).map_err(|e| CliError::failure("output", e))
+    match options.format {
+        // Trailing newline is not part of the document; `dispatch` adds the
+        // one line ending every output gets.
+        Format::Markdown => Ok(crate::query::format_markdown(&result)
+            .trim_end()
+            .to_string()),
+        Format::Json => serde_json::to_string(&result).map_err(|e| CliError::failure("output", e)),
+    }
 }
 
 /// The connection every subcommand runs on: its own, never the GUI's, with
 /// extension auto-installation off and a file database read-only unless the
 /// caller asked for writes.
-fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connection, CliError> {
+pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connection, CliError> {
     let config = Config::default()
         .with("autoinstall_known_extensions", "false")
         .map_err(|e| CliError::failure("database", e))?;
@@ -296,7 +348,9 @@ fn profile(args: &[OsString]) -> Result<String, CliError> {
 
 pub fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
-    if !matches!(first, "query" | "profile" | "--help" | "--version") && !first.starts_with("--") {
+    if !matches!(first, "query" | "profile" | "dash" | "--help" | "--version")
+        && !first.starts_with("--")
+    {
         return None;
     }
     let result = match (first, args.len()) {
@@ -306,6 +360,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("query", _) => query(&args[1..]),
         ("profile", 2) if args[1] == "--help" => Ok(HELP.to_string()),
         ("profile", _) => profile(&args[1..]),
+        ("dash", _) => crate::dash::dispatch(&args[1..]),
         _ => Err(CliError::argument(
             "Unknown or extra arguments; use ducklocal --help",
         )),

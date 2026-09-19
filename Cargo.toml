@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A local-first workspace for querying and exploring your data, built natively on DuckDB"
 license = "Apache-2.0"
+repository = "https://github.com/JetSquirrel/DuckLocal"
+homepage = "https://github.com/JetSquirrel/DuckLocal"
+readme = "README.md"
 keywords = ["duckdb", "sql", "parquet", "csv", "analytics"]
 categories = ["database", "gui"]
 
@@ -26,7 +29,6 @@ directories = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-lazy_static = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 hmac = "0.12"
 sha2 = "0.10"

@@ -49,7 +49,7 @@ empty buffer.
 ## EXPLAIN
 
 `EXPLAIN` runs `EXPLAIN <your SQL>` and shows the plan as plain monospace text
-with the elapsed time, switching the results panel back to the 结果 tab.
+with the elapsed time, switching the results panel back to the Results tab.
 
 ## Autocompletion
 

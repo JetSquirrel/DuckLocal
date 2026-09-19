@@ -92,6 +92,39 @@ impl Sandbox {
         value
     }
 
+    /// A run whose one JSON object has a shape of its own — neither a query
+    /// result nor a profile.
+    fn object(&self, args: &[&str]) -> Value {
+        let output = self.run(args, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    /// A run whose stdout is a document, not a JSON object.
+    fn text(&self, args: &[&str]) -> String {
+        let output = self.run(args, None);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
     fn error(&self, args: &[&str], code: i32, kind: &str) -> Value {
         let output = self.run(args, None);
         assert_eq!(
@@ -567,4 +600,243 @@ fn profile_reports_the_shape_that_decides_a_chart() {
         1,
         "sql",
     );
+}
+
+/// The Markdown format is for reading, so it has to be readable: the values
+/// are the grid's, a cell cannot break the table it is in, and a result that is
+/// not the whole answer says so.
+#[test]
+fn markdown_format_renders_a_table_a_reader_can_trust() {
+    let s = Sandbox::new();
+    let sql = "SELECT 'x|y' AS \"a|b\",
+                      'one' || chr(10) || 'two' AS b,
+                      NULL AS c,
+                      DATE '2024-03-05' AS d,
+                      CAST(1.25 AS DECIMAL(5,2)) AS e,
+                      CAST(9007199254740993 AS BIGINT) AS f";
+
+    let text = s.text(&["query", "--sql", sql, "--format", "md"]);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "| a\\|b | b | c | d | e | f |",
+            "| --- | --- | --- | --- | --- | --- |",
+            "| x\\|y | one<br>two | NULL | 2024-03-05 | 1.25 | 9007199254740993 |",
+        ]
+    );
+    // The document is one line ending, exactly like every other output.
+    assert!(text.ends_with("|\n"), "{text:?}");
+    assert!(!text.ends_with("\n\n"), "{text:?}");
+
+    // `json` is still what it was, so a caller that parses is unaffected.
+    let json = s.success(&["query", "--sql", sql]);
+    assert_eq!(json["rows"][0][0], "x|y");
+    assert_eq!(json["rows"][0][3]["value"], "19787");
+    assert_eq!(json["rows"][0][5]["value"], "9007199254740993");
+
+    // A limit is a preview, and the format says which part of the answer the
+    // reader is holding.
+    let truncated = s.text(&[
+        "query",
+        "--sql",
+        "SELECT * FROM range(5) t(n)",
+        "--limit",
+        "2",
+        "--format",
+        "md",
+    ]);
+    assert!(truncated.contains("| 0 |\n| 1 |\n"), "{truncated}");
+    assert!(truncated.contains("_Truncated at 2 rows"), "{truncated}");
+
+    let empty = s.text(&[
+        "query",
+        "--sql",
+        "SELECT 1 AS n WHERE false",
+        "--format",
+        "md",
+    ]);
+    assert_eq!(empty, "| n |\n| --- |\n_0 rows._\n");
+
+    let ddl = s.text(&[
+        "query",
+        "--sql",
+        "CREATE TABLE t(a INTEGER)",
+        "--format",
+        "md",
+    ]);
+    assert!(ddl.contains('|'), "{ddl}");
+
+    // A format nothing can render, and a flag given twice, are command-line
+    // mistakes — not something to guess at.
+    s.error(
+        &["query", "--sql", "SELECT 1", "--format", "yaml"],
+        2,
+        "argument",
+    );
+    s.error(
+        &[
+            "query", "--sql", "SELECT 1", "--format", "md", "--format", "md",
+        ],
+        2,
+        "argument",
+    );
+    s.error(&["query", "--sql", "SELECT 1", "--format"], 2, "argument");
+}
+
+/// `dash export` answers "what was this panel showing?" without DuckLocal, a
+/// database, or a browser extension: it runs the panel once and writes down
+/// what it asked. The panel here is a real one — it builds SQL from
+/// `panelDir()`, which only answers while a panel is loading.
+///
+/// This is the one test that starts the window platform (hidden, for one
+/// frame). It is also the reason the export has a settle deadline: a panel's
+/// statements arrive asynchronously, and waiting for them is the whole job.
+#[test]
+fn dash_export_writes_a_report_that_needs_nothing_to_open() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.0.join("panel")).unwrap();
+    std::fs::write(
+        s.0.join("panel/orders.csv"),
+        "channel,amount\n手机银行,10\n柜面,20\n手机银行,5\n",
+    )
+    .unwrap();
+    std::fs::write(
+        s.0.join("panel/main.js"),
+        r#"
+import { View, div } from "gpui-kit";
+import { panelDir, query, sqlLiteral } from "ducklocal";
+
+export default class App extends View {
+  init(_props, cx) {
+    this.rows = 0;
+    cx.spawn(async (cx) => {
+      const source = sqlLiteral(panelDir() + "/orders.csv");
+      const result = await query(
+        `SELECT channel, sum(amount) AS total FROM ${source} GROUP BY 1 ORDER BY 2 DESC`,
+        50,
+      );
+      this.rows = result.rows.length;
+      // A statement that fails is part of what a panel did, and the report
+      // says so rather than dropping it.
+      await query("SELECT * FROM absent_table").catch(() => {});
+      cx.notify();
+    });
+  }
+  render() { return div().child(String(this.rows)); }
+}
+"#,
+    )
+    .unwrap();
+
+    let report = s.object(&["dash", "export", "--html", "panel", "--out", "report.html"]);
+    assert_eq!(report["queries"], 2);
+    assert_eq!(report["rows"], 2);
+    assert_eq!(report["panel_errors"], 0);
+    assert_eq!(
+        report["panel"],
+        s.0.join("panel").canonicalize().unwrap().to_str().unwrap()
+    );
+
+    let html = std::fs::read_to_string(s.0.join("report.html")).unwrap();
+    assert!(
+        html.contains("SELECT channel, sum(amount) AS total"),
+        "{html}"
+    );
+    assert!(html.contains("手机银行"), "{html}");
+    assert!(html.contains("This statement failed"), "{html}");
+    // Nothing to fetch, nothing to run: the file is the whole document.
+    assert!(!html.contains("<script"), "{html}");
+    assert!(!html.contains("http://"), "{html}");
+    assert!(
+        html.contains("<svg"),
+        "a name and a number per row is a bar chart: {html}"
+    );
+
+    // An existing report is not overwritten by a command that was not asked to
+    // replace it, and the refusal costs nothing because it happens first.
+    s.error(
+        &["dash", "export", "--html", "panel", "--out", "report.html"],
+        2,
+        "argument",
+    );
+    let replaced = s.object(&[
+        "dash",
+        "export",
+        "--html",
+        "panel",
+        "--out",
+        "report.html",
+        "--force",
+    ]);
+    assert_eq!(replaced["rows"], 2);
+}
+
+/// Everything wrong with a dash export that can be said before running one is
+/// said without running one: no window opens for a missing flag.
+#[test]
+fn dash_export_argument_errors_never_start_a_panel() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.0.join("panel")).unwrap();
+    std::fs::write(s.0.join("panel/main.js"), "export default class App {}").unwrap();
+
+    s.error(&["dash"], 2, "argument");
+    s.error(&["dash", "nope"], 2, "argument");
+    s.error(&["dash", "export"], 2, "argument");
+    s.error(&["dash", "export", "panel"], 2, "argument");
+    s.error(&["dash", "export", "--html"], 2, "argument");
+    s.error(
+        &["dash", "export", "--html", "--out", "x.html"],
+        2,
+        "argument",
+    );
+    s.error(
+        &["dash", "export", "--html", "panel", "--format", "md"],
+        2,
+        "argument",
+    );
+    s.error(
+        &["dash", "export", "--html", "panel", "--read-write"],
+        2,
+        "argument",
+    );
+    s.error(
+        &[
+            "dash", "export", "--html", "panel", "--out", "a.html", "--out", "b.html",
+        ],
+        2,
+        "argument",
+    );
+    s.error(
+        &["dash", "export", "--html", "panel", "another"],
+        2,
+        "argument",
+    );
+    s.error(&["dash", "export", "--html", "absent"], 2, "argument");
+    s.error(
+        &[
+            "dash",
+            "export",
+            "--html",
+            "panel/main.js",
+            "--database",
+            ":memory:",
+        ],
+        2,
+        "argument",
+    );
+
+    // A folder that is not a panel is refused by name, not loaded and failed.
+    std::fs::create_dir_all(s.0.join("empty")).unwrap();
+    let error = s.error(&["dash", "export", "--html", "empty"], 2, "argument");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("main.js"));
+
+    // Help is help, and it is not a panel.
+    let help = s.text(&["dash", "--help"]);
+    assert!(help.contains("dash export"), "{help}");
+    let help = s.text(&["dash", "export", "--help"]);
+    assert!(help.contains("dash export"), "{help}");
 }

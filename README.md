@@ -43,7 +43,15 @@ ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
 
-Results are structured JSON, with explicit truncation and precision-preserving value encodings. File databases default to read-only; writes require `--read-write`. Read-only is not a filesystem/network sandbox: `COPY` can still write files. See the [CLI guide](docs/cli.md) for conversion, stdin, output, and safety details.
+Results are structured JSON, with explicit truncation and precision-preserving value encodings; `--format md` prints the same values as a Markdown table for a document to quote. File databases default to read-only; writes require `--read-write`. Read-only is not a filesystem/network sandbox: `COPY` can still write files.
+
+An analysis panel can be exported as one standalone HTML file — the statements its `query()` calls issued, with their results — for sharing with someone who does not have DuckLocal:
+
+```bash
+ducklocal dash export --html examples/analysis_app
+```
+
+See the [CLI guide](docs/cli.md) for conversion, stdin, output, panel export, and safety details.
 
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and verified file conversion. Copy it into your target project's supported skills directory; for example, from this checkout:
 

@@ -25,14 +25,14 @@ pub const MAX_CELLS: usize = 2_000_000;
 /// what any second reader of a result must reuse: the analysis panel's
 /// `query()` host function hands these same values to JavaScript, and a
 /// second encoder is how a big integer quietly becomes a float.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct CliColumn {
     pub name: String,
     #[serde(rename = "type")]
     pub arrow_type: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct CliResult {
     pub columns: Vec<CliColumn>,
     pub rows: Vec<Vec<serde_json::Value>>,
@@ -159,6 +159,232 @@ fn cli_owned(value: &Value) -> Result<serde_json::Value> {
         Value::HugeInt(_) => anyhow::bail!("Nested HUGEINT/UHUGEINT/DECIMAL(38,0) has ambiguous Arrow metadata; CAST it to VARCHAR explicitly"),
         other => cli_value(ValueRef::from(other))?,
     })
+}
+
+/// Longest a composite cell is allowed to run before it is elided.
+///
+/// A list of a thousand elements, or a map of as many keys, is one cell in one
+/// row: past this it stops being readable text and starts being a wall. The
+/// JSON format keeps it whole; this is the rendering, not the contract.
+const CELL_CAP: usize = 120;
+
+/// A cell as readable text.
+///
+/// [`CliResult`] holds every value exactly — a `DECIMAL` as its digits, a
+/// `DATE` as days since the epoch — because that JSON is a contract a caller
+/// parses. A rendering meant to be *read* wants the same values the results
+/// grid shows, so this is the encoded cell read back: the counterpart of
+/// [`value_to_string`], for values that have been through the encoder.
+pub fn plain_text(value: &serde_json::Value) -> String {
+    use serde_json::Value as Json;
+    match value {
+        Json::Null => "NULL".to_string(),
+        Json::Bool(v) => v.to_string(),
+        Json::Number(v) => v.to_string(),
+        Json::String(v) => v.clone(),
+        Json::Array(values) => {
+            let inner: Vec<String> = values.iter().map(plain_text).collect();
+            elide(format!("[{}]", inner.join(", ")))
+        }
+        Json::Object(fields) => plain_encoded(fields),
+    }
+}
+
+/// A cell that arrived as an `encoding` object.
+///
+/// An unrecognised encoding falls back to its own JSON, which is at least the
+/// truth about what arrived, rather than an empty cell that reads like a null.
+fn plain_encoded(fields: &serde_json::Map<String, serde_json::Value>) -> String {
+    let named = |name: &str| {
+        fields
+            .get(name)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+    };
+    let integer = || named("value").parse::<i64>().ok();
+    match named("encoding") {
+        "integer" | "decimal" | "float" => named("value").to_string(),
+        "date" => integer()
+            .and_then(|days| i32::try_from(days).ok())
+            .map(format_date)
+            .unwrap_or_else(|| named("value").to_string()),
+        "timestamp" => match integer() {
+            Some(value) => format_precise_timestamp(named("unit"), value),
+            None => named("value").to_string(),
+        },
+        "time" => match integer() {
+            Some(value) => format_precise_time(named("unit"), value),
+            None => named("value").to_string(),
+        },
+        "interval" => format_interval(
+            fields.get("months").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            fields.get("days").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            named("nanos").parse().unwrap_or(0),
+        ),
+        "hex" => elide(format!("0x{}", named("value"))),
+        "struct" => {
+            let inner: Vec<String> = fields
+                .get("fields")
+                .and_then(|v| v.as_array())
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .filter_map(|field| {
+                            let pair = field.as_array()?;
+                            Some(format!(
+                                "{}: {}",
+                                plain_text(pair.first()?),
+                                plain_text(pair.get(1)?)
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            elide(format!("{{{}}}", inner.join(", ")))
+        }
+        "map" => {
+            let inner: Vec<String> = fields
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| {
+                            let pair = entry.as_array()?;
+                            Some(format!(
+                                "{}: {}",
+                                plain_text(pair.first()?),
+                                plain_text(pair.get(1)?)
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            elide(format!("{{{}}}", inner.join(", ")))
+        }
+        "union-value" => fields.get("value").map(plain_text).unwrap_or_default(),
+        _ => serde_json::Value::Object(fields.clone()).to_string(),
+    }
+}
+
+fn elide(text: String) -> String {
+    if text.chars().count() <= CELL_CAP {
+        return text;
+    }
+    let mut out: String = text.chars().take(CELL_CAP).collect();
+    out.push('…');
+    out
+}
+
+fn time_unit(name: &str) -> Option<TimeUnit> {
+    // The names the encoder writes are this enum's `Debug` names, so a miss
+    // here means the unit came from somewhere else and the raw count is the
+    // honest answer.
+    match name {
+        "Second" => Some(TimeUnit::Second),
+        "Millisecond" => Some(TimeUnit::Millisecond),
+        "Microsecond" => Some(TimeUnit::Microsecond),
+        "Nanosecond" => Some(TimeUnit::Nanosecond),
+        _ => None,
+    }
+}
+
+/// Seconds-resolution text with the fraction the value actually carries.
+///
+/// The grid shows whole seconds, because a column is a fixed width there. A
+/// document is not, and dropping the fraction would make two events in the
+/// same second read as one — so the fraction appears only when there is one.
+fn format_precise_timestamp(unit: &str, value: i64) -> String {
+    let Some(unit) = time_unit(unit) else {
+        return value.to_string();
+    };
+    let Some(moment) = chrono::DateTime::from_timestamp_micros(unit.to_micros(value)) else {
+        return value.to_string();
+    };
+    let seconds = moment.format("%Y-%m-%d %H:%M:%S").to_string();
+    fraction(seconds, moment.timestamp_subsec_micros())
+}
+
+fn format_precise_time(unit: &str, value: i64) -> String {
+    let Some(unit) = time_unit(unit) else {
+        return value.to_string();
+    };
+    let micros = unit.to_micros(value);
+    let seconds = micros.div_euclid(1_000_000);
+    let text = format!(
+        "{:02}:{:02}:{:02}",
+        seconds.div_euclid(3_600),
+        seconds.div_euclid(60) % 60,
+        seconds % 60
+    );
+    fraction(text, micros.rem_euclid(1_000_000) as u32)
+}
+
+fn fraction(prefix: String, micros: u32) -> String {
+    if micros == 0 {
+        return prefix;
+    }
+    let digits = format!("{micros:06}");
+    format!("{prefix}.{}", digits.trim_end_matches('0'))
+}
+
+/// The result as a Markdown table — the format for a document stream.
+///
+/// Two things a table cannot say are said under it instead: that the result had
+/// no rows, and that it was cut short. A preview read as a complete answer is
+/// the mistake worth spending a line on.
+pub fn format_markdown(result: &CliResult) -> String {
+    use std::fmt::Write as _;
+
+    if result.columns.is_empty() {
+        return "_No columns were returned._\n".to_string();
+    }
+    let mut out = String::new();
+    for column in &result.columns {
+        let _ = write!(out, "| {} ", markdown_cell(&column.name));
+    }
+    out.push_str("|\n");
+    for _ in &result.columns {
+        out.push_str("| --- ");
+    }
+    out.push_str("|\n");
+    for row in &result.rows {
+        for cell in row {
+            let _ = write!(out, "| {} ", markdown_cell(&plain_text(cell)));
+        }
+        out.push_str("|\n");
+    }
+    if result.rows.is_empty() {
+        out.push_str("_0 rows._\n");
+    }
+    if result.truncated {
+        let _ = writeln!(
+            out,
+            "_Truncated at {} rows: more rows were available, so this is not the whole answer._",
+            result.row_count
+        );
+    }
+    out
+}
+
+/// A cell as one line of a table.
+///
+/// `|` is escaped because an unescaped one ends the cell early and shifts every
+/// column after it. A backslash is escaped only where it would otherwise be
+/// read as escaping the pipe, so `C:\Users` stays as written.
+fn markdown_cell(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&'|') => out.push_str("\\\\"),
+            '|' => out.push_str("\\|"),
+            '\n' => out.push_str("<br>"),
+            '\r' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -794,6 +1020,181 @@ mod tests {
         assert_eq!(
             value_to_string(&Value::Timestamp(TimeUnit::Microsecond, 0)),
             "1970-01-01 00:00:00"
+        );
+    }
+
+    /// Read back, an encoded cell says what the grid says — the two renderings
+    /// of one value, not two opinions about it.
+    #[test]
+    fn plain_text_reads_encoded_cells_the_way_the_grid_shows_them() {
+        let conn = mem();
+        let result = run_cli_of(
+            &conn,
+            "SELECT NULL AS a,
+                    true AS b,
+                    CAST(-7 AS TINYINT) AS c,
+                    CAST(2.5 AS DOUBLE) AS d,
+                    CAST(1.25 AS DECIMAL(5,2)) AS e,
+                    'héllo' AS f,
+                    DATE '2024-10-04' AS g,
+                    TIMESTAMP '2024-10-04 07:08:09' AS h,
+                    TIME '07:08:09' AS i,
+                    INTERVAL 3 DAY AS j,
+                    [1, 2] AS k,
+                    {'x': 1} AS l,
+                    MAP {'x': 1} AS m",
+            10,
+        )
+        .unwrap();
+        let row: Vec<String> = result.rows[0].iter().map(plain_text).collect();
+        assert_eq!(
+            row,
+            [
+                "NULL",
+                "true",
+                "-7",
+                "2.5",
+                "1.25",
+                "héllo",
+                "2024-10-04",
+                "2024-10-04 07:08:09",
+                "07:08:09",
+                "3 days",
+                "[1, 2]",
+                "{x: 1}",
+                "{x: 1}",
+            ]
+        );
+    }
+
+    /// The digits the JSON contract exists to protect survive the readable
+    /// rendering; nothing is rounded into a neighbour on the way to a document.
+    #[test]
+    fn plain_text_keeps_digits_json_kept() {
+        assert_eq!(
+            plain_text(
+                &serde_json::json!({"encoding": "integer", "value": "170141183460469231731687303715884105727"})
+            ),
+            "170141183460469231731687303715884105727"
+        );
+        assert_eq!(
+            plain_text(
+                &serde_json::json!({"encoding": "decimal", "value": "1234567890.1234567890"})
+            ),
+            "1234567890.1234567890"
+        );
+        assert_eq!(
+            plain_text(&serde_json::json!({"encoding": "float", "value": "-inf"})),
+            "-inf"
+        );
+        assert_eq!(
+            plain_text(&serde_json::json!(9_007_199_254_740_991i64)),
+            "9007199254740991"
+        );
+        // A date is stored as a count of days, and a document is read by
+        // someone who wants the date.
+        assert_eq!(
+            plain_text(&serde_json::json!({"encoding": "date", "unit": "Day", "value": "19783"})),
+            "2024-03-01"
+        );
+        assert_eq!(
+            plain_text(
+                &serde_json::json!({"encoding": "timestamp", "unit": "Nanosecond", "value": "1709296496123456000"})
+            ),
+            "2024-03-01 12:34:56.123456"
+        );
+        // No fraction, because there is none — not a `.000000` that reads like
+        // precision nobody asked for.
+        assert_eq!(
+            plain_text(
+                &serde_json::json!({"encoding": "timestamp", "unit": "Second", "value": "1709296496"})
+            ),
+            "2024-03-01 12:34:56"
+        );
+        assert_eq!(
+            plain_text(
+                &serde_json::json!({"encoding": "time", "unit": "Microsecond", "value": "25536123456"})
+            ),
+            "07:05:36.123456"
+        );
+        assert_eq!(
+            plain_text(&serde_json::json!({"encoding": "hex", "value": "00ff"})),
+            "0x00ff"
+        );
+    }
+
+    #[test]
+    fn plain_text_elides_a_wall_but_not_a_value() {
+        let long = "x".repeat(500);
+        assert_eq!(plain_text(&serde_json::json!(long.clone())), long);
+        let list: Vec<i64> = (0..200).collect();
+        let rendered = plain_text(&serde_json::json!(list));
+        assert!(rendered.ends_with('…'), "{rendered}");
+        assert!(rendered.chars().count() <= CELL_CAP + 1, "{rendered}");
+    }
+
+    fn cli_result(
+        columns: &[&str],
+        rows: Vec<Vec<serde_json::Value>>,
+        truncated: bool,
+    ) -> CliResult {
+        CliResult {
+            columns: columns
+                .iter()
+                .map(|name| CliColumn {
+                    name: (*name).to_string(),
+                    arrow_type: "Utf8".to_string(),
+                })
+                .collect(),
+            row_count: rows.len(),
+            rows,
+            truncated,
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn markdown_escapes_the_cells_that_would_break_the_table() {
+        let result = cli_result(
+            &["a|b"],
+            vec![
+                vec![serde_json::json!("x|y")],
+                vec![serde_json::json!("C:\\Users")],
+                vec![serde_json::json!("a\\|b")],
+                vec![serde_json::json!("one\ntwo")],
+            ],
+            false,
+        );
+        let text = format_markdown(&result);
+        assert_eq!(
+            text,
+            "| a\\|b |\n\
+             | --- |\n\
+             | x\\|y |\n\
+             | C:\\Users |\n\
+             | a\\\\\\|b |\n\
+             | one<br>two |\n"
+        );
+    }
+
+    #[test]
+    fn markdown_says_when_the_answer_is_not_the_whole_answer() {
+        let empty = format_markdown(&cli_result(&["n"], vec![], false));
+        assert_eq!(empty, "| n |\n| --- |\n_0 rows._\n");
+
+        let truncated =
+            format_markdown(&cli_result(&["n"], vec![vec![serde_json::json!(1)]], true));
+        assert!(
+            truncated.starts_with("| n |\n| --- |\n| 1 |\n"),
+            "{truncated}"
+        );
+        assert!(truncated.contains("_Truncated at 1 rows"), "{truncated}");
+
+        // A statement that returned nothing to tabulate says so rather than
+        // printing an empty header.
+        assert_eq!(
+            format_markdown(&cli_result(&[], vec![], false)),
+            "_No columns were returned._\n"
         );
     }
 }

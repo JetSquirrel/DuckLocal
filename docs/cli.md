@@ -4,7 +4,9 @@
 
 ## Run without a window
 
-`ducklocal query` executes SQL without initializing the GUI, history, registered files, language settings, or the GUI's global connection. Each invocation owns a new connection. With no command (or file, directory, and glob arguments), the existing GUI still opens. To open a GUI path named `query`, use `./query`.
+`ducklocal query` executes SQL without initializing the GUI, history, registered files, language settings, or the GUI's global connection. Each invocation owns a new connection. With no command (or file, directory, and glob arguments), the existing GUI still opens. To open a GUI path named `query`, `profile` or `dash`, use `./query`, `./profile`, `./dash`.
+
+`ducklocal dash export` is the one subcommand that starts the window platform, because a panel renders and rendering needs a window: it opens one hidden window, draws one frame, and exits when the panel has stopped asking the database. Nothing appears on screen.
 
 The supported release target remains **macOS 12+, Apple silicon**. There is no separate DuckDB CLI dependency. A build containing this CLI can be invoked directly inside its app bundle:
 
@@ -22,6 +24,7 @@ ducklocal --help
 ducklocal --version
 ducklocal query --help
 ducklocal query --sql "SELECT 1 AS n"
+ducklocal query --sql "SELECT 1 AS n" --format md
 ducklocal query --sql-file analysis.sql --limit 100
 ducklocal query --sql-file - < analysis.sql
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
@@ -30,7 +33,25 @@ ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 - Exactly one of `--sql SQL` and `--sql-file FILE` is required. Files must be UTF-8; `-` reads stdin. SQL must contain exactly one statement. DuckDB's parser validates this before opening the target database or executing anything; comments, quoted semicolons, and trailing semicolons work. Scripts are rejected, not partially executed.
 - `--database PATH` opens an **existing file, read-only by default**. Omit it for a fresh in-memory database. `--read-write` requires `--database` and explicitly permits writes and creating a database (not parent directories). Database errors never fall back to memory.
 - `--limit N` is a positive integer, defaults to 1000, and limits returned rows. A 2,000,000-cell budget also applies; an extra row is read to determine `truncated`. Neither limit constrains query computation or DuckDB's result buffering. Large individual cells can still be large.
+- `--format json` (the default) is the contract below. `--format md` renders the same result as a Markdown table, for a document or an agent reading it. Nothing else changes: the same SQL, the same limits, the same errors.
 - Repeated/unknown flags, missing values, empty SQL, and invalid limits are errors. Options use separate values, not `--flag=value`. Relative paths resolve against the process working directory, not the SQL file directory. Quote shell paths; inside SQL, double apostrophes (`'O''Brien.csv'`). SQL identifiers use double quotes.
+
+### Markdown output
+
+`--format md` is a rendering, not a second contract: the values are the ones the JSON holds, written the way the results grid shows them.
+
+| Value | Rendered as |
+| --- | --- |
+| `NULL` | `NULL` |
+| integer, decimal, float | the digits the value carries, exactly — a `DECIMAL(38,10)` keeps its scale, `NaN`/`inf`/`-inf` are spelled out |
+| `DATE` | `YYYY-MM-DD` |
+| `TIMESTAMP` | `YYYY-MM-DD HH:MM:SS[.ffffff]`, with the fraction only when the value has one. No timezone is appended; `--format json` keeps the raw count |
+| `TIME` | `HH:MM:SS[.ffffff]` |
+| `INTERVAL` | `1 months 2 days 3000 ns` |
+| `BLOB`, `GEOMETRY` | `0x00ff`, elided with `…` when long |
+| `LIST`, `STRUCT`, `MAP` | `[1, 2]`, `{x: 1}`, elided with `…` past 120 characters |
+
+A `|` in a cell is escaped and a newline becomes `<br>`, so a value cannot break the table it is in. A result with no rows is followed by `_0 rows._`, and a result that was cut short by `--limit` or the cell budget by `_Truncated at N rows: …_` — a preview should not read like a complete answer. Errors are unchanged: JSON on stderr, empty stdout.
 
 **Read-only is not a filesystem or network sandbox.** SQL such as `COPY` can write files even when the database is read-only. Authorize output paths, overwrites, database mutations, extension installation, and external access before execution. DuckLocal does not automatically install extensions or retry operations. Explicit `INSTALL`/`LOAD` SQL remains possible with authorization; installed extensions may autoload. A failed command can already have performed side effects (for example before an output failure); inspect the destination before retrying.
 
@@ -88,6 +109,36 @@ One JSON object comes back: `target`, `relation` (the SQL the statistics ran aga
 
 Statistics are exact and read the whole relation, so a profile costs a full scan. `--limit` does not apply: a profile of a sample is not a profile.
 
+## Export a panel as a static HTML file
+
+`ducklocal dash export` answers "what was that panel showing?" for someone who does not have DuckLocal. It runs the panel once — the same runtime, the same host module, the same database rules as `query` — and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file.
+
+```bash
+ducklocal dash export --html examples/analysis_app
+ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
+```
+
+- `--html` is required, and is the only format there is. PANEL is a panel folder (one holding `main.js`) or its `main.js`, resolved the way the app resolves it; a path that names neither is an argument error (exit 2).
+- `--out FILE` names the destination and defaults to `./<panel folder>.html` in the working directory. An existing file is refused unless `--force` is given — checked before the panel runs, so a refusal costs nothing.
+- `--database PATH` and `--read-write` mean exactly what they mean for `query`: an existing file, read-only unless asked otherwise, in memory when omitted. The panel runs on that connection, so a panel that writes needs `--read-write`.
+- The command starts the window platform, because a panel renders and rendering needs a window. The window is hidden and never appears; the command finishes when the panel has stopped asking the database, or after 15 seconds.
+
+One JSON object goes to stdout:
+
+```json
+{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630}
+```
+
+`queries` counts the captured statements, `rows` the rows across those that succeeded, and `panel_errors` what the panel logged as an error while it ran.
+
+The report holds the panel folder, the database it ran against, the export time, and one section per statement: the SQL, its columns and their Arrow types, the result as a table, and a bar chart when a result is a name and a number per row. A `catalog()` call becomes an appendix of tables, views and columns. Statements a panel runs more than once appear once, with the last result.
+
+The report does **not** hold the panel's own layout or its charts. A panel draws native components, and a chart's bars are decided while it is laid out, not described anywhere that can be read out — so the export shows the data the panel was built from, not the interface it built. Filters, toggles and later refreshes are not represented either, and there is no JavaScript in the file. It is a snapshot of the panel's loading state, and it says so at the top.
+
+The panel's JavaScript runs with the same privileges it always has: `query()` can `COPY`, `ATTACH` and write files. The export is not a sandbox.
+
+Exit codes: **0** with the file written; **2** for a bad command line, a panel path that names nothing, or a destination that already exists; **1** when the panel could not be loaded (nothing is written) or when it loaded and then failed (the report is written anyway, with the error in it, and the message names the file). A panel failure reports the error kind `panel`.
+
 ## JSON contract
 
 Successful queries write exactly one JSON object to stdout, followed by a newline:
@@ -127,7 +178,7 @@ Errors write one JSON object to **stderr**, leaving stdout empty:
 {"error":{"kind":"argument","message":"Provide exactly one of --sql and --sql-file"}}
 ```
 
-Exit codes: **0** success, **2** invalid arguments/statement count, **1** SQL, database, I/O, or output failure. Error kinds are `argument`, `sql`, `database`, `io`, and `output`. Check exit status before parsing stdout and inspect `truncated` before reporting completeness. Help/version are plain text exceptions. Transport failures such as a closed stdout pipe cannot guarantee an empty/complete output stream.
+Exit codes: **0** success, **2** invalid arguments/statement count, **1** SQL, database, I/O, or output failure. Error kinds are `argument`, `sql`, `database`, `io`, `output`, and — for `dash export` — `panel`. Check exit status before parsing stdout and inspect `truncated` before reporting completeness. Help/version are plain text exceptions. Transport failures such as a closed stdout pipe cannot guarantee an empty/complete output stream.
 
 ## Install the official skill
 
