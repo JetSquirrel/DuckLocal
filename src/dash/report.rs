@@ -35,6 +35,9 @@ pub struct Report<'a> {
     /// Errors the panel logged while it ran: a promise it left unhandled, a
     /// callback the shell could not attach. It still produced what is below.
     pub reported: &'a [String],
+    /// "settled" when the panel went quiet on its own, "deadline" when the
+    /// time limit cut the capture short and the panel may not be done.
+    pub stop_reason: &'a str,
 }
 
 pub fn build(report: &Report<'_>) -> String {
@@ -87,6 +90,15 @@ pub fn build(report: &Report<'_>) -> String {
         let _ = writeln!(out, "<pre>{}</pre>", escape(error));
         out.push_str(
             "<p class=\"note\">The statements below are what it managed before it stopped.</p>\n</section>\n",
+        );
+    }
+
+    if report.stop_reason == "deadline" {
+        out.push_str(
+            "<section class=\"panel-error\">\n<h2>The capture hit the time limit</h2>\n\
+             <p class=\"note\">The panel was still working when the capture stopped, so the \
+             statements below may not be everything it asks. A longer \
+             <code>--timeout</code> gives it more time.</p>\n</section>\n",
         );
     }
 
@@ -498,6 +510,7 @@ mod tests {
             captures,
             panel_error: None,
             reported: &[],
+            stop_reason: "settled",
         })
     }
 
@@ -664,10 +677,33 @@ mod tests {
             captures: &captures,
             panel_error: Some("ReferenceError: columns is not defined"),
             reported: &[],
+            stop_reason: "settled",
         });
         let error = html.find("The panel did not finish").unwrap();
         assert!(error < html.find("Statement 1").unwrap());
         assert!(html.contains("ReferenceError: columns is not defined"));
+    }
+
+    #[test]
+    fn a_deadline_capture_warns_that_the_panel_may_not_be_done() {
+        let captures = [query(
+            "SELECT 1 AS n",
+            Ok(result(&["n"], vec![vec![json!(1)]])),
+        )];
+        let settled = document(&captures);
+        assert!(!settled.contains("time limit"), "{settled}");
+        let html = build(&Report {
+            panel: Path::new("/panels/sales"),
+            entry: "main.js",
+            database: "in-memory",
+            exported_at: "2026-09-19 08:00:00",
+            version: "0.1.0",
+            captures: &captures,
+            panel_error: None,
+            reported: &[],
+            stop_reason: "deadline",
+        });
+        assert!(html.contains("The capture hit the time limit"), "{html}");
     }
 
     #[test]

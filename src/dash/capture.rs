@@ -72,6 +72,33 @@ static CAPTURES: LazyLock<Mutex<Vec<Capture>>> = LazyLock::new(|| Mutex::new(Vec
 static REVISION: AtomicU64 = AtomicU64::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
+/// Queries running right now. A statement is recorded only when it finishes,
+/// so a quiet period measured on recordings alone calls a slow query "idle"
+/// and stops the capture mid-panel — the settle loop waits this out first.
+static IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// Counts one query as running until dropped, panic or not.
+pub struct InFlightGuard {
+    _private: (),
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Mark a query as started; the guard it returns marks it finished.
+pub fn track_query() -> InFlightGuard {
+    IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+    InFlightGuard { _private: () }
+}
+
+/// How many queries are running right now.
+pub fn in_flight() -> u64 {
+    IN_FLIGHT.load(Ordering::SeqCst)
+}
+
 /// Begin recording, discarding anything recorded before.
 pub fn start() {
     lock().clear();
@@ -165,6 +192,18 @@ mod tests {
 
     fn result(conn: &duckdb::Connection, sql: &str) -> CliResult {
         run_cli_of(conn, sql, 10).unwrap()
+    }
+
+    #[test]
+    fn in_flight_counts_only_running_queries() {
+        assert_eq!(in_flight(), 0);
+        let first = track_query();
+        let second = track_query();
+        assert_eq!(in_flight(), 2);
+        drop(first);
+        assert_eq!(in_flight(), 1);
+        drop(second);
+        assert_eq!(in_flight(), 0);
     }
 
     #[test]

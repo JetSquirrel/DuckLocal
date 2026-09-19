@@ -39,5 +39,14 @@ quick-xml = { version = "0.36", features = ["serialize"] }
 [patch.crates-io]
 rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
 
+# A self-contained binary, small over fast: the heavy lifting happens inside
+# DuckDB's own C++ build, so the Rust code optimizes for size.
+[profile.release]
+opt-level = "z"          # Optimize for size
+lto = true               # Link-time optimization
+strip = true             # Strip symbols
+panic = "abort"          # Smaller panic handling
+codegen-units = 1        # Better optimization
+
 [profile.dev.package."*"]
 opt-level = 3

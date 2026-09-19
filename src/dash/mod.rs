@@ -191,13 +191,14 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
 /// The exit happens here rather than in a caller because everything that knows
 /// the answer runs inside the application loop, which does not unwind.
 fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: run::Outcome) -> ! {
-    let (captures, panel_error, reported, elapsed_ms) = match outcome {
+    let (captures, panel_error, reported, elapsed_ms, stop_reason) = match outcome {
         run::Outcome::Captured {
             captures,
             panel_error,
             reported,
             elapsed_ms,
-        } => (captures, panel_error, reported, elapsed_ms),
+            stop_reason,
+        } => (captures, panel_error, reported, elapsed_ms, stop_reason),
         run::Outcome::Failed(message) => {
             fail(&CliError::failure("panel", message));
         }
@@ -222,6 +223,7 @@ fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: r
         captures: &captures,
         panel_error: panel_error.as_deref(),
         reported: &reported,
+        stop_reason,
     });
     if let Err(error) = std::fs::write(&request.out, html) {
         fail(&CliError::failure("io", error));
@@ -234,6 +236,7 @@ fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: r
         "rows": rows,
         "panel_errors": reported.len(),
         "captured_ms": elapsed_ms as u64,
+        "stop_reason": stop_reason,
     });
     let mut stdout = std::io::stdout();
     use std::io::Write as _;

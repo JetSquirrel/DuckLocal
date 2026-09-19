@@ -190,6 +190,9 @@ fn captured_tables(databases: &[DatabaseInfo]) -> Vec<crate::dash::capture::Tabl
 /// different connection, so a slow statement here does not freeze the SQL
 /// editor. Blocking; call through `smol::unblock`.
 pub fn query(sql: &str, limit: usize) -> anyhow::Result<HostValue> {
+    // A statement is recorded when it finishes; the guard is what tells a
+    // watching settle loop that a slow query is running, not idle.
+    let _in_flight = crate::dash::capture::track_query();
     match crate::db::with_panel_connection(|conn| run_cli_of(conn, sql, limit)) {
         Ok(result) => {
             let value = query_value(&result);

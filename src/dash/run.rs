@@ -14,7 +14,9 @@
 //! * **The queries settle asynchronously.** `init()` is called at mount and
 //!   spawns the work; the statements arrive through `smol::unblock` on another
 //!   thread. There is no event to wait for, so the wait is a quiet period: the
-//!   panel has stopped asking for this long, or the deadline has passed.
+//!   panel has stopped asking for this long, or the deadline has passed. A
+//!   statement is recorded when it finishes, so "quiet" also requires nothing
+//!   in flight — a slow query is not idleness.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -79,12 +81,15 @@ pub struct Job {
 /// What the run found.
 pub enum Outcome {
     /// The panel ran. `panel_error` is why it stopped, when it stopped early;
-    /// `reported` is what it logged as an error while running.
+    /// `reported` is what it logged as an error while running. `stop_reason`
+    /// is "settled" when the panel went quiet, "deadline" when the time limit
+    /// cut the capture short.
     Captured {
         captures: Vec<capture::Capture>,
         panel_error: Option<String>,
         reported: Vec<String>,
         elapsed_ms: u128,
+        stop_reason: &'static str,
     },
     /// It never ran, so there is nothing to write.
     Failed(String),
@@ -169,18 +174,26 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                 let _window = window;
                 let mut revision = capture::revision();
                 let mut quiet_since = Instant::now();
-                loop {
+                let stop_reason = loop {
                     smol::Timer::after(POLL).await;
                     let current = capture::revision();
                     if current != revision {
                         revision = current;
                         quiet_since = Instant::now();
                     }
-                    let settled = revision > 0 && quiet_since.elapsed() >= QUIET;
-                    if settled || started.elapsed() >= DEADLINE {
-                        break;
+                    // A statement is recorded when it finishes, so a slow
+                    // query looks exactly like idleness on the revision
+                    // counter alone; the in-flight count tells them apart.
+                    let settled = revision > 0
+                        && capture::in_flight() == 0
+                        && quiet_since.elapsed() >= QUIET;
+                    if settled {
+                        break "settled";
                     }
-                }
+                    if started.elapsed() >= DEADLINE {
+                        break "deadline";
+                    }
+                };
                 // A panel that threw said why in its own view, which is the
                 // only place the reason exists.
                 let panel_error = cx.update(|cx| view.read(cx).build_error().map(str::to_string));
@@ -192,6 +205,7 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                         .unwrap_or_else(PoisonError::into_inner)
                         .clone(),
                     elapsed_ms: started.elapsed().as_millis(),
+                    stop_reason,
                 });
             })
             .detach();
