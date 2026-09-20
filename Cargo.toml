@@ -19,6 +19,7 @@ gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3a
 gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
 gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
+calamine = { version = "0.36", features = ["dates"] }
 smol = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +34,9 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 hmac = "0.12"
 sha2 = "0.10"
 quick-xml = { version = "0.36", features = ["serialize"] }
+
+[dev-dependencies]
+rust_xlsxwriter = "0.99"
 
 # `gpui-shell` scripts run on the QuickJS fork the toolkit pins; the crates.io
 # `rquickjs` would be a second, incompatible copy of the same crate.

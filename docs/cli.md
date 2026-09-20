@@ -99,7 +99,7 @@ ducklocal profile orders.parquet
 ducklocal profile "my orders" --database warehouse.duckdb
 ```
 
-TARGET is a data file — `csv`, `tsv`, `txt`, `parquet`, `json`, `ndjson`, `jsonl` — or, with `--database`, a table or view name. A dotted name is read as `schema.table` and each part is quoted, so a name with a space or a capital letter works as written. A target that names nothing is an argument error (exit 2), not a SQL one.
+TARGET is a data file — `csv`, `tsv`, `txt`, `parquet`, `json`, `ndjson`, `jsonl` — or a workbook (`xlsx`, `xls`, `xlsb`, `ods`; its first sheet is imported as a TEMP table and profiled), or, with `--database`, a table or view name. A dotted name is read as `schema.table` and each part is quoted, so a name with a space or a capital letter works as written. A target that names nothing is an argument error (exit 2), not a SQL one.
 
 One JSON object comes back: `target`, `relation` (the SQL the statistics ran against), `row_count`, `elapsed_ms`, and `columns` in the relation's own order. Per column:
 

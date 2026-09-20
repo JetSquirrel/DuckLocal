@@ -63,7 +63,7 @@ rm -rf ~/Library/Application\ Support/DuckLocal
 | 现象 | 原因 |
 | --- | --- |
 | 在你自己指定的路径上出现 `File not found` | 该路径不存在。DuckLocal 无法通过指定一个新文件来创建数据库 |
-| 文件夹报告没有数据文件 | 其中没有任何条目匹配 `.csv`、`.tsv`、`.txt`、`.parquet`、`.json`、`.ndjson` 或 `.jsonl` |
+| 文件夹报告没有数据文件 | 其中没有任何条目匹配 `.csv`、`.tsv`、`.txt`、`.parquet`、`.json`、`.ndjson`、`.jsonl`、`.xlsx`、`.xls`、`.xlsb` 或 `.ods` |
 | 文件夹产生的文件比预期少 | 隐藏条目和符号链接会被跳过，并且一次打开请求最多挂载 256 个文件 |
 | 某个路径意外地作为数据库打开 | 任何已存在的非数据文件都会被当作 DuckDB 数据库处理；如果无法打开，DuckLocal 会回退到内存模式并显示错误 |
 | 运行没有任何反应 | 已经有查询正在运行。没有取消，也没有超时 |

@@ -19,7 +19,7 @@ hero:
       link: https://github.com/JetSquirrel/DuckLocal
 features:
   - title: Query local files
-    details: Open CSV, Parquet, JSON, or a whole folder as DuckDB views. No connection setup or uploads.
+    details: Open CSV, Parquet, JSON, Excel, or a whole folder. No connection setup or uploads.
     link: /data-sources
     linkText: Explore data sources
   - title: A focused SQL workspace
@@ -63,7 +63,7 @@ macOS 12 or later, Apple silicon. Free and open source under Apache-2.0.
 
 ## At a glance
 
-- Local CSV / TSV / Parquet / JSON files, or whole folders, opened as views —
+- Local CSV / TSV / Parquet / JSON / Excel files, or whole folders —
   from the command line, the file dialog, or a drop on the window
 - SQL editor with syntax highlighting, autocompletion, formatting, and
   multiple tabs

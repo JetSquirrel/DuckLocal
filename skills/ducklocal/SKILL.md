@@ -1,6 +1,6 @@
 ---
 name: ducklocal
-description: Query and explore local CSV, TSV, JSON, and Parquet data with DuckLocal SQL; inspect schemas, compute aggregates, convert files, and query DuckDB databases through its headless JSON CLI. Use when the user mentions DuckLocal or asks for local data exploration, SQL analysis, or CSV/JSON/Parquet conversion.
+description: Query and explore local CSV, TSV, JSON, Parquet, and Excel data with DuckLocal SQL; inspect schemas, compute aggregates, convert files, and query DuckDB databases through its headless JSON CLI. Use when the user mentions DuckLocal or asks for local data exploration, SQL analysis, or CSV/JSON/Parquet/Excel conversion.
 ---
 
 # DuckLocal

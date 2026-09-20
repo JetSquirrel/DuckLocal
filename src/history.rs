@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{anyhow, Result};
 use duckdb::{Connection, OptionalExt};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 static HISTORY_CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
@@ -25,12 +25,14 @@ pub struct HistoryEntry {
 }
 
 /// A data file registered in the "本地文件" sidebar group. The file itself is
-/// re-attached as a view into every new connection.
+/// re-attached as a view into every new connection. A workbook registers one
+/// row per sheet (`sheet` set); other files one row with `sheet` unset.
 #[derive(Clone, Debug)]
 pub struct AttachedFile {
     pub id: i64,
     pub path: String,
     pub view_name: String,
+    pub sheet: Option<String>,
 }
 
 fn history_path() -> Result<PathBuf> {
@@ -116,6 +118,13 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
             [SCHEMA_VERSION],
         )?;
     }
+    if version < 4 {
+        conn.execute_batch("ALTER TABLE attached_files ADD COLUMN sheet VARCHAR;")?;
+        conn.execute(
+            "INSERT INTO schema_version(version) VALUES (?1)",
+            [SCHEMA_VERSION],
+        )?;
+    }
     Ok(())
 }
 
@@ -183,22 +192,48 @@ pub fn now_timestamp() -> String {
 /// path). Called by `state::attach_data_files` the first time a file is
 /// attached; later opens reuse the registration, so the sidebar keeps its
 /// order instead of moving the file to the end.
+/// Single-relation convenience form of [`register_attached_sheets`], kept for
+/// tests that register a plain file.
+#[cfg(test)]
 pub fn register_attached_file(path: &str, view_name: &str, kind: &str) -> Result<()> {
-    with_connection(|conn| register_attached_file_to(conn, path, view_name, kind))
+    register_attached_sheets(path, kind, &[(None, view_name.to_string())])
 }
 
+#[cfg(test)]
 pub fn register_attached_file_to(
     conn: &Connection,
     path: &str,
     view_name: &str,
     kind: &str,
 ) -> Result<()> {
+    register_attached_sheets_to(conn, path, kind, &[(None, view_name.to_string())])
+}
+
+/// Register the relations one file attached as, one row each — a workbook has
+/// one `(Some(sheet), name)` per imported sheet, other files a single
+/// `(None, name)`. Replaces any previous registration of the same path.
+pub fn register_attached_sheets(
+    path: &str,
+    kind: &str,
+    entries: &[(Option<String>, String)],
+) -> Result<()> {
+    with_connection(|conn| register_attached_sheets_to(conn, path, kind, entries))
+}
+
+pub fn register_attached_sheets_to(
+    conn: &Connection,
+    path: &str,
+    kind: &str,
+    entries: &[(Option<String>, String)],
+) -> Result<()> {
     conn.execute("DELETE FROM attached_files WHERE path = ?1", [path])?;
-    conn.execute(
-        "INSERT INTO attached_files(id, path, view_name, kind, attached_at)
-         VALUES (nextval('attached_files_id'), ?1, ?2, ?3, ?4)",
-        duckdb::params![path, view_name, kind, now_timestamp()],
-    )?;
+    for (sheet, view_name) in entries {
+        conn.execute(
+            "INSERT INTO attached_files(id, path, view_name, kind, attached_at, sheet)
+             VALUES (nextval('attached_files_id'), ?1, ?2, ?3, ?4, ?5)",
+            duckdb::params![path, view_name, kind, now_timestamp(), sheet],
+        )?;
+    }
     Ok(())
 }
 
@@ -208,13 +243,15 @@ pub fn attached_files() -> Result<Vec<AttachedFile>> {
 }
 
 pub fn attached_files_of(conn: &Connection) -> Result<Vec<AttachedFile>> {
-    let mut stmt = conn.prepare("SELECT id, path, view_name FROM attached_files ORDER BY id")?;
+    let mut stmt =
+        conn.prepare("SELECT id, path, view_name, sheet FROM attached_files ORDER BY id")?;
     let files = stmt
         .query_map([], |row| {
             Ok(AttachedFile {
                 id: row.get(0)?,
                 path: row.get(1)?,
                 view_name: row.get(2)?,
+                sheet: row.get(3)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -329,8 +366,72 @@ mod tests {
     }
 
     #[test]
-    fn prepare_schema_is_idempotent() {
+    fn a_workbook_registers_one_row_per_sheet() {
         let conn = Connection::open_in_memory().unwrap();
+        prepare_schema(&conn).unwrap();
+        register_attached_sheets_to(
+            &conn,
+            "~/data/sales.xlsx",
+            "excel",
+            &[
+                (Some("Orders".to_string()), "sales".to_string()),
+                (Some("Extra".to_string()), "sales_Extra".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let files = attached_files_of(&conn).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].sheet.as_deref(), Some("Orders"));
+        assert_eq!(files[0].view_name, "sales");
+        assert_eq!(files[1].sheet.as_deref(), Some("Extra"));
+
+        // Re-registering the path replaces all of its rows, not one of them.
+        register_attached_file_to(&conn, "~/data/sales.xlsx", "sales", "excel").unwrap();
+        let files = attached_files_of(&conn).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].sheet, None);
+    }
+
+    #[test]
+    fn a_v3_registry_migrates_to_v4() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The v3 schema, as a database that predates the sheet column holds it.
+        conn.execute_batch(
+            "CREATE TABLE schema_version(version BIGINT NOT NULL);
+             INSERT INTO schema_version(version) VALUES (1), (2), (3);
+             CREATE TABLE attached_files(
+                id BIGINT PRIMARY KEY,
+                path VARCHAR NOT NULL,
+                view_name VARCHAR NOT NULL,
+                kind VARCHAR NOT NULL,
+                attached_at VARCHAR NOT NULL
+            );
+            CREATE SEQUENCE attached_files_id START 1;
+            INSERT INTO attached_files(id, path, view_name, kind, attached_at)
+             VALUES (nextval('attached_files_id'), '/tmp/a.csv', 'a', 'csv', '2026-09-01 00:00:00');",
+        )
+        .unwrap();
+
+        prepare_schema(&conn).unwrap();
+
+        let files = attached_files_of(&conn).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].view_name, "a");
+        assert_eq!(files[0].sheet, None);
+        // And the migrated table accepts sheet rows.
+        register_attached_sheets_to(
+            &conn,
+            "/tmp/a.xlsx",
+            "excel",
+            &[(Some("S".to_string()), "a".to_string())],
+        )
+        .unwrap();
+        assert_eq!(attached_files_of(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn prepare_schema_is_idempotent() {        let conn = Connection::open_in_memory().unwrap();
         prepare_schema(&conn).unwrap();
         prepare_schema(&conn).unwrap();
         register_attached_file_to(&conn, "/tmp/a.csv", "a", "csv").unwrap();

@@ -18,13 +18,21 @@ All three entry points go through the same resolution rules:
 
 Extensions are matched case-insensitively.
 
-| Extension | DuckDB reader |
+| Extension | How it is read |
 | --- | --- |
-| `.csv`, `.tsv`, `.txt` | `read_csv_auto` |
-| `.parquet` | `read_parquet` |
-| `.json`, `.ndjson`, `.jsonl` | `read_json_auto` |
+| `.csv`, `.tsv`, `.txt` | `read_csv_auto` view |
+| `.parquet` | `read_parquet` view |
+| `.json`, `.ndjson`, `.jsonl` | `read_json_auto` view |
+| `.xlsx`, `.xls`, `.xlsb`, `.ods` | imported as a table per sheet |
 
 Anything else is not a data file — see [Database files](#database-files).
+
+A workbook is the one format that becomes **tables**, not views, and it
+imports **every sheet**: the first sheet takes the file stem as its name, the
+others are named `{stem}_{sheet name}`. An empty sheet is skipped. Column
+types are inferred from the cells — integers become `BIGINT`, an
+integer/float mixture `DOUBLE`, dates `TIMESTAMP`, and anything mixed or
+unrecognized `VARCHAR`; empty cells import as `NULL`.
 
 ## Folders and patterns
 

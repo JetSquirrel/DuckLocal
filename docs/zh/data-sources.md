@@ -16,13 +16,16 @@ DuckLocal 会把文件变成视图，挂到内存中的 DuckDB 连接上；如�
 
 扩展名不区分大小写。
 
-| 扩展名 | DuckDB 读取函数 |
+| 扩展名 | 读取方式 |
 | --- | --- |
-| `.csv`, `.tsv`, `.txt` | `read_csv_auto` |
-| `.parquet` | `read_parquet` |
-| `.json`, `.ndjson`, `.jsonl` | `read_json_auto` |
+| `.csv`, `.tsv`, `.txt` | `read_csv_auto` 视图 |
+| `.parquet` | `read_parquet` 视图 |
+| `.json`, `.ndjson`, `.jsonl` | `read_json_auto` 视图 |
+| `.xlsx`, `.xls`, `.xlsb`, `.ods` | 每个工作表导入为一张表 |
 
 其他内容都不是数据文件 —— 参见[数据库文件](#数据库文件)。
+
+工作簿是唯一会变成**表**（而不是视图）的格式，并且会导入**所有工作表**：第一个工作表以文件名主干命名，其余命名为 `{主干}_{工作表名}`。空工作表会被跳过。列类型根据单元格推断——整数为 `BIGINT`，整数与浮点混合为 `DOUBLE`，日期为 `TIMESTAMP`，其他混合或无法识别的内容为 `VARCHAR`；空单元格导入为 `NULL`。
 
 ## 文件夹与通配符
 

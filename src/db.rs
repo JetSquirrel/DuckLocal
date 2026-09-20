@@ -226,13 +226,24 @@ pub(crate) fn data_file_reader(path: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether `path` is a data file that can be attached as a view.
+/// Whether `path` is an Excel/ODS workbook, which calamine imports as tables.
+pub fn is_excel_file(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase());
+    matches!(ext.as_deref(), Some("xlsx" | "xls" | "xlsb" | "ods"))
+}
+
+/// Whether `path` is a data file that can be attached.
 pub fn is_data_file(path: &str) -> bool {
-    data_file_reader(path).is_some()
+    data_file_reader(path).is_some() || is_excel_file(path)
 }
 
 /// Coarse kind label for a data file extension, stored in the registry.
 pub fn data_file_kind(path: &str) -> Option<&'static str> {
+    if is_excel_file(path) {
+        return Some("excel");
+    }
     let ext = std::path::Path::new(path)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())?;
@@ -244,17 +255,42 @@ pub fn data_file_kind(path: &str) -> Option<&'static str> {
     }
 }
 
-/// Expose a CSV/TSV/Parquet/JSON file as a view in the current connection.
-/// The view is named after the file stem, with a numeric suffix when another
-/// file already claimed that name. Returns the view name.
-pub fn attach_data_file(path: &str) -> Result<String> {
+/// Expose a data file in the current connection and answer the relations it
+/// created as `(sheet, name)` pairs: a CSV/TSV/Parquet/JSON file becomes one
+/// view (sheet `None`); a workbook becomes one table per non-empty sheet —
+/// the first sheet takes the file stem, the others `{stem}_{sheet name}` —
+/// each with a numeric suffix when another file already claimed that name.
+pub fn attach_data_file(path: &str) -> Result<Vec<(Option<String>, String)>> {
     with_connection(|conn| attach_data_file_of(conn, path))
 }
 
-pub fn attach_data_file_of(conn: &Connection, path: &str) -> Result<String> {
-    let name = available_view_name_of(conn, &view_name_for(path)?);
-    attach_data_file_as_of(conn, path, &name)?;
-    Ok(name)
+pub fn attach_data_file_of(conn: &Connection, path: &str) -> Result<Vec<(Option<String>, String)>> {
+    let expanded = expand_tilde(path);
+    if is_excel_file(&expanded) {
+        if !std::path::Path::new(&expanded).exists() {
+            return Err(anyhow!(trf("error.file_not_found", &[&expanded])));
+        }
+        let stem = view_name_for(&expanded)?;
+        let mut created = Vec::new();
+        for (ix, sheet) in crate::excel::sheets(&expanded)?.iter().enumerate() {
+            let base = if ix == 0 {
+                stem.clone()
+            } else {
+                format!("{stem}_{sheet}")
+            };
+            let name = available_view_name_of(conn, &base);
+            if crate::excel::attach_sheet(conn, &expanded, sheet, &name)? {
+                created.push((Some(sheet.clone()), name));
+            }
+        }
+        if created.is_empty() {
+            return Err(anyhow!(trf("error.excel_empty", &[&expanded])));
+        }
+        return Ok(created);
+    }
+    let name = available_view_name_of(conn, &view_name_for(&expanded)?);
+    attach_data_file_as_of(conn, &expanded, &name)?;
+    Ok(vec![(None, name)])
 }
 
 /// Expose the file under an explicit view name, replacing a view of that name.
@@ -277,6 +313,34 @@ pub fn attach_data_file_as_of(conn: &Connection, path: &str, view_name: &str) ->
     conn.execute_batch(&format!(
         "CREATE OR REPLACE VIEW \"{quoted_ident}\" AS SELECT * FROM {reader}('{quoted_path}')"
     ))?;
+    Ok(())
+}
+
+/// Re-import one sheet of a workbook under an explicit relation name; `sheet`
+/// of `None` means the first sheet. Used where the name is already known —
+/// re-attaching a registered file must keep the name the sidebar shows for it.
+pub fn attach_excel_sheet_as(path: &str, sheet: Option<&str>, view_name: &str) -> Result<()> {
+    with_connection(|conn| attach_excel_sheet_as_of(conn, path, sheet, view_name))
+}
+
+pub fn attach_excel_sheet_as_of(
+    conn: &Connection,
+    path: &str,
+    sheet: Option<&str>,
+    view_name: &str,
+) -> Result<()> {
+    let expanded = expand_tilde(path);
+    if !std::path::Path::new(&expanded).exists() {
+        return Err(anyhow!(trf("error.file_not_found", &[&expanded])));
+    }
+    let sheet = match sheet {
+        Some(sheet) => sheet.to_string(),
+        None => crate::excel::sheets(&expanded)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!(trf("error.excel_empty", &[&expanded])))?,
+    };
+    crate::excel::attach_sheet(conn, &expanded, &sheet, view_name)?;
     Ok(())
 }
 
@@ -358,7 +422,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         let csv = std::env::temp_dir().join("ducklocal_attach_test.csv");
         std::fs::write(&csv, "city,amount\n北京,10\n上海,20\n").unwrap();
-        let view = attach_data_file_of(&conn, csv.to_str().unwrap()).unwrap();
+        let view = &attach_data_file_of(&conn, csv.to_str().unwrap()).unwrap()[0].1;
         assert_eq!(view, "ducklocal_attach_test");
         let total: i64 = conn
             .query_row("SELECT sum(amount) FROM ducklocal_attach_test", [], |r| {
@@ -370,12 +434,51 @@ mod tests {
     }
 
     #[test]
-    fn data_file_detection() {
-        assert!(is_data_file("/tmp/a.csv"));
+    fn a_workbook_attaches_a_table_per_non_empty_sheet() {
+        let conn = Connection::open_in_memory().unwrap();
+        let path = std::env::temp_dir().join("ducklocal_attach_test.xlsx");
+        std::fs::remove_file(&path).ok();
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let orders = book.add_worksheet().set_name("Orders").unwrap();
+        orders.write_string(0, 0, "n").unwrap();
+        orders.write_number(1, 0, 7).unwrap();
+        book.add_worksheet().set_name("Empty").unwrap();
+        let extra = book.add_worksheet().set_name("Extra Sheet").unwrap();
+        extra.write_string(0, 0, "s").unwrap();
+        extra.write_string(1, 0, "x").unwrap();
+        book.save(&path).unwrap();
+
+        let created = attach_data_file_of(&conn, path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            created,
+            [
+                (Some("Orders".to_string()), "ducklocal_attach_test".to_string()),
+                (
+                    Some("Extra Sheet".to_string()),
+                    "ducklocal_attach_test_Extra Sheet".to_string()
+                ),
+            ]
+        );
+        let n: i64 = conn
+            .query_row("SELECT n FROM ducklocal_attach_test", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 7);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn data_file_detection() {        assert!(is_data_file("/tmp/a.csv"));
         assert!(is_data_file("/tmp/a.PARQUET".to_lowercase().as_str()));
         assert!(is_data_file("/tmp/a.ndjson"));
+        assert!(is_data_file("/tmp/a.xlsx"));
+        assert!(is_data_file("/tmp/a.XLS".to_lowercase().as_str()));
+        assert!(is_data_file("/tmp/a.xlsb"));
+        assert!(is_data_file("/tmp/a.ods"));
         assert!(!is_data_file("/tmp/a.duckdb"));
         assert!(!is_data_file("/tmp/a"));
+        assert_eq!(data_file_kind("/tmp/a.xlsx"), Some("excel"));
+        assert_eq!(data_file_kind("/tmp/a.csv"), Some("csv"));
     }
 
     #[test]
@@ -390,8 +493,12 @@ mod tests {
             std::fs::write(path, "n\n1\n").unwrap();
         }
 
-        let first_view = attach_data_file_of(&conn, first.to_str().unwrap()).unwrap();
-        let second_view = attach_data_file_of(&conn, second.to_str().unwrap()).unwrap();
+        let first_view = attach_data_file_of(&conn, first.to_str().unwrap()).unwrap()[0]
+            .1
+            .clone();
+        let second_view = attach_data_file_of(&conn, second.to_str().unwrap()).unwrap()[0]
+            .1
+            .clone();
 
         assert_eq!(first_view, "events");
         assert_eq!(second_view, "events_2");
@@ -416,7 +523,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&csv, "n\n1\n").unwrap();
 
-        let view = attach_data_file_of(&conn, csv.to_str().unwrap()).unwrap();
+        let view = &attach_data_file_of(&conn, csv.to_str().unwrap()).unwrap()[0].1;
 
         assert_eq!(view, "events_2");
         assert_eq!(user_view_count(&conn), 1);

@@ -286,8 +286,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
     (
         "workspace.empty.description",
-        "拖入 CSV、TSV、Parquet、JSON 文件，或整个文件夹。数据只留在这台机器上。",
-        "Drag in CSV, TSV, Parquet, or JSON files — or a whole folder. Your data stays on this machine.",
+        "拖入 CSV、TSV、Excel、Parquet、JSON 文件，或整个文件夹。数据只留在这台机器上。",
+        "Drag in CSV, TSV, Excel, Parquet, or JSON files — or a whole folder. Your data stays on this machine.",
     ),
     ("workspace.empty.open_files", "打开文件…", "Open files…"),
     ("workspace.empty.open_folder", "打开文件夹…", "Open folder…"),
@@ -356,6 +356,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/db.rs ───────────────────────────────────────────────────────
     ("error.file_not_found", "文件不存在: {}", "File not found: {}"),
     ("error.unsupported_file_type", "不支持的文件类型: {}", "Unsupported file type: {}"),
+    (
+        "error.excel_empty",
+        "Excel 文件中没有可导入的工作表: {}",
+        "Workbook has no importable sheets: {}",
+    ),
     (
         "error.view_name_derivation",
         "无法从路径推导视图名: {}",

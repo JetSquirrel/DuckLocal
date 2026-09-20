@@ -602,6 +602,37 @@ fn profile_reports_the_shape_that_decides_a_chart() {
     );
 }
 
+/// A workbook target has no table function; `profile` imports its first sheet
+/// as a TEMP table — which even a read-only connection allows — and profiles
+/// that.
+#[test]
+fn profile_imports_a_workbooks_first_sheet() {
+    let s = Sandbox::new();
+    let mut book = rust_xlsxwriter::Workbook::new();
+    let sheet = book.add_worksheet().set_name("Orders").unwrap();
+    for (col, header) in ["city", "amount"].iter().enumerate() {
+        sheet.write_string(0, col as u16, *header).unwrap();
+    }
+    sheet.write_string(1, 0, "北京").unwrap();
+    sheet.write_number(1, 1, 10).unwrap();
+    sheet.write_string(2, 0, "上海").unwrap();
+    sheet.write_number(2, 1, 20).unwrap();
+    book.save(s.0.join("sales.xlsx")).unwrap();
+
+    let profile = s.profile(&["profile", "sales.xlsx"]);
+    assert_eq!(profile["target"], "sales.xlsx");
+    assert_eq!(profile["relation"], "\"sales\"");
+    assert_eq!(profile["row_count"], 2);
+    let columns = profile["columns"].as_array().unwrap();
+    assert_eq!(columns[0]["name"], "city");
+    assert_eq!(columns[0]["type"], "VARCHAR");
+    assert_eq!(columns[1]["name"], "amount");
+    assert_eq!(columns[1]["type"], "BIGINT");
+    assert_eq!(columns[1]["max"], "20");
+
+    s.error(&["profile", "no-such-file.xlsx"], 2, "argument");
+}
+
 /// The Markdown format is for reading, so it has to be readable: the values
 /// are the grid's, a cell cannot break the table it is in, and a result that is
 /// not the whole answer says so.

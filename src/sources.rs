@@ -271,6 +271,7 @@ mod tests {
         let dir = scratch("dir");
         touch(&dir.join("b.csv"));
         touch(&dir.join("a.parquet"));
+        touch(&dir.join("d.xlsx"));
         touch(&dir.join("nested/deep/c.json"));
         touch(&dir.join(".hidden.csv"));
         touch(&dir.join("notes.md"));
@@ -289,8 +290,8 @@ mod tests {
             .collect();
 
         // Depth-first, and sorted at each level: the walk order is what the
-        // views are created in, so it has to be stable across runs.
-        assert_eq!(names, ["a.parquet", "b.csv", "c.json"]);
+        // relations are created in, so it has to be stable across runs.
+        assert_eq!(names, ["a.parquet", "b.csv", "d.xlsx", "c.json"]);
         assert!(sources.problems.is_empty());
         assert_eq!(sources.database, None);
     }

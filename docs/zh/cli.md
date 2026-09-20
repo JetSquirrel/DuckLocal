@@ -99,7 +99,7 @@ ducklocal profile orders.parquet
 ducklocal profile "my orders" --database warehouse.duckdb
 ```
 
-TARGET 是数据文件（`csv`、`tsv`、`txt`、`parquet`、`json`、`ndjson`、`jsonl`），或者配合 `--database` 时是表名/视图名。带点的名字按 `schema.table` 拆开并逐段加引号，所以带空格或大写的名字可以照原样写。TARGET 指向不存在的东西是参数错误（退出码 2），不是 SQL 错误。
+TARGET 是数据文件（`csv`、`tsv`、`txt`、`parquet`、`json`、`ndjson`、`jsonl`），或工作簿（`xlsx`、`xls`、`xlsb`、`ods`，其第一个工作表会被导入为 TEMP 表再画像），或者配合 `--database` 时是表名/视图名。带点的名字按 `schema.table` 拆开并逐段加引号，所以带空格或大写的名字可以照原样写。TARGET 指向不存在的东西是参数错误（退出码 2），不是 SQL 错误。
 
 返回一个 JSON 对象：`target`、`relation`（统计实际执行的 SQL 关系）、`row_count`、`elapsed_ms`，以及按关系自身列序排列的 `columns`。每列包含：
 

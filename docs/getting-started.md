@@ -49,7 +49,7 @@ There are two more ways in, both equivalent:
   workspace with nothing attached.
 - **Drag files or folders onto the window.**
 
-Every CSV, TSV, Parquet, or JSON file becomes a view, and every file is
+Every CSV, TSV, Parquet, JSON, or Excel file becomes a queryable relation, and every file is
 registered — the next launch starts with the same workspace. See
 [Data sources](data-sources.md) for the details.
 

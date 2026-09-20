@@ -28,7 +28,7 @@ ducklocal profile sales.csv
 ducklocal profile "my orders" --database warehouse.duckdb
 ```
 
-TARGET is a data file or, with `--database`, a table/view name; a dotted name is `schema.table` and each part is quoted. It takes no other options. A target that names nothing is an argument error (exit 2).
+TARGET is a data file (`csv`/`tsv`/`txt`/`parquet`/`json`/`ndjson`/`jsonl`), a workbook (`xlsx`/`xls`/`xlsb`/`ods`; its first sheet is imported as a TEMP table and profiled), or, with `--database`, a table/view name; a dotted name is `schema.table` and each part is quoted. It takes no other options. A target that names nothing is an argument error (exit 2).
 
 One JSON object: `target`, `relation`, `row_count`, `elapsed_ms`, and `columns` in relation order. Per column `name`, `type`, `nulls`, `distinct`, `unique` (only when `distinct` equals `row_count`), `min`, `max` as text; numeric columns add `decimals` (the digits after the point actually used, not the declared scale), `median` (a value the column holds, never an interpolation) and `max_over_median`; DATE/TIMESTAMP columns add `covered_days`, `span_days` and `missing_days`. `LIST`/`STRUCT`/`MAP`/`UNION` columns report `nulls` only.
 

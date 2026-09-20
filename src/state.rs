@@ -193,7 +193,14 @@ fn reattach_files(files: &[crate::history::AttachedFile]) -> Vec<String> {
     for file in files {
         match registered_path(&file.path) {
             Ok(path) => {
-                crate::db::attach_data_file_as(&path, &file.view_name).ok();
+                match &file.sheet {
+                    Some(sheet) => {
+                        crate::db::attach_excel_sheet_as(&path, Some(sheet), &file.view_name).ok();
+                    }
+                    None => {
+                        crate::db::attach_data_file_as(&path, &file.view_name).ok();
+                    }
+                }
             }
             Err(e) => problems.push(e.to_string()),
         }
@@ -214,10 +221,11 @@ pub struct RequestReport {
     pub truncated: bool,
 }
 
-/// Blocking helper: attach every path as a view, registering the new ones so
-/// they come back with the next launch. A file that is already registered is
-/// attached under its registered name, and keeps its place in the registry
-/// rather than being written again on every open.
+/// Blocking helper: attach every path, registering the new ones so they come
+/// back with the next launch. A file that is already registered is attached
+/// under its registered names — a workbook has one registry row per sheet —
+/// and keeps its place in the registry rather than being written again on
+/// every open.
 pub fn attach_data_files(paths: &[String]) -> RequestReport {
     let registered = crate::history::attached_files().unwrap_or_default();
     let mut report = RequestReport::default();
@@ -236,32 +244,45 @@ pub fn attach_data_files(paths: &[String]) -> RequestReport {
         if !seen.insert(path.clone()) {
             continue;
         }
-        let known = registered.iter().find(|file| {
-            registered_path(&file.path)
-                .ok()
-                .and_then(|path| crate::sources::canonical_file_path(&path).ok())
-                .as_ref()
-                == Some(&path)
-        });
+        let known: Vec<_> = registered
+            .iter()
+            .filter(|file| {
+                registered_path(&file.path)
+                    .ok()
+                    .and_then(|path| crate::sources::canonical_file_path(&path).ok())
+                    .as_ref()
+                    == Some(&path)
+            })
+            .collect();
 
-        let attached = match known {
-            Some(file) => crate::db::attach_data_file_as(&path, &file.view_name)
-                .map(|()| file.view_name.clone()),
-            None => crate::db::attach_data_file(&path),
-        };
-
-        match attached {
-            Ok(view) => {
-                if known.is_none() {
+        if known.is_empty() {
+            match crate::db::attach_data_file(&path) {
+                Ok(pairs) => {
                     if let Some(kind) = crate::db::data_file_kind(&path) {
-                        crate::history::register_attached_file(&path, &view, kind).ok();
+                        crate::history::register_attached_sheets(&path, kind, &pairs).ok();
                     }
+                    report.created.extend(pairs.into_iter().map(|(_, name)| name));
                 }
-                report.created.push(view);
+                Err(e) => report
+                    .failed
+                    .push(trf("notify.attach.failed", &[&e.to_string()])),
             }
-            Err(e) => report
-                .failed
-                .push(trf("notify.attach.failed", &[&e.to_string()])),
+            continue;
+        }
+
+        for file in known {
+            let attached = match &file.sheet {
+                Some(sheet) => {
+                    crate::db::attach_excel_sheet_as(&path, Some(sheet), &file.view_name)
+                }
+                None => crate::db::attach_data_file_as(&path, &file.view_name),
+            };
+            match attached {
+                Ok(()) => report.created.push(file.view_name.clone()),
+                Err(e) => report
+                    .failed
+                    .push(trf("notify.attach.failed", &[&e.to_string()])),
+            }
         }
     }
 
@@ -427,6 +448,60 @@ mod tests {
             .iter()
             .flat_map(|database| database.tables.iter().map(|table| table.name.clone()))
             .collect()
+    }
+
+    #[test]
+    fn a_workbook_registers_every_sheet_and_restores_them() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let path = std::env::temp_dir().join("ducklocal_state_workbook.xlsx");
+            std::fs::remove_file(&path).ok();
+            let mut book = rust_xlsxwriter::Workbook::new();
+            let orders = book.add_worksheet().set_name("Orders").unwrap();
+            orders.write_string(0, 0, "n").unwrap();
+            orders.write_number(1, 0, 7).unwrap();
+            let extra = book.add_worksheet().set_name("Meta").unwrap();
+            extra.write_string(0, 0, "key").unwrap();
+            extra.write_string(1, 0, "v").unwrap();
+            book.save(&path).unwrap();
+            let path = path.to_string_lossy().to_string();
+
+            crate::db::open_memory().unwrap();
+            let report = attach_data_files(std::slice::from_ref(&path));
+            assert_eq!(
+                report.created,
+                ["ducklocal_state_workbook", "ducklocal_state_workbook_Meta"]
+            );
+            assert!(report.failed.is_empty());
+
+            let registered = crate::history::attached_files().unwrap();
+            assert_eq!(registered.len(), 2);
+            assert_eq!(registered[0].sheet.as_deref(), Some("Orders"));
+            assert_eq!(registered[1].sheet.as_deref(), Some("Meta"));
+
+            // A repeated open re-attaches under the registered names and does
+            // not write the registry again.
+            let repeated = attach_data_files(std::slice::from_ref(&path));
+            assert_eq!(repeated.created, report.created);
+            assert_eq!(crate::history::attached_files().unwrap().len(), 2);
+
+            // A fresh connection restores both sheets from the registry.
+            crate::db::open_memory().unwrap();
+            assert!(reattach_registered_files().is_empty());
+            let n: i64 = crate::db::with_connection(|conn| {
+                conn.query_row(
+                    "SELECT (SELECT n FROM ducklocal_state_workbook) +
+                            (SELECT length(key) FROM ducklocal_state_workbook_Meta)",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+            assert_eq!(n, 8);
+            crate::db::close().unwrap();
+            std::fs::remove_file(&path).ok();
+        });
     }
 
     #[test]

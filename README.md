@@ -17,13 +17,13 @@ ducklocal './data/*.csv'      # a pattern
 ducklocal warehouse.duckdb    # or an existing DuckDB database
 ```
 
-Each CSV, TSV, Parquet, or JSON file becomes a queryable view as the window opens. You can also drag files or folders onto the window, or pick them from the file dialog — and they stay registered, so the next launch starts with the same workspace. One open request attaches at most 256 files.
+Each CSV, TSV, Parquet, JSON, or Excel file becomes queryable as the window opens. You can also drag files or folders onto the window, or pick them from the file dialog — and they stay registered, so the next launch starts with the same workspace. One open request attaches at most 256 files.
 
 Your data stays on your machine: nothing is uploaded, and there is no account.
 
 ## Features
 
-- Open local CSV / TSV / Parquet / JSON files, or whole folders, as queryable views — from the command line, the picker, or a drop on the window
+- Open local CSV / TSV / Parquet / JSON / Excel files, or whole folders — from the command line, the picker, or a drop on the window
 - SQL editor with syntax highlighting, autocompletion and one-click formatting, across multiple query tabs
 - Run queries with ⌘↵ (Cmd+Enter); inspect plans with EXPLAIN
 - Schema sidebar: browse databases / schemas / tables / columns, generate SELECT queries in one click, alter a column's data type from a dialog

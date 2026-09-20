@@ -60,16 +60,31 @@ fn quote(name: &str) -> String {
 
 /// The relation to profile, as SQL.
 ///
-/// A path that names a data file this build can read becomes that reader's call;
-/// anything else is a table or view name, quoted part by part so `main.orders`
-/// and a name with a space both work.
-pub fn relation_of(target: &str) -> Result<String> {
+/// A path that names a CSV/Parquet/JSON file this build can read becomes that
+/// reader's call; a workbook has no table function, so its first sheet is
+/// imported into `conn` as a TEMP table (which a read-only connection still
+/// allows) and that table's name is the relation. Anything else is a table or
+/// view name, quoted part by part so `main.orders` and a name with a space
+/// both work.
+pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
     let expanded = crate::db::expand_tilde(target);
     if let Some(reader) = crate::db::data_file_reader(&expanded) {
         if !std::path::Path::new(&expanded).is_file() {
             return Err(anyhow!("No such file: {target}"));
         }
         return Ok(format!("{reader}('{}')", expanded.replace('\'', "''")));
+    }
+    if crate::db::is_excel_file(&expanded) {
+        if !std::path::Path::new(&expanded).is_file() {
+            return Err(anyhow!("No such file: {target}"));
+        }
+        let sheet = crate::excel::sheets(&expanded)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("Workbook has no sheets: {target}"))?;
+        let name = crate::db::available_view_name_of(conn, &crate::db::view_name_for(&expanded)?);
+        crate::excel::attach_temporary_sheet(conn, &expanded, &sheet, &name)?;
+        return Ok(quote(&name));
     }
     if target.trim().is_empty() {
         return Err(anyhow!("Name a data file, a table or a view to profile"));

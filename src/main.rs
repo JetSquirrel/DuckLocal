@@ -3,6 +3,7 @@ mod app;
 mod cli;
 mod dash;
 mod db;
+mod excel;
 mod history;
 mod i18n;
 #[cfg(test)]

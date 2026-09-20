@@ -19,7 +19,7 @@ hero:
       link: https://github.com/JetSquirrel/DuckLocal
 features:
   - title: 查询本地文件
-    details: 将 CSV、Parquet、JSON 或整个文件夹打开为 DuckDB 视图。不用配置连接，也不上传数据。
+    details: 将 CSV、Parquet、JSON、Excel 或整个文件夹直接打开。不用配置连接，也不上传数据。
     link: /zh/data-sources
     linkText: 探索数据源
   - title: 专注的 SQL 工作区
@@ -62,7 +62,7 @@ features:
 
 ## 一览
 
-- 本地 CSV / TSV / Parquet / JSON 文件或整个文件夹，打开即为视图——入口可以是
+- 本地 CSV / TSV / Parquet / JSON / Excel 文件或整个文件夹——入口可以是
   命令行、文件对话框，或把文件拖放到窗口
 - SQL 编辑器：语法高亮、自动补全、格式化，支持多个查询 Tab
 - Schema 侧栏：浏览数据库、schema、表与列

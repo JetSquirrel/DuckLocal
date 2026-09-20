@@ -78,7 +78,7 @@ this**, only DuckLocal's own records.
 | Symptom | Cause |
 | --- | --- |
 | `File not found` on a path you named | The path does not exist. DuckLocal cannot create a database by naming a new file |
-| A folder reports no data files | Nothing under it matched `.csv`, `.tsv`, `.txt`, `.parquet`, `.json`, `.ndjson`, or `.jsonl` |
+| A folder reports no data files | Nothing under it matched `.csv`, `.tsv`, `.txt`, `.parquet`, `.json`, `.ndjson`, `.jsonl`, `.xlsx`, `.xls`, `.xlsb`, or `.ods` |
 | A folder produced fewer files than expected | Hidden entries and symlinks are skipped, and one open request attaches at most 256 files |
 | A path opened as a database unexpectedly | Any existing non-data file is treated as a DuckDB database; if it will not open, DuckLocal falls back to memory and shows the error |
 | Run does nothing | A query is already running. There is no cancel and no timeout |
