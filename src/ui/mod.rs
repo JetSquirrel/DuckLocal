@@ -67,15 +67,19 @@ fn run_open_request(
     window: &mut Window,
     cx: &mut App,
 ) {
+    state.update(cx, |state, cx| state.begin_open(cx));
     window
         .spawn(cx, async move |cx| {
             let result = smol::unblock(request).await;
-            cx.update(move |window, cx| match result {
-                Ok(outcome) => apply_open_outcome(state, outcome, window, cx),
-                Err(e) => window.push_notification(
-                    Notification::error(trf("notify.open.failed", &[&e.to_string()])),
-                    cx,
-                ),
+            cx.update(move |window, cx| {
+                state.update(cx, |state, cx| state.end_open(cx));
+                match result {
+                    Ok(outcome) => apply_open_outcome(state, outcome, window, cx),
+                    Err(e) => window.push_notification(
+                        Notification::error(trf("notify.open.failed", &[&e.to_string()])),
+                        cx,
+                    ),
+                }
             })
             .ok();
         })

@@ -2,12 +2,13 @@
 //! DuckDB version on the right.
 
 use gpui_kit::component::separator::Separator;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{h_flex, ActiveTheme, Icon, IconName, Sizable};
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
-use crate::state::{AppState, ConnectionChanged, QueryStatsChanged};
+use crate::state::{AppState, ConnectionChanged, OpenStateChanged, QueryStatsChanged};
 
 pub struct StatusBarView {
     state: Entity<AppState>,
@@ -19,6 +20,7 @@ impl StatusBarView {
         let subscriptions = vec![
             cx.subscribe(&state, |_, _, _: &ConnectionChanged, cx| cx.notify()),
             cx.subscribe(&state, |_, _, _: &QueryStatsChanged, cx| cx.notify()),
+            cx.subscribe(&state, |_, _, _: &OpenStateChanged, cx| cx.notify()),
         ];
         Self {
             state,
@@ -29,20 +31,26 @@ impl StatusBarView {
 
 impl Render for StatusBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (target_label, version, last) = {
+        let (target_label, version, last, opening) = {
             let state = self.state.read(cx);
             (
                 state.target.as_ref().map(|t| t.display_label()),
                 state.server.as_ref().map(|s| s.version.clone()),
                 state.last_query.clone(),
+                state.is_opening(),
             )
         };
 
         let mono = cx.theme().mono_font_family.clone();
 
-        let mut bar = StatusBar::new()
-            .h(px(32.))
-            .left(if let Some(label) = target_label {
+        let mut bar = StatusBar::new().h(px(32.)).left(if opening {
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(Spinner::new().xsmall())
+                .child(tr("status_bar.opening"))
+                .into_any_element()
+        } else if let Some(label) = target_label {
                 h_flex()
                     .gap_1p5()
                     .items_center()

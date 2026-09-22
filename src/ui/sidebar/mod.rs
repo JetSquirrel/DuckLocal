@@ -24,7 +24,7 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{tree, TreeEvent, TreeState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -56,6 +56,9 @@ pub struct Sidebar {
     node_meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
     /// S3 browse tree, present while S3 is configured.
     s3_browse: Option<S3Browse>,
+    /// A schema reload is in flight; the refresh button shows loading and
+    /// repeat clicks are ignored until it finishes.
+    refreshing_schema: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -108,6 +111,7 @@ impl Sidebar {
             tree_state,
             node_meta: Rc::new(HashMap::new()),
             s3_browse,
+            refreshing_schema: false,
             _subscriptions: subscriptions,
         }
     }
@@ -156,7 +160,9 @@ impl Sidebar {
             .py_2()
             .when(!is_last, |this| this.border_b_1())
             .border_color(cx.theme().border)
+            .cursor_pointer()
             .hover(|this| this.bg(cx.theme().accent))
+            .active(|this| this.bg(cx.theme().accent.opacity(0.7)))
             .child(
                 div()
                     .text_sm()
@@ -288,27 +294,37 @@ impl Sidebar {
                                 })
                                 .when_some(column, |this, column| {
                                     let workspace = workspace.clone();
-                                    this.cursor_pointer().on_click(move |_, window, cx| {
-                                        workspace.update(cx, |ws, cx| {
-                                            ws.fill_active_editor(
-                                                select_column_sql(&column),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    })
+                                    this.cursor_pointer()
+                                        .hover(|this| this.text_color(cx.theme().primary))
+                                        .active(|this| {
+                                            this.text_color(cx.theme().primary.opacity(0.7))
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            workspace.update(cx, |ws, cx| {
+                                                ws.fill_active_editor(
+                                                    select_column_sql(&column),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        })
                                 })
                                 .when_some(s3_uri, |this, uri| {
                                     let workspace = workspace.clone();
-                                    this.cursor_pointer().on_click(move |_, window, cx| {
-                                        workspace.update(cx, |ws, cx| {
-                                            ws.fill_active_editor(
-                                                select_s3_file_sql(&uri),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    })
+                                    this.cursor_pointer()
+                                        .hover(|this| this.text_color(cx.theme().primary))
+                                        .active(|this| {
+                                            this.text_color(cx.theme().primary.opacity(0.7))
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            workspace.update(cx, |ws, cx| {
+                                                ws.fill_active_editor(
+                                                    select_s3_file_sql(&uri),
+                                                    window,
+                                                    cx,
+                                                );
+                                            });
+                                        })
                                 }),
                         )
                         .when_some(node_meta.and_then(|m| m.detail.clone()), |this, detail| {
@@ -458,6 +474,8 @@ impl Render for Sidebar {
                             .xsmall()
                             .icon(IconName::RotateCw)
                             .tooltip(tr("sidebar.refresh_schema"))
+                            .loading(self.refreshing_schema)
+                            .disabled(self.refreshing_schema)
                             .on_click(cx.listener(Self::refresh_schema)),
                     ),
                 )

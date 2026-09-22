@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable};
 use gpui_kit::*;
 use gpui_shell::ShellRuntime;
@@ -449,9 +450,9 @@ impl AnalysisHost {
             .justify_center()
             .gap_2()
             .child(
-                Icon::new(IconName::LoaderCircle)
+                Spinner::new()
                     .large()
-                    .text_color(cx.theme().muted_foreground),
+                    .color(cx.theme().muted_foreground),
             )
             .child(
                 div()

@@ -25,6 +25,9 @@ pub struct AttachedFilesChanged;
 #[derive(Clone, Debug)]
 pub struct S3ConfigChanged;
 
+#[derive(Clone, Debug)]
+pub struct OpenStateChanged;
+
 /// Status-bar summary of the most recent query run.
 #[derive(Clone, Debug)]
 pub struct QueryStats {
@@ -56,6 +59,8 @@ pub struct AppState {
     pub attached_files: Vec<AttachedFileView>,
     /// Session-scoped S3 credentials, if configured. Memory only.
     pub s3_config: Option<crate::s3::S3Config>,
+    /// Open/attach requests in flight; > 0 while a data source is being opened.
+    open_requests: usize,
     /// Set once startup's open request has landed. Until then the panels have
     /// no opinion: their emptiness is "not loaded yet", not "nothing here".
     is_ready: bool,
@@ -66,6 +71,7 @@ impl EventEmitter<HistoryChanged> for AppState {}
 impl EventEmitter<QueryStatsChanged> for AppState {}
 impl EventEmitter<AttachedFilesChanged> for AppState {}
 impl EventEmitter<S3ConfigChanged> for AppState {}
+impl EventEmitter<OpenStateChanged> for AppState {}
 
 impl AppState {
     pub fn new(_cx: &mut Context<Self>) -> Self {
@@ -78,6 +84,7 @@ impl AppState {
             last_sql: None,
             attached_files: Vec::new(),
             s3_config: None,
+            open_requests: 0,
             is_ready: false,
         }
     }
@@ -94,6 +101,25 @@ impl AppState {
     /// first-run screen.
     pub fn has_data(&self) -> bool {
         !self.attached_files.is_empty() || !self.catalog.is_empty()
+    }
+
+    /// Whether an open/attach request is in flight.
+    pub fn is_opening(&self) -> bool {
+        self.open_requests > 0
+    }
+
+    /// Mark the start of an open/attach request; paired with `end_open`.
+    pub fn begin_open(&mut self, cx: &mut Context<Self>) {
+        self.open_requests += 1;
+        cx.emit(OpenStateChanged);
+        cx.notify();
+    }
+
+    /// Mark the end of an open/attach request started with `begin_open`.
+    pub fn end_open(&mut self, cx: &mut Context<Self>) {
+        self.open_requests = self.open_requests.saturating_sub(1);
+        cx.emit(OpenStateChanged);
+        cx.notify();
     }
 
     /// Refresh catalog + history from the blocking DB layer.

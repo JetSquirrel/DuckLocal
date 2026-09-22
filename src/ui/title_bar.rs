@@ -6,7 +6,8 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, IconName, Sizable, Theme, ThemeMode, TitleBar, WindowExt,
+    h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, Theme, ThemeMode, TitleBar,
+    WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -32,14 +33,19 @@ struct S3Inputs {
 
 impl TitleBarView {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.subscribe(&state, |_, _, _: &crate::state::ConnectionChanged, cx| {
-            cx.notify();
-        });
+        let subscriptions = vec![
+            cx.subscribe(&state, |_, _, _: &crate::state::ConnectionChanged, cx| {
+                cx.notify();
+            }),
+            cx.subscribe(&state, |_, _, _: &crate::state::OpenStateChanged, cx| {
+                cx.notify();
+            }),
+        ];
         Self {
             state,
             db_path_input: None,
             s3_inputs: None,
-            _subscriptions: vec![subscription],
+            _subscriptions: subscriptions,
         }
     }
 
@@ -329,9 +335,12 @@ impl TitleBarView {
 
 impl Render for TitleBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let target_label = {
+        let (target_label, opening) = {
             let state = self.state.read(cx);
-            state.target.as_ref().map(|t| t.display_label())
+            (
+                state.target.as_ref().map(|t| t.display_label()),
+                state.is_opening(),
+            )
         };
         let dark = cx.theme().mode.is_dark();
 
@@ -352,6 +361,8 @@ impl Render for TitleBarView {
                                 .xsmall()
                                 .icon(IconName::FolderOpen)
                                 .label(tr("title_bar.open_data"))
+                                .loading(opening)
+                                .disabled(opening)
                                 .on_click(cx.listener(Self::open_data_dialog)),
                         )
                         .child(

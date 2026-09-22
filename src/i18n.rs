@@ -339,6 +339,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/status_bar.rs ────────────────────────────────────────────
     ("status_bar.connected", "已连接", "Connected"),
     ("status_bar.disconnected", "未连接", "Disconnected"),
+    ("status_bar.opening", "正在打开数据源…", "Opening data source…"),
     (
         "status_bar.last_query",
         "耗时 {} · {} 行 · {} 列",

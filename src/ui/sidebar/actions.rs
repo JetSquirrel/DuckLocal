@@ -20,8 +20,13 @@ impl Sidebar {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.refreshing_schema {
+            return;
+        }
+        self.refreshing_schema = true;
+        cx.notify();
         let state = self.state.clone();
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let (catalog, attached) = smol::unblock(|| {
                 (
                     crate::schema::load_catalog().unwrap_or_default(),
@@ -33,6 +38,11 @@ impl Sidebar {
                 s.set_catalog(catalog, cx);
                 s.set_attached_files(attached, cx);
             });
+            this.update(cx, |this, cx| {
+                this.refreshing_schema = false;
+                cx.notify();
+            })
+            .ok();
         })
         .detach();
     }

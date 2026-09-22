@@ -319,6 +319,9 @@ pub struct ResultsPanel {
     /// chart tab and reused across frames; `None` means not yet derived.
     chart_data: Option<Rc<ChartData>>,
     export_input: Option<Entity<InputState>>,
+    /// An export is in flight; the dialog's confirm button shows loading and
+    /// duplicate submissions are ignored until it finishes.
+    exporting: bool,
     filter_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
@@ -348,6 +351,7 @@ impl ResultsPanel {
             rows_sql: None,
             chart_data: None,
             export_input: None,
+            exporting: false,
             filter_input,
             _subscriptions: vec![subscription],
         }
@@ -440,9 +444,24 @@ impl ResultsPanel {
         window.open_dialog(cx, move |dialog, _, cx| {
             let confirm_view = view.clone();
             let confirm_sql = sql.clone();
+            let exporting = view
+                .upgrade()
+                .map(|view| view.read(cx).exporting)
+                .unwrap_or(false);
             dialog
                 .title(trf("dialog.export.title", &[format_label]))
                 .w(px(440.))
+                .close_button(!exporting)
+                .overlay_closable(!exporting)
+                .on_cancel({
+                    let view = view.clone();
+                    move |_, _, cx| {
+                        !view
+                            .upgrade()
+                            .map(|view| view.read(cx).exporting)
+                            .unwrap_or(false)
+                    }
+                })
                 .child(
                     v_flex()
                         .gap_3()
@@ -461,17 +480,19 @@ impl ResultsPanel {
                             Button::new("cancel")
                                 .outline()
                                 .label(tr("common.cancel"))
+                                .disabled(exporting)
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("confirm-export")
                                 .primary()
                                 .label(tr("dialog.export.confirm"))
+                                .loading(exporting)
+                                .disabled(exporting)
                                 .on_click({
                                     let input = input.clone();
                                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                                         let path = input.read(cx).value().to_string();
-                                        window.close_dialog(cx);
                                         if let Some(view) = confirm_view.upgrade() {
                                             view.update(cx, |this, cx| {
                                                 this.run_export(
@@ -502,24 +523,34 @@ impl ResultsPanel {
             window.push_notification(Notification::error(tr("notify.export.empty_path")), cx);
             return;
         }
+        if self.exporting {
+            return;
+        }
+        self.exporting = true;
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let export_sql = sql.clone();
             let export_path = path.clone();
             let result =
                 smol::unblock(move || crate::query::export(&export_sql, &export_path, format))
                     .await;
-            this.update_in(cx, move |_, window, cx| match result {
-                Ok(()) => {
-                    window.push_notification(
-                        Notification::info(trf("notify.export.success", &[&path])),
-                        cx,
-                    );
-                }
-                Err(e) => {
-                    window.push_notification(
-                        Notification::error(trf("notify.export.failed", &[&e.to_string()])),
-                        cx,
-                    );
+            this.update_in(cx, move |this, window, cx| {
+                this.exporting = false;
+                window.close_dialog(cx);
+                cx.notify();
+                match result {
+                    Ok(()) => {
+                        window.push_notification(
+                            Notification::info(trf("notify.export.success", &[&path])),
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        window.push_notification(
+                            Notification::error(trf("notify.export.failed", &[&e.to_string()])),
+                            cx,
+                        );
+                    }
                 }
             })
             .ok();
