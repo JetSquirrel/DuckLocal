@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod app_export;
+mod assets;
 mod cli;
 mod db;
 mod excel;
@@ -55,7 +56,7 @@ fn main() {
         .collect();
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             ui::init(cx);

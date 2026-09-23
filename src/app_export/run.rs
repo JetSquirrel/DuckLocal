@@ -116,7 +116,7 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
         }};
     }
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::AppAssets)
         .run(move |cx| {
             let started = Instant::now();
             let timeout = job.timeout;
