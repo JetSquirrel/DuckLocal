@@ -10,7 +10,7 @@
 //! behind the strip, which is why every path that reaches for "the active
 //! editor" goes through `as_query` rather than assuming one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -134,6 +134,32 @@ fn editor_target(kinds: &[TabKind], active: usize) -> EditorTarget {
     }
 }
 
+/// The titles that more than one tab carries. Two `dashboard.dash` files from
+/// different folders both default to `dashboard`, and a strip of identical
+/// labels gives no way to tell which tab is which.
+fn duplicate_titles<'a>(titles: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen = Vec::new();
+    let mut duplicates = Vec::new();
+    for title in titles {
+        if seen.contains(&title) {
+            if !duplicates.contains(&title) {
+                duplicates.push(title);
+            }
+        } else {
+            seen.push(title);
+        }
+    }
+    duplicates
+}
+
+/// The name of the folder `path` sits in: what tells two same-titled
+/// documents apart.
+fn parent_name(path: &Path) -> Option<String> {
+    path.parent()?
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+}
+
 impl WorkspaceTab {
     pub fn id(&self) -> u64 {
         match self {
@@ -148,6 +174,17 @@ impl WorkspaceTab {
             WorkspaceTab::Query(tab) => &tab.title,
             WorkspaceTab::App(tab) => &tab.title,
             WorkspaceTab::Dashboard(tab) => &tab.title,
+        }
+    }
+
+    /// What to show after a title another tab shares: the folder a document
+    /// came from. A query tab is only ever named by the user, so it has none.
+    fn disambiguator(&self) -> Option<String> {
+        match self {
+            WorkspaceTab::Query(_) => None,
+            // An app's title is its folder, so the folder above says where.
+            WorkspaceTab::App(tab) => parent_name(&tab.directory),
+            WorkspaceTab::Dashboard(tab) => parent_name(&tab.path),
         }
     }
 
@@ -914,86 +951,82 @@ impl Workspace {
 
     fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let closable = self.tabs.len() > 1;
+        let duplicates = duplicate_titles(self.tabs.iter().map(|tab| tab.title().as_ref()));
         TabBar::new("query-tabs")
             .small()
             .selected_index(self.active)
             .on_click(cx.listener(|this, ix, window, cx| {
                 this.activate(*ix, window, cx);
             }))
-            .children(self.tabs.iter().map(|tab| match tab {
-                WorkspaceTab::Query(tab) => {
-                    let tab_id = tab.id;
-                    Tab::new().label(tab.title.clone()).when(closable, |this| {
+            .children(self.tabs.iter().map(|tab| {
+                let tab_id = tab.id();
+                let title = tab.title().clone();
+                // Same-titled tabs say which folder they came from, muted,
+                // so the label still reads as the title first.
+                let hint = duplicates
+                    .contains(&title.as_ref())
+                    .then(|| tab.disambiguator())
+                    .flatten();
+                // The glyph and the label share the tab's padded content.
+                // `prefix` would sit outside that padding — flush against the
+                // previous tab's close button, and a gap away from its own
+                // label — so the glyph reads as the wrong tab's.
+                let glyph = match tab {
+                    WorkspaceTab::Query(_) => None,
+                    WorkspaceTab::App(_) => Some(IconName::ChartPie),
+                    WorkspaceTab::Dashboard(_) => Some(IconName::LayoutDashboard),
+                };
+                // A dashboard shows a dot while its source buffer holds edits
+                // the file does not.
+                let dirty = tab
+                    .as_dashboard()
+                    .is_some_and(|dashboard| dashboard.host.read(cx).is_dirty(cx));
+                Tab::new()
+                    .aria_label(title.clone())
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .when_some(glyph, |this, glyph| {
+                                this.child(Icon::new(glyph).small())
+                            })
+                            .child(title)
+                            .when_some(hint, |this, hint| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(hint),
+                                )
+                            }),
+                    )
+                    .when(closable || dirty, |this| {
                         this.suffix(
-                            Button::new(("close-tab", tab_id as usize))
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.close_tab(tab_id, window, cx);
-                                })),
+                            h_flex()
+                                .gap_1()
+                                .pr_1()
+                                .items_center()
+                                .when(dirty, |this| {
+                                    this.child(
+                                        div()
+                                            .size_1p5()
+                                            .rounded_full()
+                                            .bg(cx.theme().warning),
+                                    )
+                                })
+                                .when(closable, |this| {
+                                    this.child(
+                                        Button::new(("close-tab", tab_id as usize))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Close)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.close_tab(tab_id, window, cx);
+                                            })),
+                                    )
+                                }),
                         )
                     })
-                }
-                // An app tab reads differently at a glance: a leading glyph
-                // marks it out, and the folder it came from is its label. The
-                // glyph goes through `prefix`, not `icon`: `icon` sizes the tab
-                // as a square around the glyph alone and drops the label, which
-                // is why an app used to read as a bare pie.
-                WorkspaceTab::App(tab) => {
-                    let tab_id = tab.id;
-                    Tab::new()
-                        .prefix(Icon::new(IconName::ChartPie))
-                        .label(tab.title.clone())
-                        .when(closable, |this| {
-                            this.suffix(
-                                Button::new(("close-app-tab", tab_id as usize))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.close_tab(tab_id, window, cx);
-                                    })),
-                            )
-                        })
-                }
-                // A dashboard reads as the app's sibling: its own glyph, the
-                // spec file's name as the label, and a dot when the source
-                // buffer holds edits the file does not.
-                WorkspaceTab::Dashboard(tab) => {
-                    let tab_id = tab.id;
-                    let dirty = tab.host.read(cx).is_dirty(cx);
-                    Tab::new()
-                        .prefix(Icon::new(IconName::LayoutDashboard))
-                        .label(tab.title.clone())
-                        .when(closable || dirty, |this| {
-                            this.suffix(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .when(dirty, |this| {
-                                        this.child(
-                                            div()
-                                                .w(px(6.))
-                                                .h(px(6.))
-                                                .rounded_full()
-                                                .bg(cx.theme().warning),
-                                        )
-                                    })
-                                    .when(closable, |this| {
-                                        this.child(
-                                            Button::new(("close-dashboard-tab", tab_id as usize))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::Close)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.close_tab(tab_id, window, cx);
-                                                })),
-                                        )
-                                    }),
-                            )
-                        })
-                }
             }))
             .suffix({
                 let view = cx.entity().downgrade();
@@ -1447,11 +1480,30 @@ impl Workspace {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{active_after_close, editor_target, EditorTarget, TabKind};
+    use super::{
+        active_after_close, duplicate_titles, editor_target, parent_name, EditorTarget, TabKind,
+    };
+    use std::path::Path;
 
     /// Three tabs with an app in the middle, the arrangement the branch
     /// mistakes would show up in.
     const MIXED: [TabKind; 3] = [TabKind::Query, TabKind::App, TabKind::Query];
+
+    #[test]
+    fn only_titles_carried_twice_are_duplicates() {
+        let titles = ["Query 1", "dashboard", "sales", "dashboard", "dashboard"];
+        assert_eq!(duplicate_titles(titles), vec!["dashboard"]);
+        assert!(duplicate_titles(["Query 1", "Query 2"]).is_empty());
+    }
+
+    #[test]
+    fn a_document_is_told_apart_by_its_folder() {
+        assert_eq!(
+            parent_name(Path::new("/x/examples/usage_panel/dashboard.dash")).as_deref(),
+            Some("usage_panel")
+        );
+        assert_eq!(parent_name(Path::new("/")), None);
+    }
 
     #[test]
     fn closing_the_active_tab_moves_to_the_one_before_it() {
