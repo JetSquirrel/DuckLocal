@@ -215,6 +215,15 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("title_bar.configure_s3", "配置 S3 数据源（httpfs）", "Configure S3 source (httpfs)"),
     ("title_bar.toggle_theme", "切换明暗主题", "Toggle light/dark theme"),
     ("title_bar.toggle_language", "切换语言", "Switch language"),
+    (
+        "title_bar.ui_size",
+        "界面大小（⌘+ 放大 · ⌘− 缩小 · ⌘0 复原）",
+        "Interface size (⌘+ larger · ⌘− smaller · ⌘0 reset)",
+    ),
+    ("ui_size.small", "小", "Small"),
+    ("ui_size.default", "默认", "Default"),
+    ("ui_size.large", "大", "Large"),
+    ("ui_size.xlarge", "特大", "Extra large"),
     ("dialog.s3.title", "配置 S3 数据源", "Configure S3 source"),
     (
         "dialog.s3.description",

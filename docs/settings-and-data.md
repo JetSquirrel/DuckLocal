@@ -28,6 +28,7 @@ re-attached on launch.
 | Registered data files — path, view name, kind | app data file |
 | Query history, including failures | app data file |
 | Interface language | app data file |
+| Interface size | app data file |
 | Open app and dashboard tabs, with their titles | app data file |
 | Recently opened apps and dashboards (the sidebar's **Apps** / **Dashboards**) | app data file |
 | App folders you chose to trust | app data file |
@@ -63,8 +64,26 @@ English, whatever the interface language is.
 ## Themes
 
 The sun/moon button toggles between the light and dark theme. There is no
-theme picker and no theme file to edit — the two modes are what you get. The
-base font size is 14px.
+theme picker and no theme file to edit — the two modes are what you get.
+
+## Interface size {#interface-size}
+
+Text, icons and controls scale together, in four steps:
+
+| Size | Base text | Editor text |
+| --- | --- | --- |
+| Small | 13px | 12px |
+| Default | 14px | 13px |
+| Large | 16px | 15px |
+| Extra large | 18px | 17px |
+
+Choose one from the **Aa** button in the title bar, or step through them with
+**⌘+** (larger), **⌘−** (smaller) and **⌘0** (back to default) — these work
+wherever the focus is, the SQL editor included. The choice is remembered, and
+survives switching between light and dark.
+
+Panel sizes you dragged, and the height of a dashboard's plots, stay in pixels:
+they are yours to adjust, not the interface's.
 
 ## Resetting
 

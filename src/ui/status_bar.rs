@@ -43,7 +43,7 @@ impl Render for StatusBarView {
 
         let mono = cx.theme().mono_font_family.clone();
 
-        let mut bar = StatusBar::new().h(px(32.)).left(if opening {
+        let mut bar = StatusBar::new().h(crate::ui::scale::design(32.)).left(if opening {
             h_flex()
                 .gap_1p5()
                 .items_center()

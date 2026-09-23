@@ -30,7 +30,7 @@ ducklocal warehouse.duckdb    # 或已有的 DuckDB 数据库
 - 结果表格支持筛选、单元格复制、CSV/Parquet 导出和内置图表
 - 查询历史，单击回填编辑器
 - 可选 S3 支持（httpfs），凭据仅当前会话有效
-- 明暗主题切换，中英文界面
+- 明暗主题切换，四档界面大小（⌘+ / ⌘− / ⌘0），中英文界面
 
 ## AI CLI 与官方 skill
 

@@ -30,7 +30,7 @@ Your data stays on your machine: nothing is uploaded, and there is no account.
 - Results grid with filtering, cell copy, CSV/Parquet export and built-in charts
 - Query history with one-click refill into the editor
 - Optional S3 support via httpfs; credentials are session-only
-- Light and dark themes, English and 简体中文
+- Light and dark themes, four interface sizes (⌘+ / ⌘− / ⌘0), English and 简体中文
 
 ## AI CLI and official skill
 

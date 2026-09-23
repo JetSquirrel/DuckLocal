@@ -450,7 +450,7 @@ impl ResultsPanel {
                 .unwrap_or(false);
             dialog
                 .title(trf("dialog.export.title", &[format_label]))
-                .w(px(440.))
+                .w(crate::ui::scale::design(440.))
                 .close_button(!exporting)
                 .overlay_closable(!exporting)
                 .on_cancel({
@@ -782,7 +782,7 @@ impl ResultsPanel {
             .border_color(cx.theme().border)
             .child(
                 Input::new(&self.filter_input)
-                    .w(px(200.))
+                    .w(crate::ui::scale::design(200.))
                     .cleanable(true)
                     .small(),
             )

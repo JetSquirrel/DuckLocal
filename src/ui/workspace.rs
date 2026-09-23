@@ -46,7 +46,7 @@ const RESULTS_PANEL_MAX: f32 = 640.;
 /// Line length the first-run description wraps at. Wide enough for the
 /// sentence to read as one thought, narrow enough that the eye does not have
 /// to travel the whole window.
-const FIRST_RUN_TEXT_WIDTH: Pixels = px(400.);
+const FIRST_RUN_TEXT_WIDTH: f32 = 400.;
 
 pub struct QueryTab {
     pub id: u64,
@@ -598,7 +598,7 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(tr("dashboard.close_unsaved.title"))
-                .w(px(420.))
+                .w(crate::ui::scale::design(420.))
                 .child(
                     div()
                         .text_sm()
@@ -713,7 +713,7 @@ impl Workspace {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(tr("dialog.rename.title"))
-                .w(px(360.))
+                .w(crate::ui::scale::design(360.))
                 .child(Input::new(&input))
                 .footer(
                     DialogFooter::new()
@@ -1380,7 +1380,7 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .max_w(FIRST_RUN_TEXT_WIDTH)
+                    .max_w(crate::ui::scale::design(FIRST_RUN_TEXT_WIDTH))
                     .text_center()
                     .child(tr("workspace.empty.description")),
             )

@@ -301,7 +301,8 @@ impl Sidebar {
                                 .xsmall()
                                 .text_color(cx.theme().muted_foreground)
                                 .into_any_element(),
-                            None => div().w(px(12.)).flex_shrink_0().into_any_element(),
+                            // The width of an xsmall icon, so rows line up at every size.
+                            None => div().w_3().flex_shrink_0().into_any_element(),
                         })
                         .child(
                             div()
@@ -392,7 +393,7 @@ impl Sidebar {
                         .child(
                             h_flex()
                                 .id(("row-actions", ix))
-                                .w(px(44.))
+                                .w(crate::ui::scale::design(44.))
                                 .flex_shrink_0()
                                 .justify_end()
                                 .gap_1()

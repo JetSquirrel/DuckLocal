@@ -62,6 +62,7 @@ did and what you saw.
 | Symptom | Cause and fix |
 | --- | --- |
 | The theme resets to light on every launch | The theme is not persisted; the language is |
+| Text or icons are too small or too large | Use the **Aa** button in the title bar, or ⌘+ / ⌘− / ⌘0. See [Interface size](settings-and-data.md#interface-size) |
 | The interface is in the wrong language | Use the `EN` / `中` button in the title bar; the choice is remembered |
 
 ## Starting over

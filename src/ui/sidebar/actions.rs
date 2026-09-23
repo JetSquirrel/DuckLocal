@@ -122,7 +122,7 @@ impl Sidebar {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(trf("dialog.alter_type.title", &[&column.name]))
-                .w(px(360.))
+                .w(crate::ui::scale::design(360.))
                 .child(
                     v_flex()
                         .gap_2()
