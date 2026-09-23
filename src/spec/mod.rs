@@ -11,6 +11,7 @@
 //! src/spec/model.rs    what the tree means, checked without a database
 //! src/spec/mod.rs      `ducklocal check`, the command half
 //! src/spec/prepare.rs  a plot's data, derived from its query's result once
+//! src/spec/highlight.rs  colours for the source editor, SQL heredocs included
 //! src/spec/view.rs     the view half: a `.dash` file as a workspace tab
 //! src/spec/tabs.rs     which specs are open, remembered between launches
 //! src/spec/lsp.rs      `ducklocal lsp`, the language server half
@@ -25,6 +26,7 @@
 //! that fails `check` opens as its diagnostics, not as a broken chart.
 
 pub mod complete;
+pub mod highlight;
 pub mod lsp;
 pub mod model;
 pub mod prepare;

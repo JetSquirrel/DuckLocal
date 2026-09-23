@@ -433,6 +433,7 @@ impl Dashboard {
                 if self.source_editor.is_none() {
                     self.source_editor = Some(cx.new(|cx| {
                         let mut state = EditorState::new(window, cx)
+                            .language(crate::spec::highlight::LANGUAGE)
                             .line_number(true)
                             .tab_size(TabSize {
                                 tab_size: 2,
@@ -440,6 +441,10 @@ impl Dashboard {
                             });
                         state.lsp_mut().completion_provider =
                             Some(Rc::new(SpecCompletionProvider));
+                        // Installed before the editor first renders, so the
+                        // component's tree-sitter factory — which has no
+                        // `.dash` grammar — never takes the slot.
+                        state.set_highlighter_factory(crate::spec::highlight::factory(), cx);
                         state
                     }));
                 }
