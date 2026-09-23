@@ -14,8 +14,10 @@ The tree shows, from the top:
   files share a view name; hover a row for the full path. Its children are the
   view's columns.
 - **Apps** / **Dashboards** — the analysis apps and `.dash` dashboards you
-  have opened recently. Click one to reopen it as a tab, the way you would a
-  file; an entry whose path no longer exists is dropped from the list.
+  have opened recently, sorted by name so a row stays put when you click it.
+  Click one to reopen it as a tab, the way you would a file; the × on hover
+  takes it off the list, leaving its files and any open tab alone. An entry
+  whose path no longer exists is dropped from the list.
 - **S3** — present once [S3 is configured](s3.md). Loads lazily.
 - Each database, then its schemas, then tables and views, then columns.
 

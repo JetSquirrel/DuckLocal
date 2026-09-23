@@ -165,6 +165,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.column.edit_type", "修改数据类型", "Change data type"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
     (
+        "sidebar.recent.remove",
+        "从列表移除（文件不受影响）",
+        "Remove from this list (the files stay)",
+    ),
+    (
         "sidebar.recents.gone",
         "{} 已不存在，已从最近列表移除",
         "{} no longer exists; removed from recents",

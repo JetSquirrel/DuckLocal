@@ -293,6 +293,7 @@ impl Sidebar {
             let column = node_meta.and_then(|m| m.column.clone());
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
             let doc = node_meta.and_then(|m| m.doc.clone());
+            let removable_doc = doc.clone();
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
             ListItem::new(ix)
@@ -489,6 +490,25 @@ impl Sidebar {
                                                         });
                                                     }
                                                 }
+                                            }),
+                                    )
+                                })
+                                // A recent app or dashboard leaves the list —
+                                // only the list: its files and any open tab
+                                // stay, so there is nothing to confirm.
+                                .when_some(removable_doc, |this, doc| {
+                                    let state = state.clone();
+                                    this.child(
+                                        Button::new(("remove-recent", ix))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Close)
+                                            .tooltip(tr("sidebar.recent.remove"))
+                                            .on_click(move |_, _, cx| {
+                                                crate::recents::remove(&doc.path);
+                                                state.update(cx, |_, cx| {
+                                                    cx.emit(RecentsChanged);
+                                                });
                                             }),
                                     )
                                 })

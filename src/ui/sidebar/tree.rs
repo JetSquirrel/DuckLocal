@@ -129,7 +129,7 @@ pub(super) fn build_tree_items(
 }
 
 /// One recents group ("Apps" or "Dashboards"): a row per remembered document,
-/// most recent first, like files the user can click back open.
+/// in a stable order, like files the user can click back open.
 fn recents_group(
     id: &str,
     label: &str,
@@ -137,7 +137,13 @@ fn recents_group(
     kind: RecentKind,
     meta: &mut HashMap<SharedString, SchemaNodeMeta>,
 ) -> Option<TreeItem> {
-    let documents: Vec<&RecentDocument> = recents.iter().filter(|doc| doc.kind == kind).collect();
+    let mut documents: Vec<&RecentDocument> =
+        recents.iter().filter(|doc| doc.kind == kind).collect();
+    // By name, then path — not by recency. Opening a document bumps it to the
+    // front of the stored list, and a list ordered that way reshuffles under
+    // the pointer the moment one of its rows is clicked. Recency still decides
+    // which documents the list keeps.
+    sort_documents(&mut documents);
     if documents.is_empty() {
         return None;
     }
@@ -321,6 +327,17 @@ fn table_tree_item(
     TreeItem::new(table_id, table.name.clone()).children(columns)
 }
 
+/// The sidebar's order for recent documents: by title, case-insensitively,
+/// then by path, so same-titled documents keep their places too.
+fn sort_documents(documents: &mut [&RecentDocument]) {
+    documents.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+}
+
 /// The muted text after a file row's view name: the file name when its stem is
 /// not the view name (`sales_2` from `sales.csv`, a sheet's table from its
 /// workbook), and the folder when another file shares the view name.
@@ -341,7 +358,37 @@ fn file_hint(path: &str, view_name: &str, duplicate: bool) -> Option<SharedStrin
 
 #[cfg(test)]
 mod file_hint_tests {
-    use super::file_hint;
+    use super::{file_hint, sort_documents};
+    use crate::recents::{RecentDocument, RecentKind};
+
+    #[test]
+    fn recent_documents_keep_their_places_whichever_was_opened_last() {
+        let doc = |title: &str, path: &str| RecentDocument {
+            kind: RecentKind::Dashboard,
+            path: path.to_string(),
+            title: title.to_string(),
+        };
+        let usage = doc("dashboard", "/ex/usage_panel/dashboard.dash");
+        let analysis = doc("dashboard", "/ex/analysis_app/dashboard.dash");
+        let sales = doc("Sales", "/ex/sales.dash");
+        // Most recent first, as stored, in either order: the sidebar agrees.
+        for stored in [
+            vec![&usage, &analysis, &sales],
+            vec![&sales, &analysis, &usage],
+        ] {
+            let mut shown = stored;
+            sort_documents(&mut shown);
+            let paths: Vec<&str> = shown.iter().map(|doc| doc.path.as_str()).collect();
+            assert_eq!(
+                paths,
+                [
+                    "/ex/analysis_app/dashboard.dash",
+                    "/ex/usage_panel/dashboard.dash",
+                    "/ex/sales.dash"
+                ]
+            );
+        }
+    }
 
     #[test]
     fn a_file_named_like_its_view_needs_no_hint() {
