@@ -5,6 +5,7 @@
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{v_flex, ActiveTheme, WindowExt};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::analysis::apps;
@@ -14,10 +15,9 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
-use crate::ui::{apply_open_outcome, open_paths};
+use crate::ui::{apply_open_outcome, open_paths, ToggleSidebar};
 
 pub struct DuckLocalApp {
-    #[allow(dead_code)]
     state: Entity<AppState>,
     title_bar: Entity<TitleBarView>,
     sidebar: Entity<Sidebar>,
@@ -35,6 +35,8 @@ impl DuckLocalApp {
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), workspace.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBarView::new(state.clone(), cx));
         let status_bar = cx.new(|cx| StatusBarView::new(state.clone(), cx));
+        cx.subscribe(&state, |_, _, _: &state::SidebarToggled, cx| cx.notify())
+            .detach();
 
         let open_state = state.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -149,19 +151,26 @@ impl Render for DuckLocalApp {
             .border_2()
             .border_color(cx.theme().background)
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().primary))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
+            }))
             .child(self.title_bar.clone())
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("main-split")
-                        .child(
-                            resizable_panel()
-                                .size(px(280.))
-                                .size_range(px(220.)..px(420.))
-                                .child(self.sidebar.clone()),
-                        )
-                        .child(resizable_panel().child(self.workspace.clone())),
-                ),
-            )
+            .child(div().flex_1().min_h_0().map(|this| {
+                if self.state.read(cx).is_sidebar_collapsed() {
+                    this.child(self.workspace.clone())
+                } else {
+                    this.child(
+                        h_resizable("main-split")
+                            .child(
+                                resizable_panel()
+                                    .size(px(280.))
+                                    .size_range(px(220.)..px(420.))
+                                    .child(self.sidebar.clone()),
+                            )
+                            .child(resizable_panel().child(self.workspace.clone())),
+                    )
+                }
+            }))
             .child(self.status_bar.clone())
     }
 }

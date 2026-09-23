@@ -60,6 +60,11 @@ pub(super) struct SchemaNodeMeta {
     pub(super) s3_uri: Option<String>,
     /// The document a recent-document row reopens on click.
     pub(super) doc: Option<crate::recents::RecentDocument>,
+    /// Muted text after the label: what tells a row apart from a same-named
+    /// one, or a file name that differs from its view's.
+    pub(super) hint: Option<SharedString>,
+    /// Shown on hover over the label: a file's or document's full path.
+    pub(super) tooltip: Option<SharedString>,
 }
 
 impl SchemaNodeMeta {
@@ -72,6 +77,23 @@ impl SchemaNodeMeta {
             column: None,
             s3_uri: None,
             doc: None,
+            hint: None,
+            tooltip: None,
         }
+    }
+}
+
+impl SchemaNodeKind {
+    /// The tree's top-level groupings, which are headings rather than things:
+    /// drawn as a small muted title with a disclosure arrow, so they never
+    /// read as a folder the way a schema does.
+    pub(super) fn is_section(self) -> bool {
+        matches!(
+            self,
+            SchemaNodeKind::LocalFilesGroup
+                | SchemaNodeKind::AppsGroup
+                | SchemaNodeKind::DashboardsGroup
+                | SchemaNodeKind::S3Status
+        )
     }
 }

@@ -69,13 +69,16 @@ function will appear.
 
 ## Keyboard shortcuts
 
-⌘↵ is the only shortcut DuckLocal itself defines. Everything else comes from
+DuckLocal defines a handful of shortcuts itself; everything else comes from
 the editor and table components, and behaves as it does in any macOS text
 field:
 
 | Shortcut | Action |
 | --- | --- |
 | ⌘↵ | Run the query |
+| ⌘S | Save a dashboard's source, in its source view |
+| ⌘+ / ⌘− / ⌘0 | Make the interface larger / smaller / default size — see [Interface size](settings-and-data.md#interface-size) |
+| ⌘B | Hide or show the sidebar |
 | ⌘F / ⇧⌘F | Find / replace in the editor |
 | ⌘Z / ⇧⌘Z | Undo / redo |
 | ⌘A | Select all |

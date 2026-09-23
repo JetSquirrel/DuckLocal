@@ -15,7 +15,9 @@ categories = ["database", "gui"]
 # component catalog all come from the same pinned revision. Mixing the
 # crates.io release with the Git one would put two incompatible copies of
 # `gpui-base` in the build.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
+# `tree-sitter-sql`: the SQL editor and the SQL in `.dash` heredocs are the only
+# code DuckLocal highlights, so it links that one grammar rather than the set.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da", features = ["tree-sitter-sql"] }
 gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
 gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }

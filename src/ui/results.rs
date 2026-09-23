@@ -450,7 +450,7 @@ impl ResultsPanel {
                 .unwrap_or(false);
             dialog
                 .title(trf("dialog.export.title", &[format_label]))
-                .w(px(440.))
+                .w(crate::ui::scale::design(440.))
                 .close_button(!exporting)
                 .overlay_closable(!exporting)
                 .on_cancel({
@@ -625,6 +625,7 @@ impl ResultsPanel {
                         Button::new("export-csv")
                             .outline()
                             .xsmall()
+                            .icon(gpui_kit::assets::IconName::Download)
                             .label(tr("results.export_csv"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -635,6 +636,7 @@ impl ResultsPanel {
                         Button::new("export-parquet")
                             .outline()
                             .xsmall()
+                            .icon(gpui_kit::assets::IconName::Download)
                             .label(tr("results.export_parquet"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -782,7 +784,7 @@ impl ResultsPanel {
             .border_color(cx.theme().border)
             .child(
                 Input::new(&self.filter_input)
-                    .w(px(200.))
+                    .w(crate::ui::scale::design(200.))
                     .cleanable(true)
                     .small(),
             )

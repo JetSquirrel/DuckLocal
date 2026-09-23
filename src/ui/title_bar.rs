@@ -4,6 +4,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, Theme, ThemeMode, TitleBar,
@@ -15,7 +16,8 @@ use gpui_kit::*;
 use crate::i18n::{tr, trf, Language};
 use crate::state::AppState;
 
-const DIALOG_WIDTH: Pixels = px(440.);
+/// Dialog width at the default interface size; see [`crate::ui::scale::design`].
+const DIALOG_WIDTH: f32 = 440.;
 
 pub struct TitleBarView {
     state: Entity<AppState>,
@@ -40,6 +42,9 @@ impl TitleBarView {
             cx.subscribe(&state, |_, _, _: &crate::state::OpenStateChanged, cx| {
                 cx.notify();
             }),
+            cx.subscribe(&state, |_, _, _: &crate::state::SidebarToggled, cx| {
+                cx.notify();
+            }),
         ];
         Self {
             state,
@@ -56,10 +61,8 @@ impl TitleBarView {
             ThemeMode::Dark
         };
         Theme::change(next, Some(window), cx);
-        // Theme::change resets font_size to the stock 16; pin our 14px base
-        // again (see main.rs).
-        Theme::global_mut(cx).font_size = px(14.);
-        Theme::sync_base(cx);
+        // Theme::change resets the base size to stock; put the user's back.
+        crate::ui::scale::apply(cx);
     }
 
     fn toggle_language(_: &ClickEvent, _: &mut Window, cx: &mut App) {
@@ -97,7 +100,7 @@ impl TitleBarView {
             let secret = secret.clone();
             dialog
                 .title(tr("dialog.s3.title"))
-                .w(DIALOG_WIDTH)
+                .w(crate::ui::scale::design(DIALOG_WIDTH))
                 .child(
                     v_flex()
                         .gap_3()
@@ -240,7 +243,7 @@ impl TitleBarView {
             let open_state = state.clone();
             dialog
                 .title(tr("dialog.open_source.title"))
-                .w(DIALOG_WIDTH)
+                .w(crate::ui::scale::design(DIALOG_WIDTH))
                 .child(
                     v_flex()
                         .gap_3()
@@ -335,11 +338,12 @@ impl TitleBarView {
 
 impl Render for TitleBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (target_label, opening) = {
+        let (target_label, opening, sidebar_collapsed) = {
             let state = self.state.read(cx);
             (
-                state.target.as_ref().map(|t| t.display_label()),
+                state.target.as_ref().and_then(|t| t.file_label()),
                 state.is_opening(),
+                state.is_sidebar_collapsed(),
             )
         };
         let dark = cx.theme().mode.is_dark();
@@ -355,6 +359,25 @@ impl Render for TitleBarView {
                         .min_w_0()
                         .justify_start()
                         .gap_2()
+                        // With the sidebar put away, the way back sits where
+                        // the sidebar would begin.
+                        .when(sidebar_collapsed, |this| {
+                            this.child(
+                                Button::new("expand-sidebar")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::PanelLeftOpen)
+                                    .tooltip_with_action(
+                                        tr("sidebar.expand"),
+                                        &crate::ui::ToggleSidebar,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state
+                                            .update(cx, |state, cx| state.toggle_sidebar(cx));
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("open-data")
                                 .ghost()
@@ -411,6 +434,28 @@ impl Render for TitleBarView {
                                 })
                                 .tooltip(tr("title_bar.toggle_language"))
                                 .on_click(Self::toggle_language),
+                        )
+                        .child(
+                            Button::new("ui-size")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::ALargeSmall)
+                                .tooltip(tr("title_bar.ui_size"))
+                                .dropdown_menu(|menu, _, _| {
+                                    let current = crate::ui::scale::current();
+                                    crate::ui::scale::UiSize::ALL.into_iter().fold(
+                                        menu,
+                                        |menu, size| {
+                                            menu.item(
+                                                PopupMenuItem::new(tr(size.label_key()))
+                                                    .checked(size == current)
+                                                    .on_click(move |_, _, cx| {
+                                                        crate::ui::scale::set(size, cx)
+                                                    }),
+                                            )
+                                        },
+                                    )
+                                }),
                         )
                         .child(
                             Button::new("toggle-theme")

@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: DuckLocal
-  text: 你的数据，你的工作台。
-  tagline: 本地优先的数据查询与分析工作台，原生基于 DuckDB。
+  text: 在 Mac 上直接用 SQL 查你的文件。
+  tagline: 拖入 CSV、Parquet、JSON 或 Excel，用 DuckDB 查询。不用服务器，不用配置，不用上传。
   image:
     src: /assets/logo.png
     alt: DuckLocal
@@ -12,59 +12,68 @@ hero:
       text: 快速上手
       link: /zh/getting-started
     - theme: alt
+      text: 10 分钟上手教程
+      link: /zh/tutorial
+    - theme: alt
       text: 下载 macOS 版
       link: https://github.com/JetSquirrel/DuckLocal/releases/latest
-    - theme: alt
-      text: GitHub
-      link: https://github.com/JetSquirrel/DuckLocal
 features:
-  - title: 查询本地文件
-    details: 将 CSV、Parquet、JSON、Excel 或整个文件夹直接打开。不用配置连接，也不上传数据。
+  - title: 文件在哪，就在哪查
+    details: 单个文件、文件夹、通配符或 .duckdb 数据库，一打开就能查询——下次启动还在。
     link: /zh/data-sources
-    linkText: 探索数据源
+    linkText: 数据源
+  - title: 数据不离开你的电脑
+    details: 没有账号、没有遥测、没有云端。文件原地读取，从不复制或上传。
+    link: /zh/settings-and-data
+    linkText: 存了什么、存在哪里
   - title: 专注的 SQL 工作区
-    details: 语法高亮、自动补全、格式化和多个查询 Tab，让你专注于 SQL。
+    details: 多个查询 Tab，基于你自己表结构的自动补全，一键格式化与 EXPLAIN。
     link: /zh/sql-editor
-    linkText: 了解编辑器
-  - title: 探索查询结果
-    details: 筛选结果表格、复制单元格、导出 CSV 或 Parquet，并用内置图表探索数据。
+    linkText: SQL 编辑器
+  - title: 从数字到图表
+    details: 过滤结果表格、把结果画成图，并导出为 CSV 或 Parquet。
     link: /zh/results-and-charts
     linkText: 结果与图表
+  - title: 为 AI agent 而生
+    details: 无界面 CLI 与严格的 JSON 契约，外加一个官方 agent skill，按先看 schema 再分析的方式工作。
+    link: /zh/cli
+    linkText: CLI 与 skill
+  - title: Dashboard 即文件
+    details: 在 .dash 文件里声明查询与图表，或用脚本写一个定制视图，再导出成一个 HTML 页面分享出去。
+    link: /zh/analysis-app
+    linkText: 分析应用与 Dashboard
 ---
 
-# DuckLocal
+<p align="center"><strong><a href="../">English</a></strong> · macOS 12+，Apple silicon · 开源免费（Apache-2.0）</p>
 
-**[English](../index.md)** · [项目 README](https://github.com/JetSquirrel/DuckLocal/blob/main/README.zh-CN.md)
+## 三步上手
 
-本地优先的数据查询与分析工作台，原生基于 DuckDB。
-直接指向你的文件即可——不用配置连接、不用建 schema，也不会上传任何数据。
+1. **[下载](https://github.com/JetSquirrel/DuckLocal/releases/latest)**磁盘映像，把 DuckLocal 拖进“应用程序”。
+2. 把一个数据文件——或整个文件夹——**拖到窗口上**。每个文件都会成为一个以文件名命名的视图。
+3. 对一条查询按 **⌘↵**：
 
-要求 macOS 12 及以上、Apple 芯片。开源免费，Apache-2.0。
-[下载 macOS 版](https://github.com/JetSquirrel/DuckLocal/releases/latest) ·
-[在 GitHub 上查看](https://github.com/JetSquirrel/DuckLocal)
+```sql
+SELECT channel, sum(revenue) AS revenue
+FROM sales
+GROUP BY channel
+ORDER BY revenue DESC;
+```
+
+第一次用？[快速上手](getting-started.md)讲安装和首次启动；[10 分钟上手教程](tutorial.md)用一个样例文件带你走一遍。
 
 ![DuckLocal 工作原理：CSV、Parquet、DuckDB 文件与 S3 兼容对象存储汇入同一个本地工作区](../assets/intro.jpg)
 
-## 指南
+## 按需查找
 
-| 指南 | 内容 |
+| 我想… | 请看 |
 | --- | --- |
-| [快速上手](getting-started.md) | 安装 DuckLocal、打开你的第一批文件、运行第一条查询 |
-| [数据源](data-sources.md) | 支持哪些文件格式，文件夹与通配符如何解析，数据库如何打开，视图命名，以及各项限制 |
-| [S3 与 httpfs](s3.md) | 让 DuckLocal 指向 S3 兼容的存储桶，浏览其中的内容并查询对象 |
-| [SQL 编辑器](sql-editor.md) | 查询 Tab、运行与格式化 SQL、EXPLAIN，以及自动补全 |
-| [Schema 浏览与历史](schema-and-history.md) | 浏览表与列、生成 SELECT 语句、修改列的数据类型，以及复用历史查询 |
-| [结果与图表](results-and-charts.md) | 结果表格、筛选、复制、导出，以及内置图表 |
-| [设置与应用数据](settings-and-data.md) | DuckLocal 把文件保存在哪里，重启后哪些内容仍在，主题、语言，以及疑难排查 |
-| [AI CLI 与官方 skill](cli.md) | 无界面运行 SQL、了解 JSON 契约、安装官方 agent skill |
-| [分析应用](analysis-app.md) | 打开一个由你编写的 JavaScript 应用窗口，使用同一个连接 |
-| [开发](development.md) | 构建、测试、打包 `.app`，以及发布已签名并公证的版本 |
-
-## 一览
-
-- 本地 CSV / TSV / Parquet / JSON / Excel 文件或整个文件夹——入口可以是
-  命令行、文件对话框，或把文件拖放到窗口
-- SQL 编辑器：语法高亮、自动补全、格式化，支持多个查询 Tab
-- Schema 侧栏：浏览数据库、schema、表与列
-- 结果表格：支持筛选、单元格复制、CSV 与 Parquet 导出，以及图表
-- 查询历史、可选的 S3 支持、明暗主题、English 与 简体中文
+| 安装 DuckLocal 并跑第一条查询 | [快速上手](getting-started.md) |
+| 用样例数据边做边学 | [10 分钟上手教程](tutorial.md) |
+| 打开文件夹、通配符、Excel 或 `.duckdb` 文件 | [数据源](data-sources.md) |
+| 查询 S3 或兼容存储里的对象 | [S3 与 httpfs](s3.md) |
+| 用好编辑器 | [SQL 编辑器](sql-editor.md) · [Schema 浏览与历史](schema-and-history.md) |
+| 把结果画成图或导出 | [结果与图表](results-and-charts.md) |
+| 让 AI agent 查询我的数据 | [CLI 与 agent skill](cli.md) |
+| 搭一个 dashboard | [分析应用与 Dashboard](analysis-app.md) |
+| 解决某个不正常的问题 | [常见问题排查](troubleshooting.md) |
+| 从源码构建或参与开发 | [开发指南](development.md) |

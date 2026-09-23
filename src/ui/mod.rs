@@ -3,36 +3,50 @@
 pub mod chart;
 pub mod completion;
 pub mod results;
+pub mod scale;
 pub mod sidebar;
 pub mod status_bar;
 pub mod title_bar;
 pub mod workspace;
 
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::Theme;
 use gpui_kit::component::WindowExt;
-use gpui_kit::{px, App, Entity, KeyBinding, PathPromptOptions, Window};
+use gpui_kit::{App, Entity, KeyBinding, PathPromptOptions, Window};
 
 use crate::i18n::trf;
 use crate::sources::MAX_FILES;
 use crate::state::{self, AppState, AttachOutcome, OpenOutcome, RequestReport};
 
-gpui_kit::actions!(ducklocal, [RunQuery, SaveSpec]);
+gpui_kit::actions!(
+    ducklocal,
+    [RunQuery, SaveSpec, ZoomIn, ZoomOut, ZoomReset, ToggleSidebar]
+);
 
 /// Key context that makes ⌘↵ reachable while the SQL editor is focused.
 pub const WORKSPACE_KEY_CONTEXT: &str = "DuckLocal";
 
 pub const RUN_QUERY_KEYSTROKE: &str = "cmd-enter";
 pub const SAVE_SPEC_KEYSTROKE: &str = "cmd-s";
+pub const TOGGLE_SIDEBAR_KEYSTROKE: &str = "cmd-b";
 
 pub fn init(cx: &mut App) {
-    // Denser desktop density: 14px rem base (gpui-component ships 16).
-    // Re-applied after every Theme::change (see main.rs, title_bar.rs).
-    Theme::global_mut(cx).font_size = px(14.);
     cx.bind_keys([
         KeyBinding::new(RUN_QUERY_KEYSTROKE, RunQuery, Some(WORKSPACE_KEY_CONTEXT)),
         KeyBinding::new(SAVE_SPEC_KEYSTROKE, SaveSpec, Some(WORKSPACE_KEY_CONTEXT)),
+        // Interface size, with the keys every Mac app uses for it. Bound with
+        // no context so they work wherever focus is, the editor included;
+        // `cmd-+` is what a keyboard without a separate plus key sends as
+        // shift-equals.
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
+        KeyBinding::new("cmd-0", ZoomReset, None),
+        // Handled by the root view, which owns the layout the sidebar is in.
+        KeyBinding::new(TOGGLE_SIDEBAR_KEYSTROKE, ToggleSidebar, None),
     ]);
+    cx.on_action(|_: &ZoomIn, cx| scale::set(scale::current().larger(), cx));
+    cx.on_action(|_: &ZoomOut, cx| scale::set(scale::current().smaller(), cx));
+    cx.on_action(|_: &ZoomReset, cx| scale::set(scale::UiSize::Default, cx));
 }
 
 /// Run an "open these paths" request off the UI thread and apply the result.

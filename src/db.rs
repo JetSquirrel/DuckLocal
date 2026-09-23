@@ -47,15 +47,17 @@ pub enum DatabaseTarget {
 }
 
 impl DatabaseTarget {
-    pub fn display_label(&self) -> String {
+    /// The database's path, for the chrome to name — `None` in memory, where
+    /// `:memory:` is jargon for the default and says nothing worth a glance.
+    pub fn file_label(&self) -> Option<String> {
         match self {
-            DatabaseTarget::File(path) => compact_home(path),
-            DatabaseTarget::Memory => ":memory:".to_string(),
+            DatabaseTarget::File(path) => Some(compact_home(path)),
+            DatabaseTarget::Memory => None,
         }
     }
 }
 
-/// `$HOME`, read once. `display_label` runs on every frame of both the title
+/// `$HOME`, read once. `file_label` runs on every frame of both the title
 /// bar and the status bar, so it should not go back to the environment each
 /// time.
 fn home() -> Option<&'static str> {
@@ -64,11 +66,20 @@ fn home() -> Option<&'static str> {
 }
 
 /// Display `$HOME` as `~`.
-fn compact_home(path: &str) -> String {
-    if let Some(rest) = home().and_then(|home| path.strip_prefix(home)) {
-        return format!("~{rest}");
+pub(crate) fn compact_home(path: &str) -> String {
+    match home() {
+        Some(home) => compact_home_under(path, home),
+        None => path.to_string(),
     }
-    path.to_string()
+}
+
+/// `path` with a leading `home` shown as `~` — only at a path boundary, so a
+/// home of `/Users/al` leaves `/Users/alice/x` alone.
+fn compact_home_under(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
 }
 
 /// Replace a `~/` prefix with `$HOME` expanded.
@@ -181,32 +192,15 @@ pub(crate) fn connection_guard() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Server metadata for the title bar and status bar.
+/// Server metadata for the status bar.
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
     pub version: String,
-    pub threads: String,
-    pub memory_limit: String,
 }
 
 pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
     let version: String = conn.query_row("SELECT version()", [], |r| r.get(0))?;
-    let threads = setting_or(conn, "threads", "8");
-    let memory_limit = setting_or(conn, "memory_limit", "-");
-    Ok(ServerInfo {
-        version,
-        threads,
-        memory_limit,
-    })
-}
-
-fn setting_or(conn: &Connection, name: &str, default: &str) -> String {
-    conn.query_row(
-        "SELECT value FROM duckdb_settings() WHERE name = ?1",
-        [name],
-        |r| r.get::<_, String>(0),
-    )
-    .unwrap_or_else(|_| default.to_string())
+    Ok(ServerInfo { version })
 }
 
 pub fn server_info() -> Result<ServerInfo> {
@@ -442,6 +436,13 @@ mod tests {
         assert_eq!(version, 2);
         close().unwrap();
         assert!(!is_connected());
+    }
+
+    #[test]
+    fn home_is_compacted_only_at_a_path_boundary() {
+        assert_eq!(compact_home_under("/Users/al/x.csv", "/Users/al"), "~/x.csv");
+        assert_eq!(compact_home_under("/Users/al", "/Users/al"), "~");
+        assert_eq!(compact_home_under("/Users/alice/x", "/Users/al"), "/Users/alice/x");
     }
 
     #[test]

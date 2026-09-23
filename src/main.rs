@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod app_export;
+mod assets;
 mod cli;
 mod db;
 mod excel;
@@ -42,6 +43,7 @@ fn main() {
     // Nothing is persisted until the user explicitly switches language.
     crate::history::init().ok();
     i18n::set_current(i18n::initial_language());
+    ui::scale::load();
 
     // Paths named on the command line: data files, folders, patterns, or a
     // database to open instead of the in-memory connection. `-psn_…` is what
@@ -55,16 +57,14 @@ fn main() {
         .collect();
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             ui::init(cx);
             Theme::change(ThemeMode::Light, None, cx);
-            // Denser desktop density: 14px rem base (gpui-component ships 16).
-            // Must be re-applied after every Theme::change — it rebuilds the
-            // theme from stock defaults and resets font_size.
-            Theme::global_mut(cx).font_size = px(14.);
-            Theme::sync_base(cx);
+            // The interface size is the rem base; it must be re-applied after
+            // every Theme::change, which resets the theme to stock defaults.
+            ui::scale::apply(cx);
 
             let window_bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             cx.spawn(async move |cx| {

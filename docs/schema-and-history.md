@@ -2,17 +2,22 @@
 
 **[中文](zh/schema-and-history.md)** · [Docs](index.md)
 
-The sidebar has two tabs: **表结构** (schema) and **查询历史** (history).
+The sidebar has two tabs: **Schema** and **History** (**表结构** and **查询历史** in Chinese). Beside them, the collapse button (or **⌘B**) hides the sidebar; the button at the left of the title bar, or ⌘B again, brings it back. Whether it is hidden is remembered.
 
 ## The schema tree
 
 The tree shows, from the top:
 
-- **Local files** — the data files you have registered, each with its view
-  name, file name, and row count. Its children are the view's columns.
+- **Local files** — the data files you have registered, each named by its
+  view, with its row count. The file name appears beside the view name only
+  when the two differ (`sales_2` from `sales.csv`), and the folder when two
+  files share a view name; hover a row for the full path. Its children are the
+  view's columns.
 - **Apps** / **Dashboards** — the analysis apps and `.dash` dashboards you
-  have opened recently. Click one to reopen it as a tab, the way you would a
-  file; an entry whose path no longer exists is dropped from the list.
+  have opened recently, sorted by name so a row stays put when you click it.
+  Click one to reopen it as a tab, the way you would a file; the × on hover
+  takes it off the list, leaving its files and any open tab alone. An entry
+  whose path no longer exists is dropped from the list.
 - **S3** — present once [S3 is configured](s3.md). Loads lazily.
 - Each database, then its schemas, then tables and views, then columns.
 

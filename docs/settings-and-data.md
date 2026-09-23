@@ -13,7 +13,9 @@ duration of a session.
 | Linux (if built there) | `~/.local/share/ducklocal/history.duckdb` |
 
 That single DuckDB file holds three tables: the query history, the registered
-data files, and a small key/value settings table. It lives beside a `.wal`
+data files, and a small key/value settings table — the interface language, the
+open app and dashboard tabs, the recent-documents list, and the app folders
+you have trusted. It lives beside a `.wal`
 while the app is running.
 
 Your data is never copied into it. Registered files are referenced by path and
@@ -26,10 +28,15 @@ re-attached on launch.
 | Registered data files — path, view name, kind | app data file |
 | Query history, including failures | app data file |
 | Interface language | app data file |
+| Interface size | app data file |
+| Whether the sidebar is hidden | app data file |
+| Open app and dashboard tabs, with their titles | app data file |
+| Recently opened apps and dashboards (the sidebar's **Apps** / **Dashboards**) | app data file |
+| App folders you chose to trust | app data file |
 
 | Not remembered | Notes |
 | --- | --- |
-| Open tabs and their SQL | in memory only |
+| Open query tabs and their SQL | in memory only — past queries are in **History** |
 | The results panel contents | in memory only |
 | Which database file is open | each launch starts in memory unless you name one |
 | Window size and position | fixed at 1440×900, minimum 960×600 |
@@ -58,12 +65,31 @@ English, whatever the interface language is.
 ## Themes
 
 The sun/moon button toggles between the light and dark theme. There is no
-theme picker and no theme file to edit — the two modes are what you get. The
-base font size is 14px.
+theme picker and no theme file to edit — the two modes are what you get.
+
+## Interface size {#interface-size}
+
+Text, icons and controls scale together, in four steps:
+
+| Size | Base text | Editor text |
+| --- | --- | --- |
+| Small | 13px | 12px |
+| Default | 14px | 13px |
+| Large | 16px | 15px |
+| Extra large | 18px | 17px |
+
+Choose one from the **Aa** button in the title bar, or step through them with
+**⌘+** (larger), **⌘−** (smaller) and **⌘0** (back to default) — these work
+wherever the focus is, the SQL editor included. The choice is remembered, and
+survives switching between light and dark.
+
+Panel sizes you dragged, and the height of a dashboard's plots, stay in pixels:
+they are yours to adjust, not the interface's.
 
 ## Resetting
 
-To start over — clearing history, registered files, and the language setting —
+To start over — clearing history, registered files, remembered tabs, trusted
+app folders and the language setting —
 quit DuckLocal and remove its app data directory:
 
 ```bash
@@ -75,17 +101,4 @@ this**, only DuckLocal's own records.
 
 ## Troubleshooting
 
-| Symptom | Cause |
-| --- | --- |
-| `File not found` on a path you named | The path does not exist. DuckLocal cannot create a database by naming a new file |
-| A folder reports no data files | Nothing under it matched `.csv`, `.tsv`, `.txt`, `.parquet`, `.json`, `.ndjson`, `.jsonl`, `.xlsx`, `.xls`, `.xlsb`, or `.ods` |
-| A folder produced fewer files than expected | Hidden entries and symlinks are skipped, and one open request attaches at most 256 files |
-| A path opened as a database unexpectedly | Any existing non-data file is treated as a DuckDB database; if it will not open, DuckLocal falls back to memory and shows the error |
-| Run does nothing | A query is already running. There is no cancel and no timeout |
-| Results stop early with a truncation notice | The 100,000-row or 2,000,000-cell cap was reached |
-| S3 credentials forgotten | Opening or switching a database clears them |
-| Timestamps look shifted | The grid renders timestamps in UTC, not local time |
-| The theme resets to light | It is not persisted |
-
-If a query seems stuck, the status bar shows the DuckDB version and connection
-state. Quitting and relaunching is the only way to abandon a running query.
+Symptoms, causes and fixes are collected on the [Troubleshooting](troubleshooting.md) page.

@@ -139,6 +139,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.tab.schema", "表结构", "Schema"),
     ("sidebar.tab.history", "查询历史", "History"),
     ("sidebar.refresh_schema", "刷新 Schema", "Refresh schema"),
+    ("sidebar.collapse", "收起侧栏", "Hide sidebar"),
+    ("sidebar.expand", "展开侧栏", "Show sidebar"),
     (
         "sidebar.schema.empty",
         "当前没有表或视图。\n拖入数据文件、通过“打开数据…”导入，或运行 CREATE TABLE 后点击刷新。",
@@ -162,6 +164,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.table.generate_select", "生成 SELECT 查询", "Generate SELECT query"),
     ("sidebar.column.edit_type", "修改数据类型", "Change data type"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
+    (
+        "sidebar.recent.remove",
+        "从列表移除（文件不受影响）",
+        "Remove from this list (the files stay)",
+    ),
     (
         "sidebar.recents.gone",
         "{} 已不存在，已从最近列表移除",
@@ -215,6 +222,15 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("title_bar.configure_s3", "配置 S3 数据源（httpfs）", "Configure S3 source (httpfs)"),
     ("title_bar.toggle_theme", "切换明暗主题", "Toggle light/dark theme"),
     ("title_bar.toggle_language", "切换语言", "Switch language"),
+    (
+        "title_bar.ui_size",
+        "界面大小（⌘+ 放大 · ⌘− 缩小 · ⌘0 复原）",
+        "Interface size (⌘+ larger · ⌘− smaller · ⌘0 reset)",
+    ),
+    ("ui_size.small", "小", "Small"),
+    ("ui_size.default", "默认", "Default"),
+    ("ui_size.large", "大", "Large"),
+    ("ui_size.xlarge", "特大", "Extra large"),
     ("dialog.s3.title", "配置 S3 数据源", "Configure S3 source"),
     (
         "dialog.s3.description",
@@ -286,8 +302,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
     ("workspace.rename", "重命名", "Rename"),
-    ("workspace.rename.tooltip", "重命名当前查询 Tab", "Rename current query tab"),
-    ("workspace.server_info", "线程 {} · 内存上限 {}", "Threads {} · memory limit {}"),
+    ("workspace.rename.tooltip", "重命名当前 Tab", "Rename this tab"),
     ("dialog.rename.title", "重命名查询", "Rename query"),
     ("dialog.rename.confirm", "重命名", "Rename"),
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
@@ -500,6 +515,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "workspace.open_panel",
         "打开分析应用…",
         "Open app…",
+    ),
+    ("workspace.open_dashboard", "打开 Dashboard…", "Open dashboard…"),
+    ("dashboard.picker.prompt", "选择 .dash 文件", "Choose a .dash file"),
+    (
+        "dashboard.picker.not_a_spec",
+        "{} 不是 .dash 文件",
+        "{} is not a .dash file",
     ),
     (
         "workspace.add_tab.tooltip",

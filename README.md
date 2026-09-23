@@ -30,7 +30,7 @@ Your data stays on your machine: nothing is uploaded, and there is no account.
 - Results grid with filtering, cell copy, CSV/Parquet export and built-in charts
 - Query history with one-click refill into the editor
 - Optional S3 support via httpfs; credentials are session-only
-- Light and dark themes, English and 简体中文
+- Light and dark themes, four interface sizes (⌘+ / ⌘− / ⌘0), English and 简体中文
 
 ## AI CLI and official skill
 
@@ -72,7 +72,7 @@ Inspect existing destinations before overwriting. No global configuration is cha
 
 ## Documentation
 
-Guides live in [`docs/`](docs/index.md): [getting started](docs/getting-started.md), [data sources](docs/data-sources.md), [S3 and httpfs](docs/s3.md), [SQL editor](docs/sql-editor.md), [schema browser and history](docs/schema-and-history.md), [results and charts](docs/results-and-charts.md), [settings and app data](docs/settings-and-data.md), and [development](docs/development.md).
+Guides live in [`docs/`](docs/index.md): [getting started](docs/getting-started.md), a [10-minute tutorial](docs/tutorial.md) with sample data, [troubleshooting](docs/troubleshooting.md), [data sources](docs/data-sources.md), [S3 and httpfs](docs/s3.md), [SQL editor](docs/sql-editor.md), [schema browser and history](docs/schema-and-history.md), [results and charts](docs/results-and-charts.md), [settings and app data](docs/settings-and-data.md), and [development](docs/development.md).
 
 The same pages are published with VitePress. With Node.js 22 or later (24 LTS recommended), run `npm --prefix docs ci`, then `npm --prefix docs run build` to generate `target/docs-site`, or `npm --prefix docs run dev` for local development. CI deploys the site to GitHub Pages whenever `docs/` changes on `main`. See [development](docs/development.md#the-documentation-site) for preview commands and configuration.
 
