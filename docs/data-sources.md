@@ -1,3 +1,7 @@
+---
+description: "Open CSV, TSV, Parquet, JSON and Excel files, whole folders, glob patterns or DuckDB databases in DuckLocal, and how view names and limits work."
+---
+
 # Data sources
 
 **[中文](zh/data-sources.md)** · [Docs](index.md)

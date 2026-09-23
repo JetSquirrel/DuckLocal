@@ -1,5 +1,8 @@
 ---
 layout: home
+title: "DuckLocal — query local CSV, Parquet and Excel files with SQL on your Mac"
+titleTemplate: false
+description: "DuckLocal is a free, open-source Mac app built on DuckDB: drop in CSV, Parquet, JSON or Excel files and query them with SQL. No server, no setup, no upload."
 hero:
   name: DuckLocal
   text: SQL on your files, right on your Mac.
@@ -40,8 +43,8 @@ features:
     linkText: CLI and skill
   - title: Dashboards as files
     details: Declare queries and plots in a .dash file, or script a custom view and export it as one HTML page to share.
-    link: /analysis-app
-    linkText: Apps and dashboards
+    link: /dashboards
+    linkText: Dashboards (.dash)
 ---
 
 <p align="center"><strong><a href="./zh/">中文文档</a></strong> · macOS 12+ on Apple silicon · Free and open source (Apache-2.0)</p>
@@ -78,6 +81,7 @@ sample file.
 | Get more out of the editor | [SQL editor](sql-editor.md) · [Schema and history](schema-and-history.md) |
 | Chart or export a result | [Results and charts](results-and-charts.md) |
 | Let an AI agent query my data | [CLI and agent skill](cli.md) |
-| Build a dashboard | [Apps and dashboards](analysis-app.md) |
+| Build a dashboard from saved queries | [Dashboards (.dash)](dashboards.md) |
+| Script a custom view over my data | [Analysis apps](analysis-app.md) |
 | Fix something that is not working | [Troubleshooting](troubleshooting.md) |
 | Build DuckLocal from source or contribute | [Development](development.md) |

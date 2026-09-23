@@ -1,0 +1,49 @@
+# Two weeks of sample sales, as a dashboard.
+#
+# It reads the `sales` view — the one DuckLocal creates when you open
+# sales.csv (see the tutorial) — so it works however DuckLocal was launched.
+# Validate it without a window:
+#
+#   ducklocal check sales.dash
+
+query "by_channel" {
+  sql = <<SQL
+    SELECT channel, round(sum(revenue), 2) AS revenue
+    FROM sales
+    GROUP BY channel
+    ORDER BY revenue DESC
+  SQL
+}
+
+query "daily" {
+  sql = <<SQL
+    SELECT date, channel, round(sum(revenue), 2) AS revenue
+    FROM sales
+    GROUP BY date, channel
+    ORDER BY date
+  SQL
+}
+
+plot "revenue_by_channel" {
+  type  = "bar"
+  query = query.by_channel
+  x     = channel
+  y     = revenue
+  title = "Revenue by channel"
+}
+
+plot "daily_revenue" {
+  type   = "line"
+  query  = query.daily
+  x      = date
+  y      = revenue
+  series = channel
+  title  = "Daily revenue, per channel"
+}
+
+plot "daily_table" {
+  type  = "table"
+  query = query.daily
+  x     = date
+  title = "The numbers behind it"
+}

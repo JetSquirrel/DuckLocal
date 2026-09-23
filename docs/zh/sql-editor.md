@@ -1,3 +1,7 @@
+---
+description: "DuckLocal 的 SQL 编辑器：查询 Tab、运行与格式化 SQL、EXPLAIN 执行计划、基于表结构的自动补全和快捷键。"
+---
+
 # SQL 编辑器
 
 **[English](../sql-editor.md)** · [文档](index.md)

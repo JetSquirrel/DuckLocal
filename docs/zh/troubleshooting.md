@@ -1,3 +1,7 @@
+---
+description: "DuckLocal 常见问题的解决办法：找不到 ducklocal 命令、文件挂载失败、重名冲突、查询卡住、S3 凭据与 dashboard 问题。"
+---
+
 # 常见问题排查
 
 **[English](../troubleshooting.md)** · [文档](index.md)

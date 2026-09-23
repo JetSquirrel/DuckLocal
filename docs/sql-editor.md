@@ -1,3 +1,7 @@
+---
+description: "DuckLocal's SQL editor: query tabs, running and formatting SQL, EXPLAIN plans, schema-aware autocompletion and keyboard shortcuts."
+---
+
 # SQL editor
 
 **[中文](zh/sql-editor.md)** · [Docs](index.md)

@@ -1,3 +1,7 @@
+---
+description: "DuckLocal 在 Mac 上把数据存在哪里、重启后记住哪些内容、界面大小、主题、语言，以及如何重置。"
+---
+
 # 设置与应用数据
 
 **[English](../settings-and-data.md)** · [文档](index.md)

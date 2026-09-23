@@ -1,3 +1,7 @@
+---
+description: "为 DuckLocal 编写分析应用：基于 query() 的 JavaScript 数据视图、热重载、组件目录、信任提示与 HTML 导出。"
+---
+
 # 分析应用（JavaScript）
 
 **[English](../analysis-app.md)** · [文档](index.md)
@@ -222,9 +226,9 @@ npx --yes -p typescript tsc -p <应用目录>/jsconfig.json --noImplicitAny fals
 
 ## Dashboard 规格文件（.dash） {#dashboard-specs-dash}
 
-`.dash` 文件把 dashboard 声明为数据——query 与 plot block，没有 JavaScript——适合「已保存查询 + 标准图表」的常见场景。文件格式与 `ducklocal check` 校验见 [CLI 指南](cli.md#校验-dashboard-规格文件)。
+`.dash` 文件把 dashboard 声明为数据——query 与 plot block，没有 JavaScript——适合「已保存查询 + 标准图表」的常见场景。格式的完整说明见 [Dashboard（.dash）](dashboards.md)；`ducklocal check` 校验见 [CLI 指南](cli.md#校验-dashboard-规格文件)。
 
-打开方式与应用相同：在标签栏的 `+` 菜单里选 **打开 Dashboard…**，在命令行指定（`ducklocal dashboard.dash`），或把文件拖到窗口上，就会以 dashboard 标签页的形式打开，与查询、应用并列。标签页在窗口自己的连接上执行规格里的查询——因此能看到 `TEMP` 表等连接级状态，也会与编辑器的查询排队——并把每个 plot 画成竖直堆叠中的一格，分隔条可拖动调整高度。只有只读语句会被执行：可能写入的查询（DDL、DML、`COPY`、`ATTACH` 等）在到达连接之前就被拒绝，因此打开别人发来的 `.dash` 文件不会改动你的数据。某个 plot 的查询失败时，原因显示在它自己的格子里，其余部分照常绘制。工具栏的重新加载会重读文件并重跑所有查询；重载后的规格若不再通过校验，不会替换掉仍在工作的 dashboard，而是在上方显示原因。已打开的 dashboard 会像应用一样被记住，下次启动自动恢复。
+打开方式与应用相同：在标签栏的 `+` 菜单里选 **打开 Dashboard…**，在命令行指定（`ducklocal dashboard.dash`），或把文件拖到窗口上，就会以 dashboard 标签页的形式打开，与查询、应用并列。标签页在窗口自己的连接上执行规格里的查询——因此能看到 `TEMP` 表等连接级状态，也会与编辑器的查询排队——并把每个 plot 画成竖直堆叠中的一格，分隔条可拖动调整高度。每个 plot 以默认高度起步，堆叠高过标签页时可以滚动，而不是把所有 plot 挤进一屏。只有只读语句会被执行：可能写入的查询（DDL、DML、`COPY`、`ATTACH` 等）在到达连接之前就被拒绝，因此打开别人发来的 `.dash` 文件不会改动你的数据。某个 plot 的查询失败时，原因显示在它自己的格子里，其余部分照常绘制。工具栏的重新加载会重读文件并重跑所有查询；重载后的规格若不再通过校验，不会替换掉仍在工作的 dashboard，而是在上方显示原因。已打开的 dashboard 会像应用一样被记住，下次启动自动恢复。
 
 标签页同时也是编辑器：源码视图可以直接修改文件，带语法高亮（heredoc 里的 SQL 与 SQL 编辑器同样着色）、补全和诊断，用保存按钮或 ⌘S 写回——保存后的规格若不再通过校验，仍在工作的 dashboard 不会被替换，并会显示原因。在 GUI 之外，`ducklocal lsp` 把同样的补全、诊断、悬停和跳转定义提供给任何支持 LSP 的编辑器（见 [CLI 指南](cli.md#用-lsp-编辑-dashboard-规格文件)）。
 

@@ -1,10 +1,14 @@
+---
+description: "DuckLocal 10 分钟上手教程：用样例 CSV 打开数据、写 SQL 查询、画图、导出结果，并用 CLI 问同一个问题。"
+---
+
 # 10 分钟上手教程
 
 **[English](../tutorial.md)** · [文档](index.md)
 
 跟着做一遍：打开一个小的销售数据文件，问它几个问题，把答案画成图，再导出一份。本教程假设你已经装好了 DuckLocal——如果还没有，先看[快速上手](getting-started.md)。
 
-## 1. 获取样例文件
+## 1. 获取样例文件 {#sample-file}
 
 下载 [sales.csv](/samples/sales.csv)——两周的虚构订单数据，共 224 行。也可以在终端里下载：
 

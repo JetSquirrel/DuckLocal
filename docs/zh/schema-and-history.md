@@ -1,3 +1,7 @@
+---
+description: "在 DuckLocal 侧栏浏览数据库、表、视图与列，一键生成 SELECT 查询、修改列类型，并复用历史查询。"
+---
+
 # Schema 浏览与历史
 
 **[English](../schema-and-history.md)** · [文档](index.md)

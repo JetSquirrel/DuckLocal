@@ -1,3 +1,7 @@
+---
+description: "从源码构建 DuckLocal（Rust + DuckDB）、运行测试、打包 macOS 应用，并发布签名、公证的版本。"
+---
+
 # 开发
 
 **[English](../development.md)** · [文档](index.md)

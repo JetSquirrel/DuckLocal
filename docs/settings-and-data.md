@@ -1,3 +1,7 @@
+---
+description: "Where DuckLocal stores its data on your Mac, what it remembers between launches, interface size, themes, language, and how to reset it."
+---
+
 # Settings and app data
 
 **[中文](zh/settings-and-data.md)** · [Docs](index.md)

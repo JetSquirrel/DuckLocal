@@ -1,3 +1,7 @@
+---
+description: "Run DuckDB SQL headlessly with the ducklocal CLI: structured JSON output, Markdown tables, profiling, file conversion, dashboard checks and the official AI agent skill."
+---
+
 # AI CLI and official skill
 
 **[中文](zh/cli.md)** · [Docs](index.md)
@@ -151,6 +155,8 @@ The app's JavaScript runs with the same privileges it always has: `query()` can 
 Exit codes: **0** with the file written; **2** for a bad command line, an app path that names nothing, or a destination that already exists; **1** when the app could not be loaded (nothing is written) or when it loaded and then failed (the report is written anyway, with the error in it, and the message names the file). An app failure reports the error kind `app`.
 
 ## Check a dashboard spec
+
+The format itself — blocks, attributes, plot types, SQL rules and common messages — is described in [Dashboards (.dash)](dashboards.md); this section covers the command.
 
 A `.dash` file declares a dashboard the way Terraform declares infrastructure — queries and plots as blocks, references between them — rather than scripting one as an analysis app. The two formats coexist: the spec covers query + standard plot and is easy for a person or an agent to diff; an app stays for bespoke layout and interaction.
 

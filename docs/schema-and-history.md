@@ -1,3 +1,7 @@
+---
+description: "Browse databases, tables, views and columns in DuckLocal's schema sidebar, generate SELECT queries, change column types and reuse past queries."
+---
+
 # Schema browser and history
 
 **[中文](zh/schema-and-history.md)** · [Docs](index.md)

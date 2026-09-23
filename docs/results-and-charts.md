@@ -1,3 +1,7 @@
+---
+description: "Work with DuckLocal query results: filter and copy cells, export to CSV or Parquet, and draw built-in bar and area charts, with their row limits."
+---
+
 # Results and charts
 
 **[中文](zh/results-and-charts.md)** · [Docs](index.md)

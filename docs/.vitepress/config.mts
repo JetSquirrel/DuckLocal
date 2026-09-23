@@ -1,8 +1,12 @@
 import { copyFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { defineConfig, type DefaultTheme } from 'vitepress'
+import { defineConfig, type DefaultTheme, type HeadConfig } from 'vitepress'
 
 const repository = 'https://github.com/JetSquirrel/DuckLocal'
+// Where the site is published: GitHub Pages under the repository's name. Every
+// absolute URL the pages hand to crawlers and link previews starts here.
+const site = 'https://jetsquirrel.github.io/DuckLocal/'
+const ogImage = `${site}og-image.jpg`
 const pages = [
   'index',
   'getting-started',
@@ -15,6 +19,12 @@ const pages = [
   'analysis-app',
   'development',
 ]
+
+// A page's path under the site root, as `cleanUrls: false` publishes it:
+// `index.md` → ``, `zh/index.md` → `zh/`, `zh/cli.md` → `zh/cli.html`.
+function pageUrl(relativePath: string): string {
+  return relativePath.replace(/(^|\/)index\.md$/, '$1').replace(/\.md$/, '.html')
+}
 
 function sidebar(zh = false): DefaultTheme.SidebarItem[] {
   const prefix = zh ? '/zh/' : '/'
@@ -46,7 +56,8 @@ function sidebar(zh = false): DefaultTheme.SidebarItem[] {
       text: zh ? '自动化与扩展' : 'Automate and extend',
       items: [
         item('cli', 'CLI and agent skill', 'CLI 与 agent skill'),
-        item('analysis-app', 'Apps and dashboards', '分析应用与 Dashboard'),
+        item('dashboards', 'Dashboards (.dash)', 'Dashboard（.dash）'),
+        item('analysis-app', 'Analysis apps', '分析应用'),
       ],
     },
     {
@@ -63,7 +74,61 @@ export default defineConfig({
   outDir: '../target/docs-site',
   cleanUrls: false,
   ignoreDeadLinks: false,
-  head: [['link', { rel: 'icon', type: 'image/png', href: '/DuckLocal/favicon.png' }]],
+  // Per-page "last updated" dates, which also become the sitemap's lastmod.
+  // Needs the full git history; the Pages workflow checks out with depth 0.
+  lastUpdated: true,
+  sitemap: { hostname: site },
+  head: [
+    ['link', { rel: 'icon', type: 'image/png', href: '/DuckLocal/favicon.png' }],
+    ['meta', { name: 'theme-color', content: '#f2b705' }],
+    ['meta', { property: 'og:site_name', content: 'DuckLocal' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:image', content: ogImage }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '675' }],
+    ['meta', { property: 'og:image:alt', content: 'CSV, Parquet and DuckDB files, plus S3 storage, feeding one local DuckLocal workspace' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: ogImage }],
+  ],
+  // What differs page to page: its canonical address, its title and summary
+  // for link previews, its other-language twin, and — on the two home pages —
+  // a description of the app itself for search results.
+  transformHead({ pageData, title, description }) {
+    const path = pageUrl(pageData.relativePath)
+    const url = `${site}${path}`
+    const zh = pageData.relativePath.startsWith('zh/')
+    const english = zh ? path.replace(/^zh\//, '') : path
+    const chinese = zh ? path : `zh/${path}`
+    const head: HeadConfig[] = [
+      ['link', { rel: 'canonical', href: url }],
+      ['link', { rel: 'alternate', hreflang: 'en', href: `${site}${english}` }],
+      ['link', { rel: 'alternate', hreflang: 'zh-CN', href: `${site}${chinese}` }],
+      ['link', { rel: 'alternate', hreflang: 'x-default', href: `${site}${english}` }],
+      ['meta', { property: 'og:url', content: url }],
+      ['meta', { property: 'og:title', content: title }],
+      ['meta', { property: 'og:description', content: description }],
+      ['meta', { property: 'og:locale', content: zh ? 'zh_CN' : 'en_US' }],
+      ['meta', { name: 'twitter:title', content: title }],
+      ['meta', { name: 'twitter:description', content: description }],
+    ]
+    if (pageData.relativePath === 'index.md' || pageData.relativePath === 'zh/index.md') {
+      head.push(['script', { type: 'application/ld+json' }, JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'DuckLocal',
+        description,
+        url,
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'macOS 12 or later (Apple silicon)',
+        offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+        license: 'https://www.apache.org/licenses/LICENSE-2.0',
+        downloadUrl: `${repository}/releases/latest`,
+        codeRepository: repository,
+        inLanguage: zh ? 'zh-CN' : 'en',
+      })])
+    }
+    return head
+  },
   locales: {
     root: {
       label: 'English',

@@ -1,3 +1,7 @@
+---
+description: "用 ducklocal CLI 无界面执行 DuckDB SQL：结构化 JSON 输出、Markdown 表格、数据概览、文件转换、dashboard 校验与官方 AI agent skill。"
+---
+
 # AI CLI 与官方 skill
 
 **[English](../cli.md)** · [文档](index.md)
@@ -151,6 +155,8 @@ stdout 为单个 JSON 对象：
 退出码：**0** 已写出文件；**2** 命令行有误、应用路径指不到东西、目标文件已存在；**1** 应用加载失败（不写文件），或应用加载后失败（仍写出报告，错误记在报告里，stderr 消息会指明文件路径）。应用类失败的错误 kind 为 `app`。
 
 ## 校验 dashboard 规格文件
+
+格式本身——block、属性、图表类型、SQL 规则与常见信息——见 [Dashboard（.dash）](dashboards.md)；本节讲这个命令。
 
 `.dash` 文件以声明的方式描述一个 dashboard——像 Terraform 声明基础设施那样，用 block 写查询和图表，用引用连接它们——而不是像分析应用那样用脚本来画。两种格式并存：规格文件覆盖「查询 + 标准图表」，人和 agent 都容易写、容易 diff；需要定制布局和交互时仍用应用。
 

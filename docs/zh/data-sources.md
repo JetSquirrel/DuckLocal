@@ -1,3 +1,7 @@
+---
+description: "在 DuckLocal 中打开 CSV、TSV、Parquet、JSON、Excel 文件、整个文件夹、通配符或 DuckDB 数据库，以及视图命名和限制。"
+---
+
 # 数据源
 
 **[English](../data-sources.md)** · [文档](index.md)

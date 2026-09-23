@@ -1,3 +1,7 @@
+---
+description: "处理 DuckLocal 的查询结果：过滤与复制单元格、导出 CSV 或 Parquet、内置柱状图与面积图，以及行数限制。"
+---
+
 # 结果与图表
 
 **[English](../results-and-charts.md)** · [文档](index.md)

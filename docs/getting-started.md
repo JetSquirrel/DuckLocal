@@ -1,3 +1,7 @@
+---
+description: "Install DuckLocal on macOS, add the ducklocal command, open your first CSV, Parquet, JSON or Excel file and run a DuckDB SQL query in five minutes."
+---
+
 # Getting started
 
 **[中文](zh/getting-started.md)** · [Docs](index.md)

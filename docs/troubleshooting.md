@@ -1,3 +1,7 @@
+---
+description: "Fixes for common DuckLocal problems: the ducklocal command not found, files that do not attach, name clashes, stuck queries, S3 credentials and dashboards."
+---
+
 # Troubleshooting
 
 **[中文](zh/troubleshooting.md)** · [Docs](index.md)

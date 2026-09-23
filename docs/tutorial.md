@@ -1,3 +1,7 @@
+---
+description: "A ten-minute DuckLocal tutorial with a sample CSV: open it, query it with SQL, chart the results, export them, and ask the same question from the CLI."
+---
+
 # Your first 10 minutes
 
 **[中文](zh/tutorial.md)** · [Docs](index.md)
@@ -6,7 +10,7 @@ A guided tour: open a small sales file, ask it a few questions, chart the
 answers, and export one. It assumes DuckLocal is installed — if not, start
 with [Getting started](getting-started.md).
 
-## 1. Get the sample file
+## 1. Get the sample file {#sample-file}
 
 Download [sales.csv](/samples/sales.csv) — two weeks of made-up orders, 224
 rows. Or from a terminal:

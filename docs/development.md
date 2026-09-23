@@ -1,3 +1,7 @@
+---
+description: "Build DuckLocal from source with Rust and DuckDB, run the tests, bundle the macOS app and cut a signed, notarized release."
+---
+
 # Development
 
 **[中文](zh/development.md)** · [Docs](index.md)

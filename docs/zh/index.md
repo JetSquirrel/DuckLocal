@@ -1,5 +1,8 @@
 ---
 layout: home
+title: "DuckLocal — 在 Mac 上用 SQL 查询本地 CSV、Parquet 与 Excel 文件"
+titleTemplate: false
+description: "DuckLocal 是基于 DuckDB 的免费开源 Mac 应用：拖入 CSV、Parquet、JSON 或 Excel 文件，直接用 SQL 查询。不用服务器、不用配置、不用上传。"
 hero:
   name: DuckLocal
   text: 在 Mac 上直接用 SQL 查你的文件。
@@ -40,8 +43,8 @@ features:
     linkText: CLI 与 skill
   - title: Dashboard 即文件
     details: 在 .dash 文件里声明查询与图表，或用脚本写一个定制视图，再导出成一个 HTML 页面分享出去。
-    link: /zh/analysis-app
-    linkText: 分析应用与 Dashboard
+    link: /zh/dashboards
+    linkText: Dashboard（.dash）
 ---
 
 <p align="center"><strong><a href="../">English</a></strong> · macOS 12+，Apple silicon · 开源免费（Apache-2.0）</p>
@@ -74,6 +77,7 @@ ORDER BY revenue DESC;
 | 用好编辑器 | [SQL 编辑器](sql-editor.md) · [Schema 浏览与历史](schema-and-history.md) |
 | 把结果画成图或导出 | [结果与图表](results-and-charts.md) |
 | 让 AI agent 查询我的数据 | [CLI 与 agent skill](cli.md) |
-| 搭一个 dashboard | [分析应用与 Dashboard](analysis-app.md) |
+| 用保存的查询搭一个 dashboard | [Dashboard（.dash）](dashboards.md) |
+| 用脚本写一个定制视图 | [分析应用](analysis-app.md) |
 | 解决某个不正常的问题 | [常见问题排查](troubleshooting.md) |
 | 从源码构建或参与开发 | [开发指南](development.md) |

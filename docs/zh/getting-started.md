@@ -1,3 +1,7 @@
+---
+description: "在 macOS 上安装 DuckLocal、添加 ducklocal 命令、打开第一个 CSV、Parquet、JSON 或 Excel 文件，五分钟内跑通第一条 DuckDB SQL 查询。"
+---
+
 # 快速上手
 
 **[English](../getting-started.md)** · [文档](index.md)
