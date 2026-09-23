@@ -625,6 +625,7 @@ impl ResultsPanel {
                         Button::new("export-csv")
                             .outline()
                             .xsmall()
+                            .icon(gpui_kit::assets::IconName::Download)
                             .label(tr("results.export_csv"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -635,6 +636,7 @@ impl ResultsPanel {
                         Button::new("export-parquet")
                             .outline()
                             .xsmall()
+                            .icon(gpui_kit::assets::IconName::Download)
                             .label(tr("results.export_parquet"))
                             .disabled(!has_rows)
                             .on_click(cx.listener(|this, _, window, cx| {

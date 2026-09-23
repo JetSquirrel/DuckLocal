@@ -295,8 +295,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
     ("workspace.rename", "重命名", "Rename"),
-    ("workspace.rename.tooltip", "重命名当前查询 Tab", "Rename current query tab"),
-    ("workspace.server_info", "线程 {} · 内存上限 {}", "Threads {} · memory limit {}"),
+    ("workspace.rename.tooltip", "重命名当前 Tab", "Rename this tab"),
     ("dialog.rename.title", "重命名查询", "Rename query"),
     ("dialog.rename.confirm", "重命名", "Rename"),
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
@@ -509,6 +508,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "workspace.open_panel",
         "打开分析应用…",
         "Open app…",
+    ),
+    ("workspace.open_dashboard", "打开 Dashboard…", "Open dashboard…"),
+    ("dashboard.picker.prompt", "选择 .dash 文件", "Choose a .dash file"),
+    (
+        "dashboard.picker.not_a_spec",
+        "{} 不是 .dash 文件",
+        "{} is not a .dash file",
     ),
     (
         "workspace.add_tab.tooltip",

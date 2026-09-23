@@ -47,15 +47,17 @@ pub enum DatabaseTarget {
 }
 
 impl DatabaseTarget {
-    pub fn display_label(&self) -> String {
+    /// The database's path, for the chrome to name — `None` in memory, where
+    /// `:memory:` is jargon for the default and says nothing worth a glance.
+    pub fn file_label(&self) -> Option<String> {
         match self {
-            DatabaseTarget::File(path) => compact_home(path),
-            DatabaseTarget::Memory => ":memory:".to_string(),
+            DatabaseTarget::File(path) => Some(compact_home(path)),
+            DatabaseTarget::Memory => None,
         }
     }
 }
 
-/// `$HOME`, read once. `display_label` runs on every frame of both the title
+/// `$HOME`, read once. `file_label` runs on every frame of both the title
 /// bar and the status bar, so it should not go back to the environment each
 /// time.
 fn home() -> Option<&'static str> {
@@ -181,32 +183,15 @@ pub(crate) fn connection_guard() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Server metadata for the title bar and status bar.
+/// Server metadata for the status bar.
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
     pub version: String,
-    pub threads: String,
-    pub memory_limit: String,
 }
 
 pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
     let version: String = conn.query_row("SELECT version()", [], |r| r.get(0))?;
-    let threads = setting_or(conn, "threads", "8");
-    let memory_limit = setting_or(conn, "memory_limit", "-");
-    Ok(ServerInfo {
-        version,
-        threads,
-        memory_limit,
-    })
-}
-
-fn setting_or(conn: &Connection, name: &str, default: &str) -> String {
-    conn.query_row(
-        "SELECT value FROM duckdb_settings() WHERE name = ?1",
-        [name],
-        |r| r.get::<_, String>(0),
-    )
-    .unwrap_or_else(|_| default.to_string())
+    Ok(ServerInfo { version })
 }
 
 pub fn server_info() -> Result<ServerInfo> {

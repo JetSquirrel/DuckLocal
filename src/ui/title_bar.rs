@@ -338,7 +338,7 @@ impl Render for TitleBarView {
         let (target_label, opening) = {
             let state = self.state.read(cx);
             (
-                state.target.as_ref().map(|t| t.display_label()),
+                state.target.as_ref().and_then(|t| t.file_label()),
                 state.is_opening(),
             )
         };

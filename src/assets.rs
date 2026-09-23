@@ -16,7 +16,10 @@ use std::borrow::Cow;
 use gpui_kit::assets::{icon_assets, Assets};
 use gpui_kit::{AssetSource, Result, SharedString};
 
-icon_assets!(ExtraIcons, [Save, AppWindow]);
+icon_assets!(
+    ExtraIcons,
+    [Save, AppWindow, WandSparkles, ListTree, Pencil, Download, Code]
+);
 
 /// The default component bundle, plus [`ExtraIcons`].
 pub struct AppAssets;
@@ -42,7 +45,8 @@ mod tests {
     use gpui_kit::assets::IconName;
     use gpui_kit::AssetSource;
 
-    /// Every icon named in the source, found by scanning for `IconName::`.
+    /// Every icon named in the source, found by scanning for `IconName::` and
+    /// its alias `AssetIcon::`.
     /// A scan rather than a list, so a new icon cannot be added without
     /// this test noticing.
     fn icons_in_source() -> Vec<String> {
@@ -53,7 +57,12 @@ mod tests {
                     walk(&path, found);
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    for piece in text.split("IconName::").skip(1) {
+                    // `AssetIcon` is how the workspace names the full catalog.
+                    let pieces = text
+                        .split("IconName::")
+                        .skip(1)
+                        .chain(text.split("AssetIcon::").skip(1));
+                    for piece in pieces {
                         let name: String = piece
                             .chars()
                             .take_while(|c| c.is_ascii_alphanumeric())
@@ -76,7 +85,9 @@ mod tests {
     #[test]
     fn every_icon_the_app_draws_is_served() {
         let names = icons_in_source();
-        assert!(names.contains(&"Save".to_string()), "{names:?}");
+        for expected in ["Save", "Pencil", "SquareTerminal"] {
+            assert!(names.contains(&expected.to_string()), "{names:?}");
+        }
         for name in names {
             let icon = IconName::ALL
                 .iter()

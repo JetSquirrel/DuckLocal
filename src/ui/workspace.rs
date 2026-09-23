@@ -27,6 +27,7 @@ use gpui_kit::*;
 use gpui_shell::ShellRuntime;
 
 use crate::analysis::apps::{self, OpenApp};
+use gpui_kit::assets::IconName as AssetIcon;
 use crate::analysis::runtime;
 use crate::analysis::view::AnalysisHost;
 use crate::i18n::{tr, trf};
@@ -90,6 +91,18 @@ pub enum TabKind {
     Query,
     App,
     Dashboard,
+}
+
+impl TabKind {
+    /// The one glyph a kind of tab wears — on the tab, in the `+` menu, and
+    /// for apps in the sidebar too — so a kind reads the same everywhere.
+    pub fn glyph(self) -> AssetIcon {
+        match self {
+            TabKind::Query => AssetIcon::SquareTerminal,
+            TabKind::App => AssetIcon::AppWindow,
+            TabKind::Dashboard => AssetIcon::LayoutDashboard,
+        }
+    }
 }
 
 /// Where content aimed at "the active editor" lands.
@@ -588,6 +601,37 @@ impl Workspace {
         .detach();
     }
 
+    /// The `+` menu's "Open dashboard…": a `.dash` file, from the system
+    /// picker. Anything else is refused with a note, not opened as data.
+    fn pick_dashboard_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(tr("dashboard.picker.prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                if crate::spec::tabs::is_spec(&path) {
+                    this.open_dashboard(path, window, cx);
+                } else {
+                    window.push_notification(
+                        trf("dashboard.picker.not_a_spec", &[&path.to_string_lossy()]),
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() <= 1 {
             return;
@@ -971,11 +1015,7 @@ impl Workspace {
                 // `prefix` would sit outside that padding — flush against the
                 // previous tab's close button, and a gap away from its own
                 // label — so the glyph reads as the wrong tab's.
-                let glyph = match tab {
-                    WorkspaceTab::Query(_) => None,
-                    WorkspaceTab::App(_) => Some(IconName::ChartPie),
-                    WorkspaceTab::Dashboard(_) => Some(IconName::LayoutDashboard),
-                };
+                let glyph = tab.kind().glyph();
                 // A dashboard shows a dot while its source buffer holds edits
                 // the file does not.
                 let dirty = tab
@@ -987,9 +1027,7 @@ impl Workspace {
                         h_flex()
                             .gap_1p5()
                             .items_center()
-                            .when_some(glyph, |this, glyph| {
-                                this.child(Icon::new(glyph).small())
-                            })
+                            .child(Icon::new(glyph).small())
                             .child(title)
                             .when_some(hint, |this, hint| {
                                 this.child(
@@ -1038,23 +1076,38 @@ impl Workspace {
                     .dropdown_menu(move |menu, _window, _cx| {
                         let new_query = view.clone();
                         let open_app = view.clone();
-                        menu.item(PopupMenuItem::new(tr("workspace.new_query")).on_click(
-                            move |_, window, cx| {
-                                if let Some(view) = new_query.upgrade() {
-                                    view.update(cx, |this, cx| this.add_query_tab(window, cx));
-                                }
-                            },
-                        ))
+                        let open_dashboard = view.clone();
+                        // Each entry wears the glyph its tab will wear.
+                        menu.item(
+                            PopupMenuItem::new(tr("workspace.new_query"))
+                                .icon(TabKind::Query.glyph())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(view) = new_query.upgrade() {
+                                        view.update(cx, |this, cx| this.add_query_tab(window, cx));
+                                    }
+                                }),
+                        )
                         .item(
-                            PopupMenuItem::new(tr("workspace.open_panel")).on_click(
-                                move |_, window, cx| {
+                            PopupMenuItem::new(tr("workspace.open_panel"))
+                                .icon(TabKind::App.glyph())
+                                .on_click(move |_, window, cx| {
                                     if let Some(view) = open_app.upgrade() {
                                         view.update(cx, |this, cx| {
                                             this.pick_app_directory(window, cx)
                                         });
                                     }
-                                },
-                            ),
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr("workspace.open_dashboard"))
+                                .icon(TabKind::Dashboard.glyph())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(view) = open_dashboard.upgrade() {
+                                        view.update(cx, |this, cx| {
+                                            this.pick_dashboard_file(window, cx)
+                                        });
+                                    }
+                                }),
                         )
                     })
             })
@@ -1069,7 +1122,6 @@ impl Workspace {
     }
 
     fn render_query_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let server = self.state.read(cx).server.clone();
         let run_keystroke = Keystroke::parse(RUN_QUERY_KEYSTROKE).ok();
 
         h_flex()
@@ -1099,6 +1151,7 @@ impl Workspace {
                 Button::new("format-sql")
                     .outline()
                     .small()
+                    .icon(AssetIcon::WandSparkles)
                     .label(tr("workspace.format"))
                     .tooltip(tr("workspace.format.tooltip"))
                     .on_click(cx.listener(Self::format_active)),
@@ -1107,31 +1160,26 @@ impl Workspace {
                 Button::new("explain-sql")
                     .outline()
                     .small()
+                    .icon(AssetIcon::ListTree)
                     .label("EXPLAIN")
                     .loading(self.explaining)
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
             )
             .child(div().flex_1())
-            .child(
-                Button::new("rename-tab")
-                    .ghost()
-                    .small()
-                    .label(tr("workspace.rename"))
-                    .tooltip(tr("workspace.rename.tooltip"))
-                    .on_click(cx.listener(Self::open_rename_dialog)),
-            )
-            .when_some(server, |this, server| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(trf(
-                            "workspace.server_info",
-                            &[&server.threads, &server.memory_limit],
-                        )),
-                )
-            })
+            .child(Self::rename_button("rename-tab", cx))
+    }
+
+    /// Every toolbar ends with the same Rename: bordered, with its glyph,
+    /// like the buttons beside it.
+    fn rename_button(id: &'static str, cx: &mut Context<Self>) -> Button {
+        Button::new(id)
+            .outline()
+            .small()
+            .icon(AssetIcon::Pencil)
+            .label(tr("workspace.rename"))
+            .tooltip(tr("workspace.rename.tooltip"))
+            .on_click(cx.listener(Self::open_rename_dialog))
     }
 
     /// What an app tab's toolbar says instead of Run/Format/EXPLAIN: where the
@@ -1158,7 +1206,7 @@ impl Workspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                Icon::new(IconName::ChartPie)
+                Icon::new(AssetIcon::AppWindow)
                     .small()
                     .text_color(cx.theme().muted_foreground),
             )
@@ -1175,7 +1223,13 @@ impl Workspace {
                 Button::new("app-definition")
                     .outline()
                     .small()
-                    .icon(IconName::File)
+                    // The glyph of where the button goes: the source, or back
+                    // to the app.
+                    .icon(if showing_definition {
+                        AssetIcon::AppWindow
+                    } else {
+                        AssetIcon::Code
+                    })
                     .label(if showing_definition {
                         tr("analysis.definition.back")
                     } else {
@@ -1201,14 +1255,7 @@ impl Workspace {
                         }))
                     }),
             )
-            .child(
-                Button::new("app-rename")
-                    .ghost()
-                    .small()
-                    .label(tr("workspace.rename"))
-                    .tooltip(tr("workspace.rename.tooltip"))
-                    .on_click(cx.listener(Self::open_rename_dialog)),
-            )
+            .child(Self::rename_button("app-rename", cx))
     }
 
     /// What a dashboard tab's toolbar says instead: which spec this is, a
@@ -1252,7 +1299,7 @@ impl Workspace {
                 Button::new("dashboard-save")
                     .outline()
                     .small()
-                    .icon(gpui_kit::assets::IconName::Save)
+                    .icon(AssetIcon::Save)
                     .label(tr("dashboard.save"))
                     .tooltip(tr("dashboard.save.tooltip"))
                     .disabled(!dirty)
@@ -1271,7 +1318,11 @@ impl Workspace {
                 Button::new("dashboard-source")
                     .outline()
                     .small()
-                    .icon(IconName::File)
+                    .icon(if showing_source {
+                        AssetIcon::LayoutDashboard
+                    } else {
+                        AssetIcon::Code
+                    })
                     .label(if showing_source {
                         tr("dashboard.source.back")
                     } else {
@@ -1298,14 +1349,7 @@ impl Workspace {
                         }))
                     }),
             )
-            .child(
-                Button::new("dashboard-rename")
-                    .ghost()
-                    .small()
-                    .label(tr("workspace.rename"))
-                    .tooltip(tr("workspace.rename.tooltip"))
-                    .on_click(cx.listener(Self::open_rename_dialog)),
-            )
+            .child(Self::rename_button("dashboard-rename", cx))
     }
 }
 

@@ -31,10 +31,11 @@ impl StatusBarView {
 
 impl Render for StatusBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (target_label, version, last, opening) = {
+        let (connected, target_label, version, last, opening) = {
             let state = self.state.read(cx);
             (
-                state.target.as_ref().map(|t| t.display_label()),
+                state.target.is_some(),
+                state.target.as_ref().and_then(|t| t.file_label()),
                 state.server.as_ref().map(|s| s.version.clone()),
                 state.last_query.clone(),
                 state.is_opening(),
@@ -50,7 +51,7 @@ impl Render for StatusBarView {
                 .child(Spinner::new().xsmall())
                 .child(tr("status_bar.opening"))
                 .into_any_element()
-        } else if let Some(label) = target_label {
+        } else if connected {
                 h_flex()
                     .gap_1p5()
                     .items_center()
@@ -60,7 +61,7 @@ impl Render for StatusBarView {
                             .text_color(cx.theme().success),
                     )
                     .child(tr("status_bar.connected"))
-                    .child(label)
+                    .children(target_label)
                     .into_any_element()
             } else {
                 h_flex()
