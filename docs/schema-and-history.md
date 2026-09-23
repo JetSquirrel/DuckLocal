@@ -2,7 +2,7 @@
 
 **[中文](zh/schema-and-history.md)** · [Docs](index.md)
 
-The sidebar has two tabs: **表结构** (schema) and **查询历史** (history).
+The sidebar has two tabs: **Schema** and **History** (**表结构** and **查询历史** in Chinese).
 
 ## The schema tree
 

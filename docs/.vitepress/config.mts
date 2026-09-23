@@ -25,7 +25,11 @@ function sidebar(zh = false): DefaultTheme.SidebarItem[] {
   return [
     {
       text: zh ? '入门' : 'Getting started',
-      items: [item('getting-started', 'Quick start', '快速上手')],
+      items: [
+        item('getting-started', 'Install and first query', '安装与第一条查询'),
+        item('tutorial', 'Your first 10 minutes', '10 分钟上手教程'),
+        item('troubleshooting', 'Troubleshooting', '常见问题排查'),
+      ],
     },
     {
       text: zh ? '使用指南' : 'Guides',
@@ -39,12 +43,15 @@ function sidebar(zh = false): DefaultTheme.SidebarItem[] {
       ],
     },
     {
-      text: zh ? '开发' : 'Development',
+      text: zh ? '自动化与扩展' : 'Automate and extend',
       items: [
-        item('cli', 'AI CLI and official skill', 'AI CLI 与官方 skill'),
-        item('analysis-app', 'Analysis apps', '分析应用'),
-        item('development', 'Development guide', '开发指南'),
+        item('cli', 'CLI and agent skill', 'CLI 与 agent skill'),
+        item('analysis-app', 'Apps and dashboards', '分析应用与 Dashboard'),
       ],
+    },
+    {
+      text: zh ? '参与开发' : 'Contributing',
+      items: [item('development', 'Development guide', '开发指南')],
     },
   ]
 }
@@ -63,8 +70,9 @@ export default defineConfig({
       lang: 'en',
       themeConfig: {
         nav: [
-          { text: 'Guide', link: '/getting-started' },
-          { text: 'Development', link: '/development' },
+          { text: 'Get started', link: '/getting-started' },
+          { text: 'Tutorial', link: '/tutorial' },
+          { text: 'CLI', link: '/cli' },
           { text: 'Download', link: `${repository}/releases/latest` },
         ],
         sidebar: sidebar(),
@@ -76,8 +84,9 @@ export default defineConfig({
       description: '本地优先的数据查询与分析工作台，原生基于 DuckDB。',
       themeConfig: {
         nav: [
-          { text: '指南', link: '/zh/getting-started' },
-          { text: '开发', link: '/zh/development' },
+          { text: '快速上手', link: '/zh/getting-started' },
+          { text: '教程', link: '/zh/tutorial' },
+          { text: 'CLI', link: '/zh/cli' },
           { text: '下载', link: `${repository}/releases/latest` },
         ],
         sidebar: sidebar(true),

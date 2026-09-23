@@ -220,7 +220,7 @@ npx --yes -p typescript tsc -p <应用目录>/jsconfig.json --noImplicitAny fals
 
 因为它是加载状态，只在点击时才执行的语句不在报告里，重新加载之后的内容也不在。应用的 JavaScript 权限始终如一：导出就是运行应用，和把它开在标签页里完全一样。
 
-## Dashboard 规格文件（.dash）
+## Dashboard 规格文件（.dash） {#dashboard-specs-dash}
 
 `.dash` 文件把 dashboard 声明为数据——query 与 plot block，没有 JavaScript——适合「已保存查询 + 标准图表」的常见场景。文件格式与 `ducklocal check` 校验见 [CLI 指南](cli.md#校验-dashboard-规格文件)。
 

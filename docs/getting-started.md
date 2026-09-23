@@ -2,22 +2,27 @@
 
 **[中文](zh/getting-started.md)** · [Docs](index.md)
 
-## Requirements
+DuckLocal is a desktop app for asking questions of the data files on your
+machine with SQL. There is no server to run, no connection to configure, and
+no account — you point it at files and start querying. This page takes you
+from download to your first result in about five minutes.
 
-The released build runs on **macOS 12.0 or later, Apple silicon only**. The
-distributed disk image is signed and notarized, so it opens without a
+## 1. Install {#install}
+
+You need **macOS 12 or later on Apple silicon** (M1 or newer).
+
+1. Download [`ducklocal-macos-arm64.dmg`](https://github.com/JetSquirrel/DuckLocal/releases/latest)
+   from the latest release.
+2. Open it and drag **DuckLocal** into **Applications**.
+3. Launch DuckLocal from Applications or Spotlight.
+
+The disk image is signed and notarized by Apple, so it opens without any
 Gatekeeper workaround.
 
-To build from source you need Rust stable, **1.85.1 or newer**, and a C++
-toolchain — DuckDB is compiled from vendored sources. The first build takes a
-while and needs a few gigabytes of disk.
-
-## Install
-
-**From the disk image.** Download `ducklocal-macos-arm64.dmg`, open it, and
-drag `DuckLocal.app` to Applications.
-
-**From source.**
+::: details Building from source instead
+You need Rust stable 1.85.1 or newer and a C++ toolchain (Xcode Command Line
+Tools). DuckDB is compiled from vendored sources, so the first build takes
+several minutes and a few gigabytes of disk.
 
 ```bash
 git clone https://github.com/JetSquirrel/DuckLocal
@@ -26,53 +31,77 @@ cargo build --release
 ./target/release/ducklocal
 ```
 
-`cargo run` works too, and is quicker to iterate on. Builds are slow the first
-time because of DuckDB; afterwards only DuckLocal itself recompiles.
+The binary is `./target/release/ducklocal`; use it wherever this guide says
+`ducklocal`. See [Development](development.md) for bundling a `.app`.
+:::
 
-## Open your data
+## 2. Add the `ducklocal` command (optional) {#add-command}
 
-DuckLocal will open whatever you name on the command line:
+Everything in the app works without a terminal. If you also want to open data
+from the command line — or let an AI agent run queries with the
+[CLI](cli.md) — link the binary inside the app onto your `PATH`:
 
 ```bash
-ducklocal ./logs/             # every data file under a folder, recursively
-ducklocal ./billing.parquet   # one file
-ducklocal './data/*.csv'      # a pattern (quote it, so the shell does not expand it)
-ducklocal warehouse.duckdb    # or an existing DuckDB database
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/DuckLocal.app/Contents/MacOS/ducklocal /usr/local/bin/ducklocal
+ducklocal --version
 ```
 
-You can name several paths at once, and mix them freely.
+The link follows the app, so updating DuckLocal in Applications updates the
+command too. To remove it: `sudo rm /usr/local/bin/ducklocal`.
 
-There are two more ways in, both equivalent:
+## 3. Open some data
 
-- **Open data…** in the title bar opens a dialog where you type or browse for
-  paths. An **In-memory** button in that dialog switches to a plain in-memory
-  workspace with nothing attached.
-- **Drag files or folders onto the window.**
+The first launch opens on a screen titled **Drop your data in**. From here,
+any of these gets data in:
 
-Every CSV, TSV, Parquet, JSON, or Excel file becomes a queryable relation, and every file is
-registered — the next launch starts with the same workspace. See
-[Data sources](data-sources.md) for the details.
+- **Drag** CSV, TSV, Parquet, JSON or Excel files — or a whole folder — onto
+  the window.
+- Click **Open files…** or **Open folder…**.
+- From a terminal, name the paths:
 
-## Run a query
+  ```bash
+  ducklocal ./sales.csv         # one file
+  ducklocal ./logs/             # every data file under a folder, recursively
+  ducklocal './data/*.parquet'  # a pattern — quote it so the shell leaves it alone
+  ducklocal warehouse.duckdb    # an existing DuckDB database
+  ```
 
-The workspace opens with one query tab. Type SQL and press **⌘↵** (Cmd+Enter)
-to run it. `Run`, `Format`, and `EXPLAIN` sit in the toolbar above the editor.
+Each file becomes a view named after the file — `sales.csv` becomes `sales` —
+and shows up under **Local files** in the sidebar with its columns and row
+count. DuckLocal reads the files where they are; nothing is copied or
+uploaded.
 
-Results appear in the panel below, as a grid or a chart.
+Files you open are remembered, so the next launch starts with the same
+workspace. [Data sources](data-sources.md) has the details on formats,
+folders, patterns and databases.
 
-## The first-run screen
+::: tip No data handy?
+The [first-10-minutes tutorial](tutorial.md) walks through a small sample
+file step by step.
+:::
 
-When nothing is attached and nothing has been registered yet, the workspace
-shows three buttons instead of the editor: **Open file…**, **Open folder…**,
-and **New query**. Pick one of the first two to attach data, or **New query**
-to get an editor anyway.
+## 4. Run a query
 
-One quirk worth knowing: on this screen **⌘↵** reveals the editor rather than
-running anything.
+Click **New query** (or open some data — the editor appears on its own). Type
+SQL and press **⌘↵** (Cmd+Enter):
+
+```sql
+SELECT * FROM sales LIMIT 20;
+```
+
+The result appears in the panel under the editor. Switch it to **Chart** for a
+quick picture, or export it as CSV or Parquet. The toolbar above the editor
+has **Run**, **Format** and **EXPLAIN**.
+
+A shortcut worth knowing: in the sidebar, click the play button beside a
+table to get a ready-made `SELECT * … LIMIT 100`, or a column name to select
+just that column.
 
 ## Where to go next
 
+- [Your first 10 minutes](tutorial.md) — a guided tour with sample data
 - [Data sources](data-sources.md) — formats, folders, patterns, databases
-- [SQL editor](sql-editor.md) — tabs, shortcuts, EXPLAIN
-- [Results and charts](results-and-charts.md) — what you can do with a result
-- [Settings and app data](settings-and-data.md) — where everything is stored
+- [SQL editor](sql-editor.md) — tabs, shortcuts, autocompletion, EXPLAIN
+- [Results and charts](results-and-charts.md) — filtering, export, charts
+- [Troubleshooting](troubleshooting.md) — when something does not behave

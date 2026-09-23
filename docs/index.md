@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: DuckLocal
-  text: Your data. Your workspace.
-  tagline: A local-first workspace for querying and exploring your data, built natively on DuckDB.
+  text: SQL on your files, right on your Mac.
+  tagline: Drop in CSV, Parquet, JSON or Excel and query it with DuckDB. No server, no setup, no upload.
   image:
     src: /assets/logo.png
     alt: DuckLocal
@@ -12,61 +12,72 @@ hero:
       text: Get started
       link: /getting-started
     - theme: alt
+      text: Try the 10-minute tutorial
+      link: /tutorial
+    - theme: alt
       text: Download for macOS
       link: https://github.com/JetSquirrel/DuckLocal/releases/latest
-    - theme: alt
-      text: GitHub
-      link: https://github.com/JetSquirrel/DuckLocal
 features:
-  - title: Query local files
-    details: Open CSV, Parquet, JSON, Excel, or a whole folder. No connection setup or uploads.
+  - title: Query files where they are
+    details: A file, a folder, a glob or a .duckdb database becomes queryable the moment you open it — and stays there next launch.
     link: /data-sources
-    linkText: Explore data sources
+    linkText: Data sources
+  - title: Nothing leaves your machine
+    details: No account, no telemetry, no cloud. Files are read in place and never copied or uploaded.
+    link: /settings-and-data
+    linkText: What is stored, and where
   - title: A focused SQL workspace
-    details: Write SQL with highlighting, autocompletion, formatting, and multiple query tabs.
+    details: Query tabs, autocompletion from your own tables, one-click formatting and EXPLAIN.
     link: /sql-editor
-    linkText: Meet the editor
-  - title: Explore your results
-    details: Filter the results grid, copy cells, export CSV or Parquet, and explore built-in charts.
+    linkText: The SQL editor
+  - title: From rows to a picture
+    details: Filter the grid, chart the result, and export it as CSV or Parquet.
     link: /results-and-charts
     linkText: Results and charts
+  - title: Built for AI agents
+    details: A headless CLI with a precise JSON contract, plus an official agent skill for schema-first analysis.
+    link: /cli
+    linkText: CLI and skill
+  - title: Dashboards as files
+    details: Declare queries and plots in a .dash file, or script a custom view and export it as one HTML page to share.
+    link: /analysis-app
+    linkText: Apps and dashboards
 ---
 
-# DuckLocal
+<p align="center"><strong><a href="./zh/">中文文档</a></strong> · macOS 12+ on Apple silicon · Free and open source (Apache-2.0)</p>
 
-**[中文文档](zh/index.md)** · [Project README](https://github.com/JetSquirrel/DuckLocal#readme)
+## Up and running in three steps
 
-A local-first workspace for querying and exploring your data, built natively on DuckDB.
-Point it at your files — there is no connection to configure, no schema to create,
-and nothing is uploaded anywhere.
+1. **[Download](https://github.com/JetSquirrel/DuckLocal/releases/latest)**
+   the disk image and drag DuckLocal to Applications.
+2. **Drop a data file** — or a whole folder — onto the window. Each file
+   becomes a view named after it.
+3. **Press ⌘↵** on a query:
 
-macOS 12 or later, Apple silicon. Free and open source under Apache-2.0.
-[Download for macOS](https://github.com/JetSquirrel/DuckLocal/releases/latest) ·
-[View on GitHub](https://github.com/JetSquirrel/DuckLocal)
+```sql
+SELECT channel, sum(revenue) AS revenue
+FROM sales
+GROUP BY channel
+ORDER BY revenue DESC;
+```
+
+New here? [Getting started](getting-started.md) covers installation and the
+first launch; [Your first 10 minutes](tutorial.md) is a guided tour with a
+sample file.
 
 ![How DuckLocal works: CSV, Parquet and DuckDB files, plus S3-compatible object storage, all feeding one local workspace](assets/intro.jpg)
 
-## Guides
+## Find your way
 
-| Guide | What it covers |
+| I want to… | Read |
 | --- | --- |
-| [Getting started](getting-started.md) | Install DuckLocal, open your first files, run your first query |
-| [Data sources](data-sources.md) | Which file formats are supported, how folders and patterns resolve, how databases open, view naming, and the limits |
-| [S3 and httpfs](s3.md) | Point DuckLocal at an S3-compatible bucket, browse it, and query objects |
-| [SQL editor](sql-editor.md) | Query tabs, running and formatting SQL, EXPLAIN, and autocompletion |
-| [Schema browser and history](schema-and-history.md) | Browse tables and columns, generate SELECT statements, alter column types, and reuse past queries |
-| [Results and charts](results-and-charts.md) | The results grid, filtering, copying, export, and the built-in charts |
-| [Settings and app data](settings-and-data.md) | Where DuckLocal keeps its files, what survives a restart, themes, language, and troubleshooting |
-| [AI CLI and official skill](cli.md) | Run headless SQL, inspect the JSON contract, and install the official agent skill |
-| [Analysis apps](analysis-app.md) | Open a window whose contents are a JavaScript app you wrote, over the same connection |
-| [Development](development.md) | Build, test, bundle a `.app`, and cut a signed and notarized release |
-
-## At a glance
-
-- Local CSV / TSV / Parquet / JSON / Excel files, or whole folders —
-  from the command line, the file dialog, or a drop on the window
-- SQL editor with syntax highlighting, autocompletion, formatting, and
-  multiple tabs
-- Schema sidebar for browsing databases, schemas, tables, and columns
-- Results grid with filtering, cell copy, CSV and Parquet export, and charts
-- Query history, optional S3 support, light and dark themes, English and 简体中文
+| Install DuckLocal and run a first query | [Getting started](getting-started.md) |
+| Learn by doing, with sample data | [Your first 10 minutes](tutorial.md) |
+| Open folders, globs, Excel or a `.duckdb` file | [Data sources](data-sources.md) |
+| Query objects in S3 or a compatible store | [S3 and httpfs](s3.md) |
+| Get more out of the editor | [SQL editor](sql-editor.md) · [Schema and history](schema-and-history.md) |
+| Chart or export a result | [Results and charts](results-and-charts.md) |
+| Let an AI agent query my data | [CLI and agent skill](cli.md) |
+| Build a dashboard | [Apps and dashboards](analysis-app.md) |
+| Fix something that is not working | [Troubleshooting](troubleshooting.md) |
+| Build DuckLocal from source or contribute | [Development](development.md) |

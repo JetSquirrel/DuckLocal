@@ -72,7 +72,7 @@ cp -R skills/ducklocal /path/to/your-project/.claude/skills/
 
 ## 文档
 
-完整指南在 [`docs/`](docs/zh/index.md)：[快速上手](docs/zh/getting-started.md)、[数据源](docs/zh/data-sources.md)、[S3 与 httpfs](docs/zh/s3.md)、[SQL 编辑器](docs/zh/sql-editor.md)、[Schema 浏览与历史](docs/zh/schema-and-history.md)、[结果与图表](docs/zh/results-and-charts.md)、[设置与应用数据](docs/zh/settings-and-data.md)、[开发](docs/zh/development.md)。
+完整指南在 [`docs/`](docs/zh/index.md)：[快速上手](docs/zh/getting-started.md)、带样例数据的 [10 分钟上手教程](docs/zh/tutorial.md)、[常见问题排查](docs/zh/troubleshooting.md)、[数据源](docs/zh/data-sources.md)、[S3 与 httpfs](docs/zh/s3.md)、[SQL 编辑器](docs/zh/sql-editor.md)、[Schema 浏览与历史](docs/zh/schema-and-history.md)、[结果与图表](docs/zh/results-and-charts.md)、[设置与应用数据](docs/zh/settings-and-data.md)、[开发](docs/zh/development.md)。
 
 这些页面同时会以 VitePress 站点形式发布。需要 Node.js 22 及以上（推荐 24 LTS）：`npm --prefix docs ci` 安装依赖，`npm --prefix docs run build` 生成到 `target/docs-site`，`npm --prefix docs run dev` 本地开发。CI 在 `main` 分支的 `docs/` 有改动时自动部署到 GitHub Pages。详见[开发](docs/zh/development.md#文档站)。
 

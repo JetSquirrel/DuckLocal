@@ -2,7 +2,7 @@
 
 **[English](../schema-and-history.md)** · [文档](index.md)
 
-侧栏有两个 Tab：**表结构**（schema）和**查询历史**（history）。
+侧栏有两个 Tab：**表结构** 和 **查询历史**（英文界面中为 **Schema** 和 **History**）。
 
 ## Schema 树
 
