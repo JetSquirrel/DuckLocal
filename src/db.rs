@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{anyhow, Result};
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 
 use crate::i18n::trf;
 
@@ -308,12 +308,46 @@ pub fn attach_data_file_as_of(conn: &Connection, path: &str, view_name: &str) ->
     }
     let reader = data_file_reader(&expanded)
         .ok_or_else(|| anyhow!(trf("error.unsupported_file_type", &[&expanded])))?;
+    ensure_replaceable_of(conn, &expanded, view_name)?;
     let quoted_ident = view_name.replace('"', "\"\"");
     let quoted_path = expanded.replace('\'', "''");
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE VIEW \"{quoted_ident}\" AS SELECT * FROM {reader}('{quoted_path}')"
+        "CREATE OR REPLACE VIEW \"{quoted_ident}\" AS SELECT * FROM {reader}('{quoted_path}');
+         COMMENT ON VIEW \"{quoted_ident}\" IS '{OWNED_COMMENT}';"
     ))?;
     Ok(())
+}
+
+/// The catalog comment on every table and view DuckLocal creates from a file.
+/// It is how a later re-attach tells its own relation, which it may replace,
+/// from one the user made under the same name, which it must not.
+pub(crate) const OWNED_COMMENT: &str = "ducklocal: attached file";
+
+/// Refuse when `name` is taken in the current schema by a relation DuckLocal
+/// did not create. Registered files are re-attached into whatever database is
+/// open, and a `CREATE OR REPLACE` there would drop the user's own `orders`
+/// table for a workbook's sheet — and in a file database, save that.
+pub(crate) fn ensure_replaceable_of(conn: &Connection, path: &str, name: &str) -> Result<()> {
+    let foreign: Option<String> = conn
+        .query_row(
+            "SELECT name FROM (
+                 SELECT table_name AS name, comment FROM duckdb_tables()
+                 WHERE database_name = current_database() AND schema_name = current_schema()
+                 UNION ALL
+                 SELECT view_name, comment FROM duckdb_views()
+                 WHERE database_name = current_database() AND schema_name = current_schema()
+                   AND NOT internal
+             )
+             WHERE lower(name) = lower(?1) AND coalesce(comment, '') != ?2
+             LIMIT 1",
+            [name, OWNED_COMMENT],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match foreign {
+        Some(existing) => Err(anyhow!(trf("error.relation_taken", &[path, &existing]))),
+        None => Ok(()),
+    }
 }
 
 /// Re-import one sheet of a workbook under an explicit relation name; `sheet`
@@ -527,6 +561,47 @@ mod tests {
 
         assert_eq!(view, "events_2");
         assert_eq!(user_view_count(&conn), 1);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn re_attaching_never_replaces_a_relation_the_user_made() {
+        let conn = Connection::open_in_memory().unwrap();
+        let root = std::env::temp_dir().join("ducklocal_reattach_foreign_test");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).unwrap();
+        let csv = root.join("orders.csv");
+        std::fs::write(&csv, "n\n1\n").unwrap();
+        let xlsx = root.join("orders.xlsx");
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let sheet = book.add_worksheet().set_name("Sheet1").unwrap();
+        sheet.write_string(0, 0, "n").unwrap();
+        sheet.write_number(1, 0, 1).unwrap();
+        book.save(&xlsx).unwrap();
+
+        // Registered earlier as `orders`; now the open database has its own.
+        conn.execute_batch("CREATE TABLE orders(id INTEGER); INSERT INTO orders VALUES (42);")
+            .unwrap();
+        let csv_error = attach_data_file_as_of(&conn, csv.to_str().unwrap(), "orders")
+            .unwrap_err()
+            .to_string();
+        let sheet_error =
+            attach_excel_sheet_as_of(&conn, xlsx.to_str().unwrap(), Some("Sheet1"), "Orders")
+                .unwrap_err()
+                .to_string();
+        assert!(csv_error.contains("orders"), "{csv_error}");
+        assert!(sheet_error.contains("\"orders\""), "{sheet_error}");
+        let kept: i64 = conn
+            .query_row("SELECT id FROM orders", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 42);
+
+        // Its own relations DuckLocal still replaces on every re-attach.
+        attach_data_file_as_of(&conn, csv.to_str().unwrap(), "events").unwrap();
+        attach_data_file_as_of(&conn, csv.to_str().unwrap(), "events").unwrap();
+        attach_excel_sheet_as_of(&conn, xlsx.to_str().unwrap(), Some("Sheet1"), "sheet").unwrap();
+        attach_excel_sheet_as_of(&conn, xlsx.to_str().unwrap(), Some("Sheet1"), "sheet").unwrap();
+
         std::fs::remove_dir_all(&root).ok();
     }
 

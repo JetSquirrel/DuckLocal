@@ -40,13 +40,13 @@ plot "revenue" {
 }
 ```
 
-A `query` block holds one `sql` attribute (one statement, heredoc or string). A `plot` block holds `type` (`line`, `bar`, `area`, `scatter`, `table`), `query` (a `query.name` reference), `x` and `y` (result columns, bare identifiers or quoted strings; `y` optional for `table`), optional `series` and `title`. No functions, conditionals, or interpolation exist. There is a working example at `examples/analysis_app/dashboard.dash`.
+A `query` block holds one `sql` attribute (one read-only statement — SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE or PIVOT — heredoc or string; DDL, DML, COPY, ATTACH and INSTALL are rejected). A `plot` block holds `type` (`line`, `bar`, `area`, `scatter`, `table`), `query` (a `query.name` reference), `x` and `y` (result columns, bare identifiers or quoted strings; `y` optional for `table`), optional `series` and `title`. No functions, conditionals, or interpolation exist. There is a working example at `examples/analysis_app/dashboard.dash`.
 
 Always validate before handing a spec over: `ducklocal check dashboard.dash`, or `ducklocal check dashboard.dash --database warehouse.duckdb` to also verify every `x`/`y`/`series` against the columns the queries actually return (a non-numeric `y` is an error outside `table`). A spec mistake is exit 2 with kind `spec`, one `file:line: message` per diagnostic — fix all of them, not just the first. To see it rendered, open the file in the GUI (`ducklocal dashboard.dash` or drag it onto the window): it becomes a dashboard tab, a resizable vertical stack of the plots with per-plot inline errors.
 
 ## Authoring an app
 
-An analysis app is a folder holding `main.js`: a default-exported `View` subclass. `init(props, cx)` runs at load; `render()` returns the UI tree. The smallest working app:
+An analysis app is a folder holding `main.js`: a default-exported `View` subclass. `init(props, cx)` runs at load; `render()` returns the UI tree. The first time a folder opens in the GUI its tab asks the user to **Trust and run** before any of its code or SQL runs — tell the user to expect that when you hand an app over. The smallest working app:
 
 ```js
 import { View, div } from "gpui-kit";

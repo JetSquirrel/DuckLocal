@@ -87,11 +87,11 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     // SQL is checked with the real parser on a throwaway connection: nothing
     // executes, so no table needs to exist and no side effect can happen.
     for query in &spec.queries {
-        crate::cli::validate_sql(&query.sql).map_err(|error| {
+        validate_query_sql(&query.sql).map_err(|message| {
             spec_error(
                 &path_display,
                 query.line,
-                &format!("query {:?}: {}", query.name, error.message()),
+                &format!("query {:?}: {message}", query.name),
             )
         })?;
     }
@@ -150,6 +150,45 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     .to_string())
 }
 
+/// A dashboard query's SQL, checked without running it: exactly one statement,
+/// and one that only reads. A `.dash` file is something people send each
+/// other, and the view runs its queries on open, on every change to the file
+/// and on every launch that restores the tab — a `DROP`, `COPY … TO` or
+/// `ATTACH` in it would run on the user's live connection before any plot
+/// could say "not rows".
+///
+/// "Only reads" is DuckDB's own judgement, not a keyword list:
+/// `json_serialize_sql` serializes SELECT statements (CTEs, `FROM`-first,
+/// `VALUES`, `TABLE`, `SHOW`, `DESCRIBE`, `SUMMARIZE` included) and refuses
+/// everything else. Its one false refusal is `PIVOT`/`UNPIVOT`, which cannot
+/// carry a write, so a statement led by either is let through.
+pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
+    crate::cli::validate_sql(sql).map_err(|error| error.message().to_string())?;
+    let leading = sql
+        .trim_start()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(leading.as_str(), "pivot" | "unpivot") {
+        return Ok(());
+    }
+    let parser = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let refused: bool = parser
+        .query_row(
+            "SELECT coalesce(json_serialize_sql(?1::VARCHAR)::JSON->>'error' = 'true', true)",
+            [sql],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if refused {
+        return Err("a dashboard query must be a single read-only statement \
+                    (SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE, PIVOT)"
+            .to_string());
+    }
+    Ok(())
+}
+
 /// The columns a query returns, per DuckDB's own description of it.
 fn describe(
     connection: &duckdb::Connection,
@@ -186,5 +225,38 @@ fn spec_error_all(file: &str, diagnostics: Vec<model::Diagnostic>) -> CliError {
             .collect::<Vec<_>>()
             .join("\n"),
         code: 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_query_sql;
+
+    #[test]
+    fn a_dashboard_query_may_only_read() {
+        for sql in [
+            "SELECT 1",
+            "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
+            "FROM range(3)",
+            "VALUES (1), (2)",
+            "SHOW TABLES",
+            "DESCRIBE SELECT 1",
+            "SUMMARIZE SELECT 1",
+            "PIVOT (SELECT 1 AS a, 2 AS b) ON a IN (1) USING sum(b)",
+            "SELECT * FROM read_csv('orders.csv') -- a trailing note",
+        ] {
+            assert!(validate_query_sql(sql).is_ok(), "{sql}");
+        }
+        for sql in [
+            "DROP TABLE orders",
+            "COPY (SELECT 1) TO '/tmp/out.csv'",
+            "ATTACH 'other.duckdb'",
+            "INSERT INTO t VALUES (1) RETURNING *",
+            "CREATE TABLE t AS SELECT 1",
+            "INSTALL httpfs",
+            "SELECT 1; DROP TABLE orders",
+        ] {
+            assert!(validate_query_sql(sql).is_err(), "{sql}");
+        }
     }
 }

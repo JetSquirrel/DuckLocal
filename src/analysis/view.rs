@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable};
 use gpui_kit::*;
@@ -41,6 +41,10 @@ pub struct AnalysisHost {
     /// could not be read.
     definition: Option<String>,
     showing_definition: bool,
+    /// Whether the user has said this directory's app may run. Until then
+    /// nothing is loaded — not even on a file change — and the tab asks; see
+    /// [`crate::analysis::apps::is_trusted`] for why.
+    trusted: bool,
     /// Declared last on purpose: fields drop in declaration order, and the
     /// mounted view holds QuickJS handles into this runtime, so it has to be
     /// released first.
@@ -65,6 +69,7 @@ impl AnalysisHost {
             watcher: None,
             definition: None,
             showing_definition: false,
+            trusted: false,
             runtime: None,
         };
         match runtime {
@@ -112,6 +117,7 @@ impl AnalysisHost {
             cx.notify();
             return;
         }
+        self.trusted = crate::analysis::apps::is_trusted(&directory);
         self.directory = Some(directory.clone());
         self.mounted = None;
         self.failure = None;
@@ -120,6 +126,23 @@ impl AnalysisHost {
         self.watch(directory, window, cx);
         self.load_soon(window, cx);
         cx.notify();
+    }
+
+    /// The user said yes: remember it for this folder and run the app. A
+    /// history store that cannot be written (a second instance holds it)
+    /// still trusts the folder for as long as this tab is open.
+    fn trust_and_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.directory.clone() else {
+            return;
+        };
+        if let Err(error) = crate::analysis::apps::trust(&directory) {
+            tracing::warn!(
+                "Could not remember that {} is trusted: {error}",
+                directory.display()
+            );
+        }
+        self.trusted = true;
+        self.reload(window, cx);
     }
 
     /// Mount the app again, the way the toolbar's Refresh does.
@@ -139,6 +162,10 @@ impl AnalysisHost {
         let Some(directory) = self.directory.clone() else {
             return;
         };
+        if !self.trusted {
+            cx.notify();
+            return;
+        }
         // A directory that is gone is not a broken app: it is an app with no
         // directory, which is the state the tab starts from and can leave by
         // choosing another one.
@@ -443,6 +470,69 @@ impl AnalysisHost {
             .into_any_element()
     }
 
+    /// The folder's app has not been agreed to: say what running it allows,
+    /// offer its source to read first, and run it only on a click.
+    fn render_untrusted(&self, cx: &mut Context<Self>) -> AnyElement {
+        let directory = self
+            .directory
+            .as_deref()
+            .map(|directory| directory.to_string_lossy().to_string())
+            .unwrap_or_default();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .p_6()
+            .child(
+                Icon::new(IconName::TriangleAlert)
+                    .large()
+                    .text_color(cx.theme().warning),
+            )
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(tr("analysis.trust.title")),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .max_w_96()
+                    .text_center()
+                    .child(directory),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .max_w_96()
+                    .text_center()
+                    .child(tr("analysis.trust.body")),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("app-view-source")
+                            .outline()
+                            .small()
+                            .label(tr("analysis.trust.view_source"))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_definition(cx))),
+                    )
+                    .child(
+                        Button::new("app-trust")
+                            .primary()
+                            .small()
+                            .label(tr("analysis.trust.run"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.trust_and_run(window, cx)
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_loading(&self, cx: &App) -> AnyElement {
         v_flex()
             .size_full()
@@ -476,19 +566,23 @@ enum Body {
     App,
     /// A directory was chosen and its app is being mounted.
     Loading,
+    /// A directory was chosen whose app the user has not yet agreed to run.
+    Untrusted,
     /// A directory was chosen and its app did not load.
     Failed,
     /// No directory is chosen.
     Empty,
 }
 
-fn body(mounted: bool, directory: Option<&Path>, failure: Option<&str>) -> Body {
+fn body(mounted: bool, directory: Option<&Path>, failure: Option<&str>, trusted: bool) -> Body {
     if mounted {
         Body::App
     } else if directory.is_none() {
         // A rejected or vanished directory leaves this state, with the reason
         // shown: the step that starts the work has to stay available.
         Body::Empty
+    } else if !trusted {
+        Body::Untrusted
     } else if failure.is_some() {
         Body::Failed
     } else {
@@ -511,6 +605,7 @@ impl Render for AnalysisHost {
             self.mounted.is_some(),
             self.directory.as_deref(),
             self.failure.as_deref(),
+            self.trusted,
         ) {
             Body::App => self
                 .mounted
@@ -525,6 +620,7 @@ impl Render for AnalysisHost {
                 })
                 .unwrap_or_else(|| self.render_empty(cx)),
             Body::Loading => self.render_loading(cx),
+            Body::Untrusted => self.render_untrusted(cx),
             Body::Failed => self.render_failure(cx),
             Body::Empty => self.render_empty(cx),
         };
@@ -558,17 +654,17 @@ mod tests {
     #[test]
     fn a_chosen_directory_that_has_not_mounted_is_loading_not_empty() {
         let directory = Path::new("/apps/sales");
-        assert_eq!(body(false, Some(directory), None), Body::Loading);
+        assert_eq!(body(false, Some(directory), None, true), Body::Loading);
         // The empty state belongs to the tab that has no directory at all.
-        assert_eq!(body(false, None, None), Body::Empty);
+        assert_eq!(body(false, None, None, true), Body::Empty);
     }
 
     #[test]
     fn a_rejected_directory_stays_empty_so_its_action_stays_available() {
         let reason = "no main.js";
-        assert_eq!(body(false, None, Some(reason)), Body::Empty);
+        assert_eq!(body(false, None, Some(reason), true), Body::Empty);
         assert_eq!(
-            body(false, Some(Path::new("/apps/sales")), Some(reason)),
+            body(false, Some(Path::new("/apps/sales")), Some(reason), true),
             Body::Failed
         );
     }
@@ -578,9 +674,18 @@ mod tests {
         // A reload that failed keeps the app up; the reason is drawn above
         // it, not instead of it.
         assert_eq!(
-            body(true, Some(Path::new("/apps/sales")), Some("boom")),
+            body(true, Some(Path::new("/apps/sales")), Some("boom"), true),
             Body::App
         );
+    }
+
+    #[test]
+    fn an_untrusted_app_asks_before_it_loads_or_fails() {
+        let directory = Path::new("/apps/sales");
+        assert_eq!(body(false, Some(directory), None, false), Body::Untrusted);
+        assert_eq!(body(false, Some(directory), Some("boom"), false), Body::Untrusted);
+        // With no directory there is nothing to trust yet.
+        assert_eq!(body(false, None, None, false), Body::Empty);
     }
 
     #[test]

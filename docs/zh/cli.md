@@ -177,7 +177,7 @@ ducklocal check dashboard.dash
 ducklocal check dashboard.dash --database warehouse.duckdb
 ```
 
-`query` block 只含一个 `sql` 属性——一条语句，heredoc 或字符串。`plot` block 含 `type`（`line`、`bar`、`area`、`scatter`、`table` 之一）、`query`（指向同文件某个 query block 的引用，如 `query.latency`）、`x` 和 `y`（结果列名，可写裸标识符或带引号的字符串；`table` 类型不需要 `y`），以及可选的 `series`、`title`。`#` 和 `//` 注释到行尾。这就是全部语法：没有函数、没有条件、没有插值。
+`query` block 只含一个 `sql` 属性——一条只读语句，heredoc 或字符串。接受 `SELECT`、`WITH`、`FROM` 开头、`VALUES`、`SHOW`、`DESCRIBE`、`SUMMARIZE` 与 `PIVOT`；任何可能写入的语句——DDL、DML、`COPY`、`ATTACH`、`INSTALL`——都会报诊断，GUI 也拒绝执行，因为 dashboard 的查询在文件一打开时就会运行。`plot` block 含 `type`（`line`、`bar`、`area`、`scatter`、`table` 之一）、`query`（指向同文件某个 query block 的引用，如 `query.latency`）、`x` 和 `y`（结果列名，可写裸标识符或带引号的字符串；`table` 类型不需要 `y`），以及可选的 `series`、`title`。`#` 和 `//` 注释到行尾。这就是全部语法：没有函数、没有条件、没有插值。
 
 不带 `--database` 时校验完全静态——表不需要存在，什么都不会执行。每条查询的 SQL 由真正的 DuckDB parser 在一次性连接上校验，与 `query` 执行前的校验相同。带 `--database PATH`（已存在的文件，只读打开）时，每条查询还会被 describe——只规划、不执行——并把每个 plot 的 `x`/`y`/`series` 与查询实际返回的列逐一核对；对 `table` 以外的类型，`y` 不是数值列也是错误。
 

@@ -223,6 +223,13 @@ of other databases, `INSTALL`/`LOAD` of extensions, and queries against S3 views
 credentials are already configured. Treat an app's JavaScript as code you are choosing to
 run, exactly as you would a shell script.
 
+So the choice is asked for. The first time a folder opens as an app — from the command line,
+a drop, the picker, or a tab restored at launch — its tab says what the app's SQL can do and
+waits: **View source** shows the entry file without running it, **Trust and run** runs it.
+The answer is remembered per folder, so later launches and every reload after a save run
+without asking again. `ducklocal export --html` runs the app you name on the command line
+and does not ask.
+
 What an app does **not** get is anything else the process could do:
 
 - **No filesystem, network, process, or environment module.** `fs`, `net`, `process` and
@@ -247,7 +254,7 @@ Because it is the loading state, a statement an app only runs on a click is not 
 
 A `.dash` file is a dashboard declared as data — query and plot blocks, no JavaScript — for the common case of standard plots over saved queries. The file format and `ducklocal check` validation are in [the CLI guide](cli.md#check-a-dashboard-spec).
 
-Open one like an app: name it on the command line (`ducklocal dashboard.dash`) or drag the file onto the window, and it opens as a dashboard tab beside your queries and apps. The tab runs the spec's queries on the window's own connection — so a dashboard sees connection-local state such as `TEMP` tables, and queues with the editor's queries — and renders each plot as one panel of a vertical stack whose dividers drag to resize. A plot whose query fails shows the reason in its own panel; the rest of the dashboard still draws. The toolbar's reload re-reads the file and re-runs everything, and a reload that fails validation never replaces a working dashboard — the reason appears above it instead. Open dashboards are remembered between launches, exactly like apps.
+Open one like an app: name it on the command line (`ducklocal dashboard.dash`) or drag the file onto the window, and it opens as a dashboard tab beside your queries and apps. The tab runs the spec's queries on the window's own connection — so a dashboard sees connection-local state such as `TEMP` tables, and queues with the editor's queries — and renders each plot as one panel of a vertical stack whose dividers drag to resize. Only read-only statements run: a query that could write (DDL, DML, `COPY`, `ATTACH`, …) is refused before it reaches the connection, so opening a `.dash` file someone sent you cannot change your data. A plot whose query fails shows the reason in its own panel; the rest of the dashboard still draws. The toolbar's reload re-reads the file and re-runs everything, and a reload that fails validation never replaces a working dashboard — the reason appears above it instead. Open dashboards are remembered between launches, exactly like apps.
 
 The tab is also an editor: its source view edits the file with completion and diagnostics, and writes back with the save button or ⌘S — a save whose spec no longer validates keeps the last working dashboard up and says why. Outside the GUI, `ducklocal lsp` serves the same completion, diagnostics, hover and go-to-definition to any LSP-capable editor (see [the CLI guide](cli.md#edit-a-dashboard-spec-with-lsp)).
 

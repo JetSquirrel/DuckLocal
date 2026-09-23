@@ -363,6 +363,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
 
     // ── src/db.rs ───────────────────────────────────────────────────────
     ("error.file_not_found", "文件不存在: {}", "File not found: {}"),
+    (
+        "error.relation_taken",
+        "未挂载 {}：当前数据库已有名为 \"{}\" 的表或视图，DuckLocal 不会替换它。",
+        "Not attached {}: the database already has a table or view named \"{}\", which DuckLocal will not replace.",
+    ),
     ("error.unsupported_file_type", "不支持的文件类型: {}", "Unsupported file type: {}"),
     (
         "error.excel_empty",
@@ -474,6 +479,18 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "应用是留在该目录里的一个 JavaScript 视图——由 agent 或你自己编写；保存文件即会重新加载。",
         "An app is a JavaScript view left in that folder — by an agent, or by you. Saving the file reloads it.",
     ),
+    (
+        "analysis.trust.title",
+        "要运行这个应用吗？",
+        "Run this app?",
+    ),
+    (
+        "analysis.trust.body",
+        "应用的 SQL 拥有与 SQL 编辑器相同的权限：可以读写当前数据库、读取本机上任何可读的文件、COPY 到文件、ATTACH 其他数据库。只运行你信任的来源。同意后，这个文件夹以后会直接运行。",
+        "An app's SQL has the SQL editor's privileges: it can read and change the open database, read any file this machine can, COPY to files and ATTACH other databases. Run only apps from a source you trust. Once you agree, this folder runs without asking.",
+    ),
+    ("analysis.trust.run", "信任并运行", "Trust and run"),
+    ("analysis.trust.view_source", "先看源码", "View source"),
     (
         "analysis.definition.unreadable",
         "无法读取 {}：{}",

@@ -273,7 +273,7 @@ fn diagnose(source: &str, database: Option<&std::path::Path>) -> Vec<lsp_types::
         // contract, but an editor wants a span, and the name is the precise
         // place a broken statement can be fixed.
         for query in &spec.queries {
-            if let Err(error) = crate::cli::validate_sql(&query.sql) {
+            if let Err(message) = super::validate_query_sql(&query.sql) {
                 let span = file
                     .blocks
                     .iter()
@@ -283,7 +283,7 @@ fn diagnose(source: &str, database: Option<&std::path::Path>) -> Vec<lsp_types::
                     .unwrap_or(query.span);
                 out.push(diagnostic(
                     span_range(source, span),
-                    format!("query {:?}: {}", query.name, error.message()),
+                    format!("query {:?}: {message}", query.name),
                 ));
             }
         }
