@@ -42,6 +42,9 @@ impl TitleBarView {
             cx.subscribe(&state, |_, _, _: &crate::state::OpenStateChanged, cx| {
                 cx.notify();
             }),
+            cx.subscribe(&state, |_, _, _: &crate::state::SidebarToggled, cx| {
+                cx.notify();
+            }),
         ];
         Self {
             state,
@@ -335,11 +338,12 @@ impl TitleBarView {
 
 impl Render for TitleBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (target_label, opening) = {
+        let (target_label, opening, sidebar_collapsed) = {
             let state = self.state.read(cx);
             (
                 state.target.as_ref().and_then(|t| t.file_label()),
                 state.is_opening(),
+                state.is_sidebar_collapsed(),
             )
         };
         let dark = cx.theme().mode.is_dark();
@@ -355,6 +359,25 @@ impl Render for TitleBarView {
                         .min_w_0()
                         .justify_start()
                         .gap_2()
+                        // With the sidebar put away, the way back sits where
+                        // the sidebar would begin.
+                        .when(sidebar_collapsed, |this| {
+                            this.child(
+                                Button::new("expand-sidebar")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::PanelLeftOpen)
+                                    .tooltip_with_action(
+                                        tr("sidebar.expand"),
+                                        &crate::ui::ToggleSidebar,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.state
+                                            .update(cx, |state, cx| state.toggle_sidebar(cx));
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new("open-data")
                                 .ghost()

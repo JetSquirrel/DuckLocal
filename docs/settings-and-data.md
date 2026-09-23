@@ -29,6 +29,7 @@ re-attached on launch.
 | Query history, including failures | app data file |
 | Interface language | app data file |
 | Interface size | app data file |
+| Whether the sidebar is hidden | app data file |
 | Open app and dashboard tabs, with their titles | app data file |
 | Recently opened apps and dashboards (the sidebar's **Apps** / **Dashboards**) | app data file |
 | App folders you chose to trust | app data file |

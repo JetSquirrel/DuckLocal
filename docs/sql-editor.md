@@ -78,6 +78,7 @@ field:
 | ⌘↵ | Run the query |
 | ⌘S | Save a dashboard's source, in its source view |
 | ⌘+ / ⌘− / ⌘0 | Make the interface larger / smaller / default size — see [Interface size](settings-and-data.md#interface-size) |
+| ⌘B | Hide or show the sidebar |
 | ⌘F / ⇧⌘F | Find / replace in the editor |
 | ⌘Z / ⇧⌘Z | Undo / redo |
 | ⌘A | Select all |

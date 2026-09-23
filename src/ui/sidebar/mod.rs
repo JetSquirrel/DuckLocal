@@ -250,10 +250,17 @@ impl Sidebar {
             let node_meta = meta.get(&item.id);
             let icon: Option<gpui_kit::assets::IconName> = node_meta.and_then(|m| match m.kind {
                 SchemaNodeKind::Database => Some(IconName::HardDrive.into()),
-                SchemaNodeKind::Schema
-                | SchemaNodeKind::LocalFilesGroup
+                // A section is a heading, not a folder: its glyph says it
+                // folds, nothing more.
+                SchemaNodeKind::LocalFilesGroup
                 | SchemaNodeKind::AppsGroup
-                | SchemaNodeKind::DashboardsGroup => Some(if entry.is_expanded() {
+                | SchemaNodeKind::DashboardsGroup
+                | SchemaNodeKind::S3Status => Some(if entry.is_expanded() {
+                    IconName::ChevronDown.into()
+                } else {
+                    IconName::ChevronRight.into()
+                }),
+                SchemaNodeKind::Schema => Some(if entry.is_expanded() {
                     IconName::FolderOpen.into()
                 } else {
                     IconName::Folder.into()
@@ -265,7 +272,6 @@ impl Sidebar {
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
                 SchemaNodeKind::View => Some(IconName::Eye.into()),
                 SchemaNodeKind::File | SchemaNodeKind::S3File => Some(IconName::File.into()),
-                SchemaNodeKind::S3Status => Some(IconName::Globe.into()),
                 SchemaNodeKind::S3Bucket => Some(gpui_kit::assets::IconName::Inbox),
                 SchemaNodeKind::S3Prefix => Some(if entry.is_expanded() {
                     IconName::FolderOpen.into()
@@ -276,9 +282,11 @@ impl Sidebar {
             });
 
             let group_name = item.id.clone();
-            let s3_tooltip = match node_meta.map(|m| m.kind) {
-                Some(SchemaNodeKind::S3Status) => s3_endpoint.clone(),
-                _ => None,
+            let is_section = node_meta.is_some_and(|m| m.kind.is_section());
+            let hint = node_meta.and_then(|m| m.hint.clone());
+            let tooltip: Option<SharedString> = match node_meta.map(|m| m.kind) {
+                Some(SchemaNodeKind::S3Status) => s3_endpoint.clone().map(Into::into),
+                _ => node_meta.and_then(|m| m.tooltip.clone()),
             };
             let file = node_meta.and_then(|m| m.file.clone());
             let table = node_meta.and_then(|m| m.table.clone());
@@ -305,16 +313,41 @@ impl Sidebar {
                             None => div().w_3().flex_shrink_0().into_any_element(),
                         })
                         .child(
-                            div()
+                            h_flex()
                                 .id(("row-label", ix))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .child(item.label.clone())
-                                .when_some(s3_tooltip, |this, endpoint| {
+                                .gap_1p5()
+                                .items_baseline()
+                                .map(|this| {
+                                    if is_section {
+                                        this.text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(cx.theme().muted_foreground)
+                                    } else {
+                                        this.text_sm()
+                                    }
+                                })
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(item.label.clone()),
+                                )
+                                .when_some(hint, |this, hint| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .max_w_1_2()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(hint),
+                                    )
+                                })
+                                .when_some(tooltip, |this, tooltip| {
                                     this.tooltip(move |window, cx| {
-                                        Tooltip::new(endpoint.clone()).build(window, cx)
+                                        Tooltip::new(tooltip.clone()).build(window, cx)
                                     })
                                 })
                                 .when_some(column, |this, column| {
@@ -518,11 +551,13 @@ impl Render for Sidebar {
                         }))
                         .child(Tab::new().label(tr("sidebar.tab.schema")))
                         .child(Tab::new().label(tr("sidebar.tab.history"))),
-                ),
-            )
-            .when(self.tab == SidebarTab::Schema, |this| {
-                this.child(
-                    h_flex().px_2().pb_1().justify_end().child(
+                )
+                // The sidebar's own actions share the tabs' row, as borderless
+                // icon buttons: refresh while the schema is shown, and the
+                // button that puts the whole sidebar away.
+                .child(div().flex_1())
+                .when(self.tab == SidebarTab::Schema, |this| {
+                    this.child(
                         Button::new("refresh-schema")
                             .ghost()
                             .xsmall()
@@ -531,9 +566,23 @@ impl Render for Sidebar {
                             .loading(self.refreshing_schema)
                             .disabled(self.refreshing_schema)
                             .on_click(cx.listener(Self::refresh_schema)),
-                    ),
-                )
-            })
+                    )
+                })
+                .child(
+                    Button::new("collapse-sidebar")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::PanelLeftClose)
+                        .tooltip_with_action(
+                            tr("sidebar.collapse"),
+                            &crate::ui::ToggleSidebar,
+                            None,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
+                        })),
+                ),
+            )
             .child(div().flex_1().min_h_0().child(match self.tab {
                 SidebarTab::Schema => self.render_schema(window, cx),
                 SidebarTab::History => {

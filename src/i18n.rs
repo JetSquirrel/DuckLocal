@@ -139,6 +139,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.tab.schema", "表结构", "Schema"),
     ("sidebar.tab.history", "查询历史", "History"),
     ("sidebar.refresh_schema", "刷新 Schema", "Refresh schema"),
+    ("sidebar.collapse", "收起侧栏", "Hide sidebar"),
+    ("sidebar.expand", "展开侧栏", "Show sidebar"),
     (
         "sidebar.schema.empty",
         "当前没有表或视图。\n拖入数据文件、通过“打开数据…”导入，或运行 CREATE TABLE 后点击刷新。",

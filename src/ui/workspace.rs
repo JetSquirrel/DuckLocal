@@ -150,7 +150,7 @@ fn editor_target(kinds: &[TabKind], active: usize) -> EditorTarget {
 /// The titles that more than one tab carries. Two `dashboard.dash` files from
 /// different folders both default to `dashboard`, and a strip of identical
 /// labels gives no way to tell which tab is which.
-fn duplicate_titles<'a>(titles: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+pub(crate) fn duplicate_titles<'a>(titles: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
     let mut seen = Vec::new();
     let mut duplicates = Vec::new();
     for title in titles {
@@ -167,7 +167,7 @@ fn duplicate_titles<'a>(titles: impl IntoIterator<Item = &'a str>) -> Vec<&'a st
 
 /// The name of the folder `path` sits in: what tells two same-titled
 /// documents apart.
-fn parent_name(path: &Path) -> Option<String> {
+pub(crate) fn parent_name(path: &Path) -> Option<String> {
     path.parent()?
         .file_name()
         .map(|name| name.to_string_lossy().to_string())

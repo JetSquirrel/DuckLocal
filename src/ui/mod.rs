@@ -17,13 +17,17 @@ use crate::i18n::trf;
 use crate::sources::MAX_FILES;
 use crate::state::{self, AppState, AttachOutcome, OpenOutcome, RequestReport};
 
-gpui_kit::actions!(ducklocal, [RunQuery, SaveSpec, ZoomIn, ZoomOut, ZoomReset]);
+gpui_kit::actions!(
+    ducklocal,
+    [RunQuery, SaveSpec, ZoomIn, ZoomOut, ZoomReset, ToggleSidebar]
+);
 
 /// Key context that makes ⌘↵ reachable while the SQL editor is focused.
 pub const WORKSPACE_KEY_CONTEXT: &str = "DuckLocal";
 
 pub const RUN_QUERY_KEYSTROKE: &str = "cmd-enter";
 pub const SAVE_SPEC_KEYSTROKE: &str = "cmd-s";
+pub const TOGGLE_SIDEBAR_KEYSTROKE: &str = "cmd-b";
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -37,6 +41,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-+", ZoomIn, None),
         KeyBinding::new("cmd--", ZoomOut, None),
         KeyBinding::new("cmd-0", ZoomReset, None),
+        // Handled by the root view, which owns the layout the sidebar is in.
+        KeyBinding::new(TOGGLE_SIDEBAR_KEYSTROKE, ToggleSidebar, None),
     ]);
     cx.on_action(|_: &ZoomIn, cx| scale::set(scale::current().larger(), cx));
     cx.on_action(|_: &ZoomOut, cx| scale::set(scale::current().smaller(), cx));

@@ -66,11 +66,20 @@ fn home() -> Option<&'static str> {
 }
 
 /// Display `$HOME` as `~`.
-fn compact_home(path: &str) -> String {
-    if let Some(rest) = home().and_then(|home| path.strip_prefix(home)) {
-        return format!("~{rest}");
+pub(crate) fn compact_home(path: &str) -> String {
+    match home() {
+        Some(home) => compact_home_under(path, home),
+        None => path.to_string(),
     }
-    path.to_string()
+}
+
+/// `path` with a leading `home` shown as `~` — only at a path boundary, so a
+/// home of `/Users/al` leaves `/Users/alice/x` alone.
+fn compact_home_under(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
 }
 
 /// Replace a `~/` prefix with `$HOME` expanded.
@@ -427,6 +436,13 @@ mod tests {
         assert_eq!(version, 2);
         close().unwrap();
         assert!(!is_connected());
+    }
+
+    #[test]
+    fn home_is_compacted_only_at_a_path_boundary() {
+        assert_eq!(compact_home_under("/Users/al/x.csv", "/Users/al"), "~/x.csv");
+        assert_eq!(compact_home_under("/Users/al", "/Users/al"), "~");
+        assert_eq!(compact_home_under("/Users/alice/x", "/Users/al"), "/Users/alice/x");
     }
 
     #[test]

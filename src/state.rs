@@ -28,6 +28,11 @@ pub struct S3ConfigChanged;
 #[derive(Clone, Debug)]
 pub struct OpenStateChanged;
 
+/// The sidebar was hidden or shown. The window re-lays itself out, and the
+/// title bar offers the way back.
+#[derive(Clone, Debug)]
+pub struct SidebarToggled;
+
 /// The recent-documents list gained an entry (an app or dashboard tab
 /// opened). The sidebar rebuilds its document groups on this.
 #[derive(Clone, Debug)]
@@ -69,7 +74,12 @@ pub struct AppState {
     /// Set once startup's open request has landed. Until then the panels have
     /// no opinion: their emptiness is "not loaded yet", not "nothing here".
     is_ready: bool,
+    /// Whether the sidebar is hidden. Remembered between launches.
+    sidebar_collapsed: bool,
 }
+
+/// The `settings` key the sidebar's collapsed state lives under.
+const SIDEBAR_COLLAPSED: &str = "sidebar_collapsed";
 
 impl EventEmitter<ConnectionChanged> for AppState {}
 impl EventEmitter<HistoryChanged> for AppState {}
@@ -78,6 +88,7 @@ impl EventEmitter<AttachedFilesChanged> for AppState {}
 impl EventEmitter<S3ConfigChanged> for AppState {}
 impl EventEmitter<OpenStateChanged> for AppState {}
 impl EventEmitter<RecentsChanged> for AppState {}
+impl EventEmitter<SidebarToggled> for AppState {}
 
 impl AppState {
     pub fn new(_cx: &mut Context<Self>) -> Self {
@@ -92,7 +103,29 @@ impl AppState {
             s3_config: None,
             open_requests: 0,
             is_ready: false,
+            // Read once, at construction: the history store is opened before
+            // the window, and a store that cannot be read means "shown".
+            sidebar_collapsed: crate::history::get_setting(SIDEBAR_COLLAPSED)
+                .ok()
+                .flatten()
+                .is_some_and(|value| value == "true"),
         }
+    }
+
+    pub fn is_sidebar_collapsed(&self) -> bool {
+        self.sidebar_collapsed
+    }
+
+    /// Hide the sidebar if it is shown, show it if it is hidden, and remember
+    /// which.
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
+        let value = if self.sidebar_collapsed { "true" } else { "false" };
+        if let Err(e) = crate::history::set_setting(SIDEBAR_COLLAPSED, value) {
+            tracing::warn!("Failed to persist the sidebar state: {e}");
+        }
+        cx.emit(SidebarToggled);
+        cx.notify();
     }
 
     /// Whether startup's open request has landed. A view that renders "there
