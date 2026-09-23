@@ -3,7 +3,8 @@
 //! `mod.rs` checks a spec without a window; this module draws one. A
 //! `Dashboard` parses and validates its file, runs every query on the window's
 //! connection, and renders each plot as one panel of a vertical resizable
-//! stack — the plot heights are the user's to drag. The data a plot draws is
+//! stack — the plot heights are the user's to drag, and a stack taller than
+//! the tab scrolls. The data a plot draws is
 //! `prepare`'s business; the view only renders what it prepares. A plot whose
 //! query failed, or whose columns do not resolve, shows the reason in its own
 //! panel: one bad plot never takes the dashboard down. And a reload follows
@@ -36,6 +37,7 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::label::Label;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
@@ -631,9 +633,22 @@ impl Render for Dashboard {
                         .child(self.render_plot(ix, window, cx))
                 })
                 .collect::<Vec<_>>();
+            // Every plot keeps its default height and the tab scrolls, rather
+            // than a dozen plots squeezed into one screen and the rest clipped
+            // out of reach. Dragging a divider still trades height between
+            // neighbours; a tab taller than the stack is filled, as before.
+            let stack = px(PLOT_DEFAULT * self.plots.len() as f32);
             div()
+                .id(format!("dashboard-scroll-{}", self.id))
                 .size_full()
-                .child(v_resizable(format!("dashboard-{}", self.id)).children(panels))
+                .overflow_y_scrollbar()
+                .child(
+                    div()
+                        .w_full()
+                        .h(stack)
+                        .min_h_full()
+                        .child(v_resizable(format!("dashboard-{}", self.id)).children(panels)),
+                )
                 .into_any_element()
         };
 
