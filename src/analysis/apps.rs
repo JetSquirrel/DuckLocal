@@ -125,9 +125,57 @@ pub fn restore() -> Restored {
     }
 }
 
+/// The `settings` key prefix under which a trusted app folder is recorded.
+const TRUST_PREFIX: &str = "app_trusted:";
+
+/// An app's SQL runs with the user's full database privileges — `COPY` to
+/// files, `ATTACH`, `read_text` of anything readable — and apps open without a
+/// click: from the command line, from a drop, and again at every launch. So
+/// the first run of a folder waits for the user to say yes, once per folder.
+/// The folder rather than its content is what is trusted: editing an app and
+/// saving it is the authoring loop, and asking again on every save would train
+/// the user to click through.
+fn trust_key(directory: &Path) -> String {
+    let directory = directory
+        .canonicalize()
+        .unwrap_or_else(|_| directory.to_path_buf());
+    format!("{TRUST_PREFIX}{}", directory.to_string_lossy())
+}
+
+/// Whether the user has said this folder's app may run.
+pub fn is_trusted(directory: &Path) -> bool {
+    crate::history::get_setting(&trust_key(directory))
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Record that the user trusts this folder's app.
+pub fn trust(directory: &Path) -> anyhow::Result<()> {
+    crate::history::set_setting(&trust_key(directory), &crate::history::now_timestamp())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_is_remembered_per_folder() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let trusted = TempDir::new("trust_yes");
+            trusted.app();
+            let other = TempDir::new("trust_no");
+            other.app();
+
+            assert!(!is_trusted(trusted.path()));
+            trust(trusted.path()).unwrap();
+            assert!(is_trusted(trusted.path()));
+            // The same folder by another spelling is the same folder.
+            assert!(is_trusted(&trusted.path().join(".")));
+            assert!(!is_trusted(other.path()));
+        });
+    }
 
     /// A directory that removes itself, named for the test that made it.
     struct TempDir(PathBuf);

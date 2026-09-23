@@ -225,12 +225,18 @@ fn reattach_files(files: &[crate::history::AttachedFile]) -> Vec<String> {
     for file in files {
         match registered_path(&file.path) {
             Ok(path) => {
-                match &file.sheet {
+                let attached = match &file.sheet {
                     Some(sheet) => {
-                        crate::db::attach_excel_sheet_as(&path, Some(sheet), &file.view_name).ok();
+                        crate::db::attach_excel_sheet_as(&path, Some(sheet), &file.view_name)
                     }
-                    None => {
-                        crate::db::attach_data_file_as(&path, &file.view_name).ok();
+                    None => crate::db::attach_data_file_as(&path, &file.view_name),
+                };
+                // A missing file stays quiet, as documented above; anything
+                // else — a name the open database already uses, above all —
+                // is the user's to hear about.
+                if let Err(e) = attached {
+                    if std::path::Path::new(&path).exists() {
+                        problems.push(e.to_string());
                     }
                 }
             }

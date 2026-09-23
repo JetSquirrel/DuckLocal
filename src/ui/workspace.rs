@@ -52,6 +52,9 @@ pub struct QueryTab {
     pub id: u64,
     pub title: SharedString,
     pub editor: Entity<EditorState>,
+    /// This tab's own results. One panel shared by every tab showed tab A's
+    /// rows under tab B's editor — and exported them with A's SQL.
+    pub results: Entity<ResultsPanel>,
 }
 
 /// An agent-authored app, open as a tab.
@@ -201,7 +204,6 @@ pub struct Workspace {
     /// Set once the user asks for the editor on a connection with no data yet,
     /// which is otherwise the first-run screen's job to keep out of the way.
     editor_shown: bool,
-    results: Entity<ResultsPanel>,
     rename_input: Option<Entity<InputState>>,
     _subscriptions: Vec<Subscription>,
     /// Declared last on purpose: fields drop in declaration order, and every
@@ -214,7 +216,6 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let results = cx.new(|cx| ResultsPanel::new(window, cx));
         let mut this = Self {
             state: state.clone(),
             tabs: Vec::new(),
@@ -223,7 +224,6 @@ impl Workspace {
             running: false,
             explaining: false,
             editor_shown: false,
-            results,
             rename_input: None,
             _subscriptions: vec![
                 cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
@@ -290,6 +290,7 @@ impl Workspace {
             id,
             title: trf("workspace.tab.default_title", &[&id.to_string()]).into(),
             editor,
+            results: cx.new(|cx| ResultsPanel::new(window, cx)),
         }
     }
 
@@ -689,13 +690,16 @@ impl Workspace {
         self.save_dashboard(tab_id, window, cx);
     }
 
-    fn active_sql(&self, cx: &App) -> Option<String> {
+    /// The active query's SQL, with the results panel its outcome belongs to:
+    /// captured when the run starts, so a result that lands after the user
+    /// switched tabs still goes to the tab that asked.
+    fn active_sql(&self, cx: &App) -> Option<(String, Entity<ResultsPanel>)> {
         let tab = self
             .tabs
             .get(self.active)
             .and_then(WorkspaceTab::as_query)?;
         let sql = tab.editor.read(cx).value().to_string();
-        (!sql.trim().is_empty()).then_some(sql)
+        (!sql.trim().is_empty()).then(|| (sql, tab.results.clone()))
     }
 
     fn open_rename_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -776,15 +780,14 @@ impl Workspace {
         if self.running || self.explaining {
             return;
         }
-        let Some(sql) = self.active_sql(cx) else {
+        let Some((sql, results)) = self.active_sql(cx) else {
             return;
         };
         // ⌘↵ on the first-run screen means "I want to write SQL": show the
         // editor the results belong to instead of running behind it.
         self.editor_shown = true;
         self.running = true;
-        self.results
-            .update(cx, |results, cx| results.set_running(cx));
+        results.update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
         let state = self.state.clone();
@@ -840,7 +843,7 @@ impl Workspace {
                     }),
                     Err(_) => None,
                 };
-                this.results.update(cx, |results, cx| {
+                results.update(cx, |results, cx| {
                     results.set_outcome(outcome, sql.clone(), window, cx);
                 });
                 state.update(cx, |s, cx| {
@@ -884,12 +887,11 @@ impl Workspace {
         if self.explaining || self.running {
             return;
         }
-        let Some(sql) = self.active_sql(cx) else {
+        let Some((sql, results)) = self.active_sql(cx) else {
             return;
         };
         self.explaining = true;
-        self.results
-            .update(cx, |results, cx| results.set_running(cx));
+        results.update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
@@ -900,7 +902,7 @@ impl Workspace {
             .await;
             this.update_in(cx, move |this, window, cx| {
                 this.explaining = false;
-                this.results.update(cx, |results, cx| {
+                results.update(cx, |results, cx| {
                     results.set_explain(result, window, cx);
                 });
                 cx.notify();
@@ -1311,11 +1313,9 @@ impl Workspace {
                 .child(tab.host.clone())
                 .into_any_element(),
             _ => {
-                let editor = self
-                    .tabs
-                    .get(self.active)
-                    .and_then(WorkspaceTab::as_query)
-                    .map(|tab| tab.editor.clone());
+                let query = self.tabs.get(self.active).and_then(WorkspaceTab::as_query);
+                let editor = query.map(|tab| tab.editor.clone());
+                let results = query.map(|tab| tab.results.clone());
                 div()
                     .flex_1()
                     .min_h_0()
@@ -1331,7 +1331,7 @@ impl Workspace {
                                 resizable_panel()
                                     .size(px(RESULTS_PANEL_DEFAULT))
                                     .size_range(px(RESULTS_PANEL_MIN)..px(RESULTS_PANEL_MAX))
-                                    .child(self.results.clone()),
+                                    .children(results),
                             ),
                     )
                     .into_any_element()

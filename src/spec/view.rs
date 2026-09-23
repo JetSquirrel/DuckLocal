@@ -675,17 +675,20 @@ fn load(path: &Path) -> Run {
         }
     };
 
-    // Every query runs once, however many plots draw from it; a statement that
-    // is not a SELECT has nothing to plot, which is a per-plot failure.
+    // Every query runs once, however many plots draw from it, and only after
+    // it has been shown to read and nothing else: opening a file someone sent
+    // must not be what runs its `DROP` or `COPY … TO`.
     let outcomes: Vec<Result<QueryResult, String>> = spec
         .queries
         .iter()
-        .map(|query| match crate::query::run(&query.sql) {
+        .map(|query| match super::validate_query_sql(&query.sql)
+            .and_then(|()| crate::query::run(&query.sql).map_err(|e| format!("{e:#}")))
+        {
             Ok(QueryOutcome::Rows(result)) => Ok(result),
             Ok(QueryOutcome::Affected { .. }) => {
                 Err(trf("dashboard.query_not_rows", &[&query.name]))
             }
-            Err(e) => Err(format!("{e:#}")),
+            Err(e) => Err(e),
         })
         .collect();
 

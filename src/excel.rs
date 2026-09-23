@@ -66,11 +66,20 @@ fn import(
         .map(|(name, kind)| format!("{} {}", quote(name), sql_type(*kind)))
         .collect::<Vec<_>>()
         .join(", ");
-    let keyword = if temporary { "TEMP TABLE" } else { "TABLE" };
-    conn.execute_batch(&format!(
-        "CREATE OR REPLACE {keyword} {} ({columns})",
-        quote(table_name)
-    ))?;
+    if temporary {
+        conn.execute_batch(&format!(
+            "CREATE OR REPLACE TEMP TABLE {} ({columns})",
+            quote(table_name)
+        ))?;
+    } else {
+        crate::db::ensure_replaceable_of(conn, path, table_name)?;
+        conn.execute_batch(&format!(
+            "CREATE OR REPLACE TABLE {name} ({columns});
+             COMMENT ON TABLE {name} IS '{}';",
+            crate::db::OWNED_COMMENT,
+            name = quote(table_name),
+        ))?;
+    }
 
     let placeholders = (1..=names.len())
         .map(|n| format!("?{n}"))

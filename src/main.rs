@@ -45,9 +45,12 @@ fn main() {
 
     // Paths named on the command line: data files, folders, patterns, or a
     // database to open instead of the in-memory connection. `-psn_…` is what
-    // macOS appends when the app is launched from Finder or the Dock.
-    let paths: Vec<String> = std::env::args()
-        .skip(1)
+    // macOS appends when the app is launched from Finder or the Dock. Lossy,
+    // like a drop on the window: `std::env::args` panics on a name that is
+    // not UTF-8, and a path that cannot be found is an error the UI reports.
+    let paths: Vec<String> = args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
         .filter(|arg| !arg.starts_with("-psn_"))
         .collect();
 

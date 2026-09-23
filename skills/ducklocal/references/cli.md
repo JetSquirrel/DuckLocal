@@ -53,7 +53,7 @@ ducklocal check dashboard.dash
 ducklocal check dashboard.dash --database warehouse.duckdb
 ```
 
-Validates a `.dash` file — `query "name" { sql = <<SQL … SQL }` blocks and `plot "name" { type/query/x/y/series/title }` blocks joined by `query.name` references — without opening a window. Static checks (syntax, duplicate names, dangling references, SQL through the real parser) need no database; `--database` (existing file, read-only) additionally describes each query and checks plot columns against what it returns, including a numeric-type check on `y`. Success prints one JSON object with the spec's queries and plots. A spec mistake is exit 2, kind `spec`, one `file:line: message` per diagnostic, all diagnostics at once; database/I/O failures are exit 1.
+Validates a `.dash` file — `query "name" { sql = <<SQL … SQL }` blocks and `plot "name" { type/query/x/y/series/title }` blocks joined by `query.name` references — without opening a window. Static checks (syntax, duplicate names, dangling references, SQL through the real parser — one read-only statement per query) need no database; `--database` (existing file, read-only) additionally describes each query and checks plot columns against what it returns, including a numeric-type check on `y`. Success prints one JSON object with the spec's queries and plots. A spec mistake is exit 2, kind `spec`, one `file:line: message` per diagnostic, all diagnostics at once; database/I/O failures are exit 1.
 
 ## Discover, aggregate, convert
 
