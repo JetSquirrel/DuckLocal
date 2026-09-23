@@ -10,12 +10,14 @@ use gpui_kit::SharedString;
 use super::model::{ColumnRef, FileRef, SchemaNodeKind, SchemaNodeMeta, TableRef};
 use super::s3::{s3_children_items, S3Browse};
 use crate::i18n::tr;
+use crate::recents::{RecentDocument, RecentKind};
 use crate::schema::{DatabaseInfo, NodeKind, TableInfo};
 use crate::state::{format_rows, AttachedFileView};
 
 pub(super) fn build_tree_items(
     catalog: &[DatabaseInfo],
     attached_files: &[AttachedFileView],
+    recents: &[RecentDocument],
     s3_browse: Option<&S3Browse>,
 ) -> (Vec<TreeItem>, HashMap<SharedString, SchemaNodeMeta>) {
     let mut meta = HashMap::new();
@@ -39,6 +41,19 @@ pub(super) fn build_tree_items(
                 .expanded(true)
                 .children(file_items),
         );
+    }
+
+    if let Some(group) = recents_group("group:apps", tr("sidebar.group.apps"), recents, RecentKind::App, &mut meta) {
+        items.push(group);
+    }
+    if let Some(group) = recents_group(
+        "group:dashboards",
+        tr("sidebar.group.dashboards"),
+        recents,
+        RecentKind::Dashboard,
+        &mut meta,
+    ) {
+        items.push(group);
     }
 
     if let Some(browse) = s3_browse {
@@ -107,6 +122,51 @@ pub(super) fn build_tree_items(
     (items, meta)
 }
 
+/// One recents group ("Apps" or "Dashboards"): a row per remembered document,
+/// most recent first, like files the user can click back open.
+fn recents_group(
+    id: &str,
+    label: &str,
+    recents: &[RecentDocument],
+    kind: RecentKind,
+    meta: &mut HashMap<SharedString, SchemaNodeMeta>,
+) -> Option<TreeItem> {
+    let documents: Vec<&RecentDocument> = recents.iter().filter(|doc| doc.kind == kind).collect();
+    if documents.is_empty() {
+        return None;
+    }
+    let group_id: SharedString = id.into();
+    meta.insert(
+        group_id.clone(),
+        SchemaNodeMeta::new(
+            match kind {
+                RecentKind::App => SchemaNodeKind::AppsGroup,
+                RecentKind::Dashboard => SchemaNodeKind::DashboardsGroup,
+            },
+            Some(documents.len().to_string().into()),
+        ),
+    );
+    let rows: Vec<TreeItem> = documents
+        .into_iter()
+        .map(|doc| {
+            let row_id: SharedString = format!("{id}:{}", doc.path).into();
+            meta.insert(
+                row_id.clone(),
+                SchemaNodeMeta {
+                    doc: Some(doc.clone()),
+                    ..SchemaNodeMeta::new(SchemaNodeKind::RecentDocument, None)
+                },
+            );
+            TreeItem::new(row_id, doc.title.clone())
+        })
+        .collect();
+    Some(
+        TreeItem::new(group_id, label)
+            .expanded(true)
+            .children(rows),
+    )
+}
+
 /// One registered data file: label is `视图名 · 文件名`, children are the
 /// view's columns looked up from the catalog.
 fn file_tree_item(
@@ -141,6 +201,7 @@ fn file_tree_item(
             table: table_ref.clone(),
             column: None,
             s3_uri: None,
+            doc: None,
         },
     );
 

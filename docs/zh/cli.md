@@ -4,9 +4,9 @@
 
 ## 无窗口运行
 
-`ducklocal query` 执行 SQL，不初始化 GUI、历史、注册文件、语言设置或 GUI 全局连接。每次调用创建独立连接。无参数或文件/目录/glob 参数仍打开原有 GUI；名为 `query`、`profile`、`dash` 的 GUI 路径请写 `./query`、`./profile`、`./dash`。
+`ducklocal query` 执行 SQL，不初始化 GUI、历史、注册文件、语言设置或 GUI 全局连接。每次调用创建独立连接。无参数或文件/目录/glob 参数仍打开原有 GUI；名为 `query`、`profile`、`export`、`check`、`dash` 的 GUI 路径请写 `./query`、`./profile`、`./export`、`./check`、`./dash`。
 
-`ducklocal dash export` 是唯一会启动窗口平台的子命令：面板要渲染，渲染需要窗口。它打开一个隐藏窗口、绘制一帧，在面板不再查询后退出，屏幕上不会出现任何东西。
+`ducklocal export` 是唯一会启动窗口平台的子命令：分析应用要渲染，渲染需要窗口。它打开一个隐藏窗口、绘制一帧，在应用不再查询后退出，屏幕上不会出现任何东西。
 
 当前发布范围仍是 **macOS 12 及以上、Apple 芯片**，不依赖额外 DuckDB CLI。包含此功能的 app 可直接调用内部二进制：
 
@@ -119,36 +119,92 @@ TARGET 是数据文件（`csv`、`tsv`、`txt`、`parquet`、`json`、`ndjson`�
 
 统计是精确的，会完整扫描整个关系，所以一次画像等于一次全表扫描。`--limit` 对它不适用：对样本做画像不算画像。
 
-## 把面板导出为独立 HTML
+## 把应用导出为独立 HTML
 
-`ducklocal dash export` 回答的是「那个面板当时显示的是什么」，给没有 DuckLocal 的人看。它把面板跑一次——同一套运行时、同一个 host 模块、与 `query` 相同的数据库规则——然后把面板 `query()` 发出的语句和结果写进一个自包含的 HTML 文件。
+`ducklocal export` 回答的是「那个应用当时显示的是什么」，给没有 DuckLocal 的人看。它把应用跑一次——同一套运行时、同一个 host 模块、与 `query` 相同的数据库规则——然后把应用 `query()` 发出的语句和结果写进一个自包含的 HTML 文件。
 
 ```bash
-ducklocal dash export --html examples/analysis_app
-ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
+ducklocal export --html examples/analysis_app
+ducklocal export --html --out report.html --database warehouse.duckdb apps/sales
 ```
 
-- `--html` 必填，也是目前唯一的格式。PANEL 是面板目录（其中含 `main.js`）或指向该 `main.js`，按 app 的解析方式解析；两者都不是则报参数错误（退出码 2）。
-- `--out FILE` 指定输出路径，默认写到工作目录下的 `./<面板目录名>.html`。目标已存在时必须加 `--force`，且这项检查发生在运行面板之前——拒绝不花任何代价。
-- `--database PATH` 与 `--read-write` 的含义与 `query` 完全一致：已有文件默认只读，省略则为内存库。面板就在这条连接上运行，所以需要写库的面板要加 `--read-write`。
-- `--timeout SECONDS` 为正整数，默认 15：面板停止查询片刻后捕获结束，或到达时限结束，以先到者为准。
-- 该命令会启动窗口平台：面板要渲染，渲染需要窗口。窗口是隐藏的、不会出现。
+- `--html` 必填，也是目前唯一的格式。APP 是应用目录（其中含 `main.js`）或指向该 `main.js`，按 GUI 的解析方式解析；两者都不是则报参数错误（退出码 2）。
+- `--out FILE` 指定输出路径，默认写到工作目录下的 `./<应用目录名>.html`。目标已存在时必须加 `--force`，且这项检查发生在运行应用之前——拒绝不花任何代价。
+- `--database PATH` 与 `--read-write` 的含义与 `query` 完全一致：已有文件默认只读，省略则为内存库。应用就在这条连接上运行，所以需要写库的应用要加 `--read-write`。
+- `--timeout SECONDS` 为正整数，默认 15：应用停止查询片刻后捕获结束，或到达时限结束，以先到者为准。
+- 该命令会启动窗口平台：应用要渲染，渲染需要窗口。窗口是隐藏的、不会出现。
 
 stdout 为单个 JSON 对象：
 
 ```json
-{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630,"stop_reason":"settled"}
+{"html":"/abs/report.html","app":"/abs/app","queries":2,"rows":212,"app_errors":0,"captured_ms":630,"stop_reason":"settled"}
 ```
 
-`queries` 是捕获到的语句数，`rows` 是其中成功语句的行数合计，`panel_errors` 是面板运行期间记录的报错条数。`stop_reason` 为 `settled` 表示面板自己安静了下来，`deadline` 表示被 `--timeout` 时限截断——此时报告可能缺少语句，HTML 中会出现明显的警告说明这一点。
+`queries` 是捕获到的语句数，`rows` 是其中成功语句的行数合计，`app_errors` 是应用运行期间记录的报错条数。`stop_reason` 为 `settled` 表示应用自己安静了下来，`deadline` 表示被 `--timeout` 时限截断——此时报告可能缺少语句，HTML 中会出现明显的警告说明这一点。
 
-报告包含：面板目录、所用数据库、导出时间，以及每条语句一节——SQL、列名与 Arrow 类型、结果表格，并在结果是「每行一个名称 + 一个数值」时附一张柱状图。`catalog()` 调用会成为一节表/视图/列清单。同一语句被反复执行只出现一次，展示最后一次结果。
+报告包含：应用目录、所用数据库、导出时间，以及每条语句一节——SQL、列名与 Arrow 类型、结果表格，并在结果是「每行一个名称 + 一个数值」时附一张柱状图。`catalog()` 调用会成为一节表/视图/列清单。同一语句被反复执行只出现一次，展示最后一次结果。
 
-报告**不包含**面板自身的布局与图表。面板画的是原生组件，柱状图的数值是在布局时决定的、没有任何可读出的描述——所以导出给出的是面板所依据的数据，而不是它搭出的界面。筛选、开关和后续刷新同样不在其中，文件里也没有 JavaScript。它是面板加载状态的快照，报告开头就写明了这一点。
+报告**不包含**应用自身的布局与图表。应用画的是原生组件，柱状图的数值是在布局时决定的、没有任何可读出的描述——所以导出给出的是应用所依据的数据，而不是它搭出的界面。筛选、开关和后续刷新同样不在其中，文件里也没有 JavaScript。它是应用加载状态的快照，报告开头就写明了这一点。
 
-面板的 JavaScript 权限与平时完全一样：`query()` 可以 `COPY`、`ATTACH`、写文件。导出不是沙箱。
+应用的 JavaScript 权限与平时完全一样：`query()` 可以 `COPY`、`ATTACH`、写文件。导出不是沙箱。
 
-退出码：**0** 已写出文件；**2** 命令行有误、面板路径指不到东西、目标文件已存在；**1** 面板加载失败（不写文件），或面板加载后失败（仍写出报告，错误记在报告里，stderr 消息会指明文件路径）。面板类失败的错误 kind 为 `panel`。
+退出码：**0** 已写出文件；**2** 命令行有误、应用路径指不到东西、目标文件已存在；**1** 应用加载失败（不写文件），或应用加载后失败（仍写出报告，错误记在报告里，stderr 消息会指明文件路径）。应用类失败的错误 kind 为 `app`。
+
+## 校验 dashboard 规格文件
+
+`.dash` 文件以声明的方式描述一个 dashboard——像 Terraform 声明基础设施那样，用 block 写查询和图表，用引用连接它们——而不是像分析应用那样用脚本来画。两种格式并存：规格文件覆盖「查询 + 标准图表」，人和 agent 都容易写、容易 diff；需要定制布局和交互时仍用应用。
+
+```hcl
+query "latency" {
+  sql = <<SQL
+    SELECT timestamp, service, avg(latency) AS latency
+    FROM logs
+    GROUP BY timestamp, service
+  SQL
+}
+
+plot "latency" {
+  type   = "line"
+  query  = query.latency
+  x      = timestamp
+  y      = latency
+  series = service
+}
+```
+
+```bash
+ducklocal check dashboard.dash
+ducklocal check dashboard.dash --database warehouse.duckdb
+```
+
+`query` block 只含一个 `sql` 属性——一条语句，heredoc 或字符串。`plot` block 含 `type`（`line`、`bar`、`area`、`scatter`、`table` 之一）、`query`（指向同文件某个 query block 的引用，如 `query.latency`）、`x` 和 `y`（结果列名，可写裸标识符或带引号的字符串；`table` 类型不需要 `y`），以及可选的 `series`、`title`。`#` 和 `//` 注释到行尾。这就是全部语法：没有函数、没有条件、没有插值。
+
+不带 `--database` 时校验完全静态——表不需要存在，什么都不会执行。每条查询的 SQL 由真正的 DuckDB parser 在一次性连接上校验，与 `query` 执行前的校验相同。带 `--database PATH`（已存在的文件，只读打开）时，每条查询还会被 describe——只规划、不执行——并把每个 plot 的 `x`/`y`/`series` 与查询实际返回的列逐一核对；对 `table` 以外的类型，`y` 不是数值列也是错误。
+
+成功时输出一个 JSON 对象，列出文件中的查询（给了数据库时附带结果列）和图表。规格文件的错误是退出码 2、kind 为 `spec`，每条诊断一行 `文件:行号: 消息`——一次列出全部，而不是第一条。数据库或 I/O 错误是退出码 1。
+
+同一个文件也可以在 GUI 里作为 dashboard 标签页打开——`ducklocal dashboard.dash`，或把文件拖到窗口上——每个 plot 位于可拖动调整高度的竖直堆叠中，画不出来的 plot 会在自己的格子里显示原因。见[应用指南](analysis-app.md)。
+
+## 用 LSP 编辑 dashboard 规格文件
+
+`ducklocal lsp` 是一个面向 `.dash` 文件的 Language Server Protocol 服务器，走 stdio，供编辑器启动。它把 GUI 自带规格编辑器的能力带给任何支持 LSP 的编辑器：与 `check` 相同的诊断，在每次打开和修改时推送（全量文档同步，严重级别全部是 Error——它们是错误而不是风格提示）；block 类型、属性名、图表类型和查询名的补全，每项带一个替换正在输入单词的 text edit；block、属性和引用的悬停文档；以及从 `query.name` 引用跳到对应 query block 名字的 definition。带 `--database PATH` 时，每条查询的 SQL 还会由真正的 DuckDB parser 校验，与 `check --database` 相同。
+
+把编辑器的通用 LSP 支持指向 `ducklocal lsp`（作用于 `*.dash` 文件）即可——命令不接受文档参数，编辑器通过 stdio 与它通信。Neovim（0.10+）示例：
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "dash",
+  callback = function(event)
+    vim.lsp.start({
+      name = "ducklocal",
+      cmd = { "ducklocal", "lsp" },
+      root_dir = vim.fs.dirname(vim.api.nvim_buf_get_name(event.buf)),
+    })
+  end,
+})
+```
+
+VS Code 里任何通用 LSP 扩展都可以用命令 `ducklocal`、参数 `["lsp"]`、文档选择器 `dash` 完成同样配置。退出码：正常 `shutdown`/`exit` 为 **0**；客户端未按流程退出为 **1**；命令行错误或协议握手失败为 **2**。
 
 ## JSON 契约
 
@@ -189,7 +245,7 @@ stdout 为单个 JSON 对象：
 {"error":{"kind":"argument","message":"Provide exactly one of --sql and --sql-file"}}
 ```
 
-退出码：**0** 成功，**2** 参数/语句数量错误，**1** SQL、数据库、I/O 或输出错误。错误 kind 为 `argument`、`sql`、`database`、`io`、`output`，以及 `dash export` 的 `panel`。先检查退出码再解析 stdout，报告完整性前检查 `truncated`。帮助和版本是纯文本例外。stdout 管道关闭等传输错误无法保证输出为空或完整。
+退出码：**0** 成功，**2** 参数/语句数量错误，**1** SQL、数据库、I/O 或输出错误。错误 kind 为 `argument`、`sql`、`database`、`io`、`output`，`check` 的 `spec`，以及 `export` 的 `app`。先检查退出码再解析 stdout，报告完整性前检查 `truncated`。帮助和版本是纯文本例外。stdout 管道关闭等传输错误无法保证输出为空或完整。
 
 ## 安装官方 skill
 

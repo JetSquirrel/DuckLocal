@@ -57,7 +57,7 @@ features:
 | [结果与图表](results-and-charts.md) | 结果表格、筛选、复制、导出，以及内置图表 |
 | [设置与应用数据](settings-and-data.md) | DuckLocal 把文件保存在哪里，重启后哪些内容仍在，主题、语言，以及疑难排查 |
 | [AI CLI 与官方 skill](cli.md) | 无界面运行 SQL、了解 JSON 契约、安装官方 agent skill |
-| [分析面板](analysis-panel.md) | 打开一个由你编写的 JavaScript 面板窗口，使用同一个连接 |
+| [分析应用](analysis-app.md) | 打开一个由你编写的 JavaScript 应用窗口，使用同一个连接 |
 | [开发](development.md) | 构建、测试、打包 `.app`，以及发布已签名并公证的版本 |
 
 ## 一览

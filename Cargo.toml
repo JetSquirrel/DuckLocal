@@ -15,9 +15,9 @@ categories = ["database", "gui"]
 # component catalog all come from the same pinned revision. Mixing the
 # crates.io release with the Git one would put two incompatible copies of
 # `gpui-base` in the build.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
-gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
-gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
+gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
+gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
 calamine = { version = "0.36", features = ["dates"] }
 smol = "2"
@@ -26,6 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlformat = "0.3"
 lsp-types = "0.97"
+lsp-server = "0.10"
 directories = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing = "0.1"
@@ -41,7 +42,7 @@ rust_xlsxwriter = "0.99"
 # `gpui-shell` scripts run on the QuickJS fork the toolkit pins; the crates.io
 # `rquickjs` would be a second, incompatible copy of the same crate.
 [patch.crates-io]
-rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "fb26e617da3add2ce2ac92a2ccc1a64bc8343135" }
+rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
 
 # A self-contained binary, small over fast: the heavy lifting happens inside
 # DuckDB's own C++ build, so the Rust code optimizes for size.

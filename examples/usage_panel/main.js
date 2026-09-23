@@ -13,11 +13,13 @@ import {
   EmptyTitle,
   GroupBox,
   Progress,
+  Resizable,
+  ResizablePanel,
 } from "gpui-component";
-import { catalog, panelDir, query, sqlIdentifier } from "ducklocal";
+import { catalog, appDir, query, sqlIdentifier } from "ducklocal";
 
-/** The relations this panel is about. A usage export and its cost export are
- *  named after the range they cover, so the panel looks them up by prefix and
+/** The relations this app is about. A usage export and its cost export are
+ *  named after the range they cover, so the app looks them up by prefix and
  *  takes the latest rather than being pinned to one dated pair. */
 const USAGE_PREFIX = "amount-";
 const COST_PREFIX = "cost-";
@@ -87,7 +89,7 @@ function describe(error) {
 
 export default class UsagePanel extends View {
   init(_props, cx) {
-    this.directory = panelDir();
+    this.directory = appDir();
     this.loading = true;
     this.loaded = false;
     this.error = "";
@@ -142,7 +144,7 @@ export default class UsagePanel extends View {
     const usage_rel = `${sqlIdentifier(usage.schema)}.${sqlIdentifier(usage.name)}`;
     const cost_rel = `${sqlIdentifier(cost.schema)}.${sqlIdentifier(cost.name)}`;
 
-    // One query per question, each aggregated in SQL: the panel never sums a
+    // One query per question, each aggregated in SQL: the app never sums a
     // truncated page in JavaScript.
     const byType = await query(
       `SELECT type, sum(amount) AS total, count(*) AS rows FROM ${usage_rel} GROUP BY 1 ORDER BY 2 DESC`,
@@ -219,16 +221,18 @@ export default class UsagePanel extends View {
 
   render(cx) {
     const colors = cx.theme().colors;
+    // No scroll at the root: the sections below are resizable panels, and a
+    // resizable group needs a bounded height. A section whose content
+    // overflows its panel scrolls inside the panel instead.
     return v_flex()
       .id("usage-panel")
       .size_full()
-      .overflow_y_scroll()
       .p_3()
       .gap_3()
       .bg(colors.background)
       .text_color(colors.foreground)
       .child(this.renderHeader(cx))
-      .child(this.renderBody(cx));
+      .child(div().w_full().flex_1().min_h_0().child(this.renderBody(cx)));
   }
 
   renderHeader(cx) {
@@ -261,7 +265,7 @@ export default class UsagePanel extends View {
         div()
           .text_xs()
           .text_color(colors.muted_foreground)
-          .child(`${this.directory} · the numbers are aggregated in SQL; the panel only presents them`),
+          .child(`${this.directory} · the numbers are aggregated in SQL; the app only presents them`),
       );
   }
 
@@ -272,6 +276,7 @@ export default class UsagePanel extends View {
     }
     if (this.loading && !this.loaded) {
       return v_flex()
+        .size_full()
         .items_center()
         .justify_center()
         .p_6()
@@ -279,6 +284,7 @@ export default class UsagePanel extends View {
     }
     if (!this.sources.usage) {
       return v_flex()
+        .size_full()
         .items_center()
         .justify_center()
         .p_6()
@@ -289,19 +295,36 @@ export default class UsagePanel extends View {
               .child(new EmptyTitle().child("No usage or cost export found"))
               .child(
                 new EmptyDescription().child(
-                  `This panel reads relations in the current connection whose names start with ${USAGE_PREFIX} and ${COST_PREFIX}; open those two exports in the main window first.`,
+                  `This app reads relations in the current connection whose names start with ${USAGE_PREFIX} and ${COST_PREFIX}; open those two exports in the main window first.`,
                 ),
               ),
           ),
         );
     }
-    return v_flex()
-      .w_full()
-      .gap_3()
-      .child(this.renderKpis(cx))
-      .child(this.renderDaily(cx))
-      .child(this.renderTypes(cx))
-      .child(this.renderModels(cx));
+    // Each section is one panel of a vertical resizable stack: drag a divider
+    // to give a section more of the window. The last panel takes what is left.
+    const scrollable = (content) => div().size_full().overflow_y_scroll().child(content);
+    return new Resizable("usage-sections")
+      .axis("vertical")
+      .child(
+        new ResizablePanel()
+          .size(120)
+          .size_range(96, 200)
+          .child(scrollable(this.renderKpis(cx))),
+      )
+      .child(
+        new ResizablePanel()
+          .size(280)
+          .size_range(180, 560)
+          .child(this.renderDaily(cx)),
+      )
+      .child(
+        new ResizablePanel()
+          .size(220)
+          .size_range(140, 480)
+          .child(scrollable(this.renderTypes(cx))),
+      )
+      .child(new ResizablePanel().child(this.renderModels(cx)));
   }
 
   renderKpis(cx) {
@@ -340,48 +363,32 @@ export default class UsagePanel extends View {
   }
 
   renderDaily(cx) {
-    const colors = cx.theme().colors;
-    const costBars = this.dailyCost;
-    const tokenBars = this.dailyTokens;
-    return h_flex()
-      .w_full()
-      .flex_none()
-      .items_stretch()
-      .gap_3()
+    // The two daily charts split horizontally with their own draggable
+    // divider — a resizable group nested in one panel of the outer one. Each
+    // chart fills the panel the divider leaves it instead of owning a fixed
+    // height.
+    const chart = (title, bars) =>
+      new GroupBox()
+        .variant("outline")
+        .size_full()
+        .title(title)
+        .child(
+          bars.length
+            ? new BarChart(() => bars)
+                .size_full()
+                .grid(true)
+                .label_axis(true)
+                .value_axis(true)
+            : this.nothingYet(cx),
+        );
+    return new Resizable("usage-daily")
+      .axis("horizontal")
       .child(
-        new GroupBox()
-          .variant("outline")
-          .flex_1()
-          .min_w_0()
-          .title(`Daily cost (${this.currency || "—"})`)
-          .child(
-            costBars.length
-              ? new BarChart(() => costBars)
-                  .h_48()
-                  .w_full()
-                  .grid(true)
-                  .label_axis(true)
-                  .value_axis(true)
-              : this.nothingYet(cx),
-          ),
+        new ResizablePanel()
+          .size_range(240, 720)
+          .child(chart(`Daily cost (${this.currency || "—"})`, this.dailyCost)),
       )
-      .child(
-        new GroupBox()
-          .variant("outline")
-          .flex_1()
-          .min_w_0()
-          .title("Daily output tokens")
-          .child(
-            tokenBars.length
-              ? new BarChart(() => tokenBars)
-                  .h_48()
-                  .w_full()
-                  .grid(true)
-                  .label_axis(true)
-                  .value_axis(true)
-              : this.nothingYet(cx),
-          ),
-      );
+      .child(new ResizablePanel().child(chart("Daily output tokens", this.dailyTokens)));
   }
 
   renderTypes(cx) {
@@ -437,6 +444,7 @@ export default class UsagePanel extends View {
     if (!table) return div();
     return new GroupBox()
       .variant("outline")
+      .size_full()
       .title(`By model and type (${this.models.length} rows)`)
       .child(
         new DataTable(
@@ -444,8 +452,7 @@ export default class UsagePanel extends View {
           () => table.rows,
           (row, column, cx) => this.renderModelCell(row, column, cx),
         )
-          .h_48()
-          .w_full()
+          .size_full()
           .stripe(true)
           .bordered(false)
           .sortable(false),

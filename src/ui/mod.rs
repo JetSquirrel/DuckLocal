@@ -17,22 +17,22 @@ use crate::i18n::trf;
 use crate::sources::MAX_FILES;
 use crate::state::{self, AppState, AttachOutcome, OpenOutcome, RequestReport};
 
-gpui_kit::actions!(ducklocal, [RunQuery]);
+gpui_kit::actions!(ducklocal, [RunQuery, SaveSpec]);
 
 /// Key context that makes ⌘↵ reachable while the SQL editor is focused.
 pub const WORKSPACE_KEY_CONTEXT: &str = "DuckLocal";
 
 pub const RUN_QUERY_KEYSTROKE: &str = "cmd-enter";
+pub const SAVE_SPEC_KEYSTROKE: &str = "cmd-s";
 
 pub fn init(cx: &mut App) {
     // Denser desktop density: 14px rem base (gpui-component ships 16).
     // Re-applied after every Theme::change (see main.rs, title_bar.rs).
     Theme::global_mut(cx).font_size = px(14.);
-    cx.bind_keys([KeyBinding::new(
-        RUN_QUERY_KEYSTROKE,
-        RunQuery,
-        Some(WORKSPACE_KEY_CONTEXT),
-    )]);
+    cx.bind_keys([
+        KeyBinding::new(RUN_QUERY_KEYSTROKE, RunQuery, Some(WORKSPACE_KEY_CONTEXT)),
+        KeyBinding::new(SAVE_SPEC_KEYSTROKE, SaveSpec, Some(WORKSPACE_KEY_CONTEXT)),
+    ]);
 }
 
 /// Run an "open these paths" request off the UI thread and apply the result.

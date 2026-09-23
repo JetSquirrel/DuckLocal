@@ -1,13 +1,14 @@
-//! Center workspace: query tabs and panel tabs, the toolbar that belongs to
-//! whichever is active, the SQL editor or the panel, and the results panel,
+//! Center workspace: query tabs and app tabs, the toolbar that belongs to
+//! whichever is active, the SQL editor or the app, and the results panel,
 //! split vertically by a resizable handle.
 //!
-//! A tab is either a query — an editor and the results of running it — or a
-//! panel, an agent-authored JavaScript view over the database the window is on.
+//! A tab is either a query — an editor and the results of running it — an
+//! app, an agent-authored JavaScript view over the database the window is
+//! on, or a dashboard, a `.dash` spec rendered as a stack of resizable plots.
 //! They are peers: the tab strip mixes them, closing one is closing a tab, and
-//! renaming works on both. What differs is the region and the toolbar behind the
-//! strip, which is why every path that reaches for "the active editor" goes
-//! through `as_query` rather than assuming one.
+//! renaming works on all three. What differs is the region and the toolbar
+//! behind the strip, which is why every path that reaches for "the active
+//! editor" goes through `as_query` rather than assuming one.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -17,22 +18,26 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TabSize};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use gpui_shell::ShellRuntime;
 
-use crate::analysis::panels::{self, OpenPanel};
+use crate::analysis::apps::{self, OpenApp};
 use crate::analysis::runtime;
 use crate::analysis::view::AnalysisHost;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
+use crate::spec::view::Dashboard;
 use crate::state::{AppState, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
-use crate::ui::{pick_paths, PickerTarget, RunQuery, RUN_QUERY_KEYSTROKE, WORKSPACE_KEY_CONTEXT};
+use crate::ui::{
+    pick_paths, PickerTarget, RunQuery, SaveSpec, RUN_QUERY_KEYSTROKE, WORKSPACE_KEY_CONTEXT,
+};
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
 const RESULTS_PANEL_MIN: f32 = 160.;
@@ -49,29 +54,39 @@ pub struct QueryTab {
     pub editor: Entity<EditorState>,
 }
 
-/// An agent-authored panel, open as a tab.
-pub struct PanelTab {
+/// An agent-authored app, open as a tab.
+pub struct AppTab {
     pub id: u64,
     pub title: SharedString,
     pub directory: PathBuf,
     pub host: Entity<AnalysisHost>,
 }
 
+/// A `.dash` spec, open as a tab.
+pub struct DashboardTab {
+    pub id: u64,
+    pub title: SharedString,
+    pub path: PathBuf,
+    pub host: Entity<Dashboard>,
+}
+
 pub enum WorkspaceTab {
     Query(QueryTab),
-    Panel(PanelTab),
+    App(AppTab),
+    Dashboard(DashboardTab),
 }
 
 /// Which kind a tab is, without borrowing it.
 ///
 /// The editor commands are decided from a list of these rather than from the
-/// tabs themselves, so the decision is testable without a window: a panel is
-/// not an editor, and the arithmetic of what stays active after a close does
-/// not depend on what the tabs hold.
+/// tabs themselves, so the decision is testable without a window: an app or a
+/// dashboard is not an editor, and the arithmetic of what stays active after a
+/// close does not depend on what the tabs hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Query,
-    Panel,
+    App,
+    Dashboard,
 }
 
 /// Where content aimed at "the active editor" lands.
@@ -101,10 +116,11 @@ fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
 
 /// Where a request for the active editor's content goes.
 ///
-/// A panel tab has no editor, so the request is answered by the nearest query
-/// tab — the last one open — or by a new one. Sending it nowhere would make the
-/// action look broken, and writing into a hidden editor would be the same thing
-/// with extra steps.
+/// An app tab has no editor at all, and a dashboard's editor holds `.dash`
+/// spec rather than SQL, so the request is answered by the nearest query tab
+/// — the last one open — or by a new one. Sending it nowhere would make the
+/// action look broken, and writing into a hidden editor would be the same
+/// thing with extra steps.
 fn editor_target(kinds: &[TabKind], active: usize) -> EditorTarget {
     if kinds.get(active) == Some(&TabKind::Query) {
         return EditorTarget::Active;
@@ -119,37 +135,58 @@ impl WorkspaceTab {
     pub fn id(&self) -> u64 {
         match self {
             WorkspaceTab::Query(tab) => tab.id,
-            WorkspaceTab::Panel(tab) => tab.id,
+            WorkspaceTab::App(tab) => tab.id,
+            WorkspaceTab::Dashboard(tab) => tab.id,
         }
     }
 
     pub fn title(&self) -> &SharedString {
         match self {
             WorkspaceTab::Query(tab) => &tab.title,
-            WorkspaceTab::Panel(tab) => &tab.title,
+            WorkspaceTab::App(tab) => &tab.title,
+            WorkspaceTab::Dashboard(tab) => &tab.title,
         }
     }
 
-    /// The tab as a query, which is the only kind that has an editor, a
-    /// toolbar of SQL commands and a result set to run into.
+    /// The tab as a query, which is the only kind whose editor takes SQL and
+    /// has a toolbar of SQL commands and a result set to run into.
     pub fn as_query(&self) -> Option<&QueryTab> {
         match self {
             WorkspaceTab::Query(tab) => Some(tab),
-            WorkspaceTab::Panel(_) => None,
+            WorkspaceTab::App(_) | WorkspaceTab::Dashboard(_) => None,
         }
     }
 
     pub fn kind(&self) -> TabKind {
         match self {
             WorkspaceTab::Query(_) => TabKind::Query,
-            WorkspaceTab::Panel(_) => TabKind::Panel,
+            WorkspaceTab::App(_) => TabKind::App,
+            WorkspaceTab::Dashboard(_) => TabKind::Dashboard,
         }
     }
 
-    pub fn as_panel(&self) -> Option<&PanelTab> {
+    pub fn as_app(&self) -> Option<&AppTab> {
         match self {
-            WorkspaceTab::Panel(tab) => Some(tab),
-            WorkspaceTab::Query(_) => None,
+            WorkspaceTab::App(tab) => Some(tab),
+            WorkspaceTab::Query(_) | WorkspaceTab::Dashboard(_) => None,
+        }
+    }
+
+    pub fn as_dashboard(&self) -> Option<&DashboardTab> {
+        match self {
+            WorkspaceTab::Dashboard(tab) => Some(tab),
+            WorkspaceTab::Query(_) | WorkspaceTab::App(_) => None,
+        }
+    }
+
+    /// The tab's focusable text editor: a query's SQL editor, or a
+    /// dashboard's source editor once its source view has been opened. An
+    /// app has none.
+    pub fn editor(&self, cx: &App) -> Option<Entity<EditorState>> {
+        match self {
+            WorkspaceTab::Query(tab) => Some(tab.editor.clone()),
+            WorkspaceTab::Dashboard(tab) => tab.host.read(cx).source_editor(),
+            WorkspaceTab::App(_) => None,
         }
     }
 }
@@ -168,7 +205,7 @@ pub struct Workspace {
     rename_input: Option<Entity<InputState>>,
     _subscriptions: Vec<Subscription>,
     /// Declared last on purpose: fields drop in declaration order, and every
-    /// panel tab's mounted script view holds QuickJS handles into this
+    /// app tab's mounted script view holds QuickJS handles into this
     /// runtime, so they have to be released before it is. See
     /// [`crate::analysis::runtime`] for why dropping it late is fatal rather
     /// than untidy.
@@ -189,7 +226,17 @@ impl Workspace {
             results,
             rename_input: None,
             _subscriptions: vec![
-                cx.subscribe(&state, |_, _, _: &ConnectionChanged, cx| cx.notify())
+                cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
+                    // A dashboard queries the window's connection, so a switch
+                    // of database re-runs it — the way an app follows the
+                    // window to another database.
+                    for tab in &this.tabs {
+                        if let WorkspaceTab::Dashboard(tab) = tab {
+                            tab.host.update(cx, |dashboard, cx| dashboard.reload(cx));
+                        }
+                    }
+                    cx.notify()
+                })
             ],
             runtime: None,
         };
@@ -246,9 +293,9 @@ impl Workspace {
         }
     }
 
-    /// The runtime every panel shares, created with the first panel.
+    /// The runtime every app shares, created with the first app.
     ///
-    /// A failure is returned rather than logged so the panel that asked for it
+    /// A failure is returned rather than logged so the app that asked for it
     /// can say why it cannot run, in its own tab.
     fn runtime(&mut self, cx: &mut Context<Self>) -> Result<Rc<ShellRuntime>, String> {
         if let Some(runtime) = &self.runtime {
@@ -263,73 +310,141 @@ impl Workspace {
         }
     }
 
-    /// Open a panel tab. `directory` is validated by the host, so a folder that
-    /// cannot be a panel is reported inside the tab it would have filled.
-    pub fn open_panel(&mut self, directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        // The same panel twice is the same tab brought forward: panels are
+    /// Open an app tab. `directory` is validated by the host, so a folder that
+    /// cannot be an app is reported inside the tab it would have filled.
+    pub fn open_app(&mut self, directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // The same app twice is the same tab brought forward: apps are
         // documents, and two tabs on one document is a way to edit half of it
         // and wonder why the other half is stale.
-        let existing = self.tabs.iter().position(|tab| {
-            tab.as_panel()
-                .is_some_and(|panel| panel.directory == directory)
-        });
+        let existing = self
+            .tabs
+            .iter()
+            .position(|tab| tab.as_app().is_some_and(|app| app.directory == directory));
         if let Some(ix) = existing {
+            let title = self.tabs[ix].title().to_string();
+            self.note_recent(&directory, crate::recents::RecentKind::App, &title, cx);
             self.activate(ix, window, cx);
             return;
         }
 
         let id = self.next_tab_id;
         self.next_tab_id += 1;
+        let title = apps::title_for(&directory);
         let runtime = self.runtime(cx);
         let host = cx.new(|cx| AnalysisHost::new(directory.clone(), runtime, window, cx));
-        self.tabs.push(WorkspaceTab::Panel(PanelTab {
+        self.tabs.push(WorkspaceTab::App(AppTab {
             id,
-            title: panels::title_for(&directory).into(),
-            directory,
+            title: title.clone().into(),
+            directory: directory.clone(),
             host,
         }));
         self.active = self.tabs.len() - 1;
-        self.remember_panels();
+        self.note_recent(&directory, crate::recents::RecentKind::App, &title, cx);
+        self.remember_apps();
         cx.notify();
     }
 
-    /// Open several panels, as launch does: the command line's directories
+    /// Open a `.dash` spec as a dashboard tab. Like an app, the same file
+    /// twice is the same tab brought forward, and the open set is remembered
+    /// between launches.
+    pub fn open_dashboard(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = self.tabs.iter().position(|tab| {
+            tab.as_dashboard()
+                .is_some_and(|dashboard| dashboard.path == path)
+        });
+        if let Some(ix) = existing {
+            let title = self.tabs[ix].title().to_string();
+            self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
+            self.activate(ix, window, cx);
+            return;
+        }
+
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let title = crate::spec::tabs::title_for(&path);
+        let host = cx.new(|cx| Dashboard::new(id, path.clone(), cx));
+        self.tabs.push(WorkspaceTab::Dashboard(DashboardTab {
+            id,
+            title: title.clone().into(),
+            path: path.clone(),
+            host,
+        }));
+        self.active = self.tabs.len() - 1;
+        self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
+        self.remember_dashboards();
+        cx.notify();
+    }
+
+    /// Note an opening in the sidebar's recent-documents list, and let the
+    /// sidebar know its document groups changed.
+    fn note_recent(
+        &self,
+        path: &std::path::Path,
+        kind: crate::recents::RecentKind,
+        title: &str,
+        cx: &mut Context<Self>,
+    ) {
+        crate::recents::add(path, kind, title);
+        self.state
+            .update(cx, |_, cx| cx.emit(crate::state::RecentsChanged));
+    }
+
+    /// Open several apps, as launch does: the command line's directories
     /// first, then the ones remembered from last time.
-    pub fn open_panels(
+    pub fn open_apps(
         &mut self,
         directories: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         for directory in directories {
-            self.open_panel(directory, window, cx);
+            self.open_app(directory, window, cx);
         }
     }
 
-    /// Write the open panels down, so the next launch can put them back.
-    fn remember_panels(&self) {
-        let open: Vec<OpenPanel> = self
+    /// Write the open apps down, so the next launch can put them back.
+    fn remember_apps(&self) {
+        let open: Vec<OpenApp> = self
             .tabs
             .iter()
             .filter_map(|tab| {
-                tab.as_panel()
-                    .map(|panel| OpenPanel::new(panel.directory.clone(), panel.title.to_string()))
+                tab.as_app()
+                    .map(|app| OpenApp::new(app.directory.clone(), app.title.to_string()))
             })
             .collect();
         // Blocking, like the language setting: one small row, on a user action.
-        panels::remember(&open);
+        apps::remember(&open);
+    }
+
+    /// Write the open dashboards down, the same deal the apps get.
+    fn remember_dashboards(&self) {
+        let open: Vec<OpenApp> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                tab.as_dashboard().map(|dashboard| {
+                    OpenApp::new(dashboard.path.clone(), dashboard.title.to_string())
+                })
+            })
+            .collect();
+        crate::spec::tabs::remember(&open);
     }
 
     pub fn focus_active_editor(&self, window: &mut Window, cx: &mut App) {
-        if let Some(tab) = self.tabs.get(self.active).and_then(WorkspaceTab::as_query) {
-            tab.editor.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(editor) = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.editor(cx))
+        {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
         }
     }
 
     /// Replace the active editor's content with a history entry.
     ///
-    /// A panel tab has no editor, so the SQL goes to the query tab the reader
-    /// would expect it in: the last one open, or a new one. Sending it nowhere
+    /// An app tab has no editor, and a dashboard's editor holds `.dash` spec
+    /// rather than SQL, so the SQL goes to the query tab the reader would
+    /// expect it in: the last one open, or a new one. Sending it nowhere
     /// would make the action look broken, and sending it to a hidden editor
     /// would be the same thing with extra steps.
     pub fn fill_active_editor(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -410,8 +525,8 @@ impl Workspace {
         self.focus_active_editor(window, cx);
     }
 
-    /// The tab strip's "+": a query, or a panel folder to open as one.
-    fn pick_panel_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The tab strip's "+": a query, or an app folder to open as one.
+    fn pick_app_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -426,9 +541,9 @@ impl Workspace {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                // A folder that is not a panel opens the tab that says so,
+                // A folder that is not an app opens the tab that says so,
                 // rather than being refused with nothing to look at.
-                this.open_panel(directory, window, cx);
+                this.open_app(directory, window, cx);
             })
             .ok();
         })
@@ -442,11 +557,136 @@ impl Workspace {
         let Some(ix) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
             return;
         };
+        // A dashboard with unsaved edits asks first; everything else closes.
+        if let Some(dashboard) = self.tabs[ix].as_dashboard() {
+            if dashboard.host.read(cx).is_dirty(cx) {
+                self.confirm_close_dashboard(tab_id, window, cx);
+                return;
+            }
+        }
+        self.close_tab_confirmed(tab_id, window, cx);
+    }
+
+    fn close_tab_confirmed(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        let Some(ix) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
+            return;
+        };
         self.tabs.remove(ix);
         self.active = active_after_close(self.active, ix, self.tabs.len());
-        self.remember_panels();
+        self.remember_apps();
+        self.remember_dashboards();
         cx.notify();
         self.focus_active_editor(window, cx);
+    }
+
+    /// Closing a dashboard whose source holds unsaved edits: save and close,
+    /// close without saving, or stay.
+    fn confirm_close_dashboard(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(title) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id() == tab_id)
+            .map(|tab| tab.title().to_string())
+        else {
+            return;
+        };
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(tr("dashboard.close_unsaved.title"))
+                .w(px(420.))
+                .child(
+                    div()
+                        .text_sm()
+                        .child(trf("dashboard.close_unsaved.body", &[&title])),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel")
+                                .outline()
+                                .label(tr("common.cancel"))
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("discard")
+                                .danger()
+                                .label(tr("dashboard.close_unsaved.discard"))
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        window.close_dialog(cx);
+                                        if let Some(view) = view.upgrade() {
+                                            view.update(cx, |this, cx| {
+                                                this.close_tab_confirmed(tab_id, window, cx);
+                                            });
+                                        }
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("save-and-close")
+                                .primary()
+                                .label(tr("dashboard.close_unsaved.save_close"))
+                                .on_click({
+                                    let view = view.clone();
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        window.close_dialog(cx);
+                                        if let Some(view) = view.upgrade() {
+                                            view.update(cx, |this, cx| {
+                                                // A failed save keeps the tab:
+                                                // closing now would lose the
+                                                // edits the dialog promised to
+                                                // keep.
+                                                if this.save_dashboard(tab_id, window, cx) {
+                                                    this.close_tab_confirmed(tab_id, window, cx);
+                                                }
+                                            });
+                                        }
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    /// Save the dashboard tab's source back to its file; `false` — with the
+    /// reason notified — when the write failed.
+    fn save_dashboard(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(host) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id() == tab_id)
+            .and_then(|tab| tab.as_dashboard())
+            .map(|tab| tab.host.clone())
+        else {
+            return false;
+        };
+        match host.update(cx, |dashboard, cx| dashboard.save(cx)) {
+            Ok(()) => true,
+            Err(message) => {
+                window.push_notification(Notification::error(message), cx);
+                false
+            }
+        }
+    }
+
+    /// ⌘S saves the active dashboard's source; other tabs have nothing to
+    /// save, so the keystroke is theirs to ignore.
+    fn save_spec_action(&mut self, _: &SaveSpec, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab_id) = self
+            .tabs
+            .get(self.active)
+            .and_then(WorkspaceTab::as_dashboard)
+            .map(|tab| tab.id)
+        else {
+            return;
+        };
+        self.save_dashboard(tab_id, window, cx);
     }
 
     fn active_sql(&self, cx: &App) -> Option<String> {
@@ -506,7 +746,8 @@ impl Workspace {
     fn rename_active_tab(&mut self, title: &str, cx: &mut Context<Self>) {
         let default_title = self.tabs.get(self.active).map(|tab| match tab {
             WorkspaceTab::Query(tab) => trf("workspace.tab.default_title", &[&tab.id.to_string()]),
-            WorkspaceTab::Panel(tab) => panels::title_for(&tab.directory),
+            WorkspaceTab::App(tab) => apps::title_for(&tab.directory),
+            WorkspaceTab::Dashboard(tab) => crate::spec::tabs::title_for(&tab.path),
         });
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
@@ -519,9 +760,11 @@ impl Workspace {
         };
         match tab {
             WorkspaceTab::Query(tab) => tab.title = title.into(),
-            WorkspaceTab::Panel(tab) => tab.title = title.into(),
+            WorkspaceTab::App(tab) => tab.title = title.into(),
+            WorkspaceTab::Dashboard(tab) => tab.title = title.into(),
         }
-        self.remember_panels();
+        self.remember_apps();
+        self.remember_dashboards();
         cx.notify();
     }
 
@@ -690,25 +933,62 @@ impl Workspace {
                         )
                     })
                 }
-                // A panel tab reads differently at a glance: a leading glyph
+                // An app tab reads differently at a glance: a leading glyph
                 // marks it out, and the folder it came from is its label. The
                 // glyph goes through `prefix`, not `icon`: `icon` sizes the tab
                 // as a square around the glyph alone and drops the label, which
-                // is why a panel used to read as a bare pie.
-                WorkspaceTab::Panel(tab) => {
+                // is why an app used to read as a bare pie.
+                WorkspaceTab::App(tab) => {
                     let tab_id = tab.id;
                     Tab::new()
                         .prefix(Icon::new(IconName::ChartPie))
                         .label(tab.title.clone())
                         .when(closable, |this| {
                             this.suffix(
-                                Button::new(("close-panel-tab", tab_id as usize))
+                                Button::new(("close-app-tab", tab_id as usize))
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Close)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.close_tab(tab_id, window, cx);
                                     })),
+                            )
+                        })
+                }
+                // A dashboard reads as the app's sibling: its own glyph, the
+                // spec file's name as the label, and a dot when the source
+                // buffer holds edits the file does not.
+                WorkspaceTab::Dashboard(tab) => {
+                    let tab_id = tab.id;
+                    let dirty = tab.host.read(cx).is_dirty(cx);
+                    Tab::new()
+                        .prefix(Icon::new(IconName::LayoutDashboard))
+                        .label(tab.title.clone())
+                        .when(closable || dirty, |this| {
+                            this.suffix(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .when(dirty, |this| {
+                                        this.child(
+                                            div()
+                                                .w(px(6.))
+                                                .h(px(6.))
+                                                .rounded_full()
+                                                .bg(cx.theme().warning),
+                                        )
+                                    })
+                                    .when(closable, |this| {
+                                        this.child(
+                                            Button::new(("close-dashboard-tab", tab_id as usize))
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(IconName::Close)
+                                                .on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.close_tab(tab_id, window, cx);
+                                                })),
+                                        )
+                                    }),
                             )
                         })
                 }
@@ -722,7 +1002,7 @@ impl Workspace {
                     .tooltip(tr("workspace.add_tab.tooltip"))
                     .dropdown_menu(move |menu, _window, _cx| {
                         let new_query = view.clone();
-                        let open_panel = view.clone();
+                        let open_app = view.clone();
                         menu.item(PopupMenuItem::new(tr("workspace.new_query")).on_click(
                             move |_, window, cx| {
                                 if let Some(view) = new_query.upgrade() {
@@ -733,9 +1013,9 @@ impl Workspace {
                         .item(
                             PopupMenuItem::new(tr("workspace.open_panel")).on_click(
                                 move |_, window, cx| {
-                                    if let Some(view) = open_panel.upgrade() {
+                                    if let Some(view) = open_app.upgrade() {
                                         view.update(cx, |this, cx| {
-                                            this.pick_panel_directory(window, cx)
+                                            this.pick_app_directory(window, cx)
                                         });
                                     }
                                 },
@@ -747,7 +1027,8 @@ impl Workspace {
 
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         match self.active_tab() {
-            Some(WorkspaceTab::Panel(_)) => self.render_panel_toolbar(cx).into_any_element(),
+            Some(WorkspaceTab::App(_)) => self.render_app_toolbar(cx).into_any_element(),
+            Some(WorkspaceTab::Dashboard(_)) => self.render_dashboard_toolbar(cx).into_any_element(),
             _ => self.render_query_toolbar(cx).into_any_element(),
         }
     }
@@ -818,11 +1099,11 @@ impl Workspace {
             })
     }
 
-    /// What a panel tab's toolbar says instead of Run/Format/EXPLAIN: where the
-    /// panel came from, how to reload it, and how to read what it is.
-    fn render_panel_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// What an app tab's toolbar says instead of Run/Format/EXPLAIN: where the
+    /// app came from, how to reload it, and how to read what it is.
+    fn render_app_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let (directory, showing_definition) = match self.active_tab() {
-            Some(WorkspaceTab::Panel(tab)) => (
+            Some(WorkspaceTab::App(tab)) => (
                 Some(tab.directory.clone()),
                 tab.host.read(cx).is_showing_definition(),
             ),
@@ -830,7 +1111,7 @@ impl Workspace {
         };
         let host = self
             .active_tab()
-            .and_then(WorkspaceTab::as_panel)
+            .and_then(WorkspaceTab::as_app)
             .map(|tab| tab.host.clone());
 
         h_flex()
@@ -856,7 +1137,7 @@ impl Workspace {
                     .children(directory.map(|directory| directory.to_string_lossy().to_string())),
             )
             .child(
-                Button::new("panel-definition")
+                Button::new("app-definition")
                     .outline()
                     .small()
                     .icon(IconName::File)
@@ -873,7 +1154,7 @@ impl Workspace {
                     }),
             )
             .child(
-                Button::new("panel-refresh")
+                Button::new("app-refresh")
                     .outline()
                     .small()
                     .icon(IconName::RotateCw)
@@ -886,7 +1167,104 @@ impl Workspace {
                     }),
             )
             .child(
-                Button::new("panel-rename")
+                Button::new("app-rename")
+                    .ghost()
+                    .small()
+                    .label(tr("workspace.rename"))
+                    .tooltip(tr("workspace.rename.tooltip"))
+                    .on_click(cx.listener(Self::open_rename_dialog)),
+            )
+    }
+
+    /// What a dashboard tab's toolbar says instead: which spec this is, a
+    /// toggle between the rendered dashboard and the spec's source, and a
+    /// reload that re-reads it and re-runs its queries.
+    fn render_dashboard_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (path, host, running, showing_source, dirty) = match self.active_tab() {
+            Some(WorkspaceTab::Dashboard(tab)) => (
+                Some(tab.path.clone()),
+                Some(tab.host.clone()),
+                tab.host.read(cx).is_running(),
+                tab.host.read(cx).is_showing_source(),
+                tab.host.read(cx).is_dirty(cx),
+            ),
+            _ => (None, None, false, false, false),
+        };
+
+        h_flex()
+            .w_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Icon::new(IconName::LayoutDashboard)
+                    .small()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .children(path.map(|path| path.to_string_lossy().to_string())),
+            )
+            .child(
+                Button::new("dashboard-save")
+                    .outline()
+                    .small()
+                    .icon(gpui_kit::assets::IconName::Save)
+                    .label(tr("dashboard.save"))
+                    .tooltip(tr("dashboard.save.tooltip"))
+                    .disabled(!dirty)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(tab_id) = this
+                            .tabs
+                            .get(this.active)
+                            .and_then(WorkspaceTab::as_dashboard)
+                            .map(|tab| tab.id)
+                        {
+                            this.save_dashboard(tab_id, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("dashboard-source")
+                    .outline()
+                    .small()
+                    .icon(IconName::File)
+                    .label(if showing_source {
+                        tr("dashboard.source.back")
+                    } else {
+                        tr("dashboard.source.show")
+                    })
+                    .tooltip(tr("dashboard.source.tooltip"))
+                    .when_some(host.clone(), |this, host| {
+                        this.on_click(cx.listener(move |_, _, _, cx| {
+                            host.update(cx, |dashboard, cx| dashboard.toggle_source(cx));
+                        }))
+                    }),
+            )
+            .child(
+                Button::new("dashboard-reload")
+                    .outline()
+                    .small()
+                    .icon(IconName::RotateCw)
+                    .label(tr("analysis.reload"))
+                    .loading(running)
+                    .tooltip(tr("dashboard.reload.tooltip"))
+                    .when_some(host, |this, host| {
+                        this.on_click(cx.listener(move |_, _, _, cx| {
+                            host.update(cx, |dashboard, cx| dashboard.reload(cx));
+                        }))
+                    }),
+            )
+            .child(
+                Button::new("dashboard-rename")
                     .ghost()
                     .small()
                     .label(tr("workspace.rename"))
@@ -906,6 +1284,7 @@ impl Render for Workspace {
             .min_w_0()
             .key_context(WORKSPACE_KEY_CONTEXT)
             .on_action(cx.listener(Self::run_query_action))
+            .on_action(cx.listener(Self::save_spec_action))
             .when(first_run, |this| this.child(self.render_first_run(cx)))
             .when(!first_run, |this| {
                 let region = self.render_region();
@@ -917,11 +1296,16 @@ impl Render for Workspace {
 }
 
 impl Workspace {
-    /// The tab's own region: a query is an editor over its results, and a
-    /// panel is the panel, with nothing split off below it.
+    /// The tab's own region: a query is an editor over its results, and an
+    /// app or dashboard is the view itself, with nothing split off below it.
     fn render_region(&mut self) -> AnyElement {
         match self.active_tab() {
-            Some(WorkspaceTab::Panel(tab)) => div()
+            Some(WorkspaceTab::App(tab)) => div()
+                .flex_1()
+                .min_h_0()
+                .child(tab.host.clone())
+                .into_any_element(),
+            Some(WorkspaceTab::Dashboard(tab)) => div()
                 .flex_1()
                 .min_h_0()
                 .child(tab.host.clone())
@@ -957,8 +1341,8 @@ impl Workspace {
 
     /// The first-run screen stands where the editor would be: only once
     /// startup has landed, only while there is nothing to query, and only
-    /// until the user asks for the editor instead. A panel tab is something to
-    /// look at, so it takes the screen over the invitation.
+    /// until the user asks for the editor instead. An app or dashboard tab is
+    /// something to look at, so it takes the screen over the invitation.
     fn is_first_run(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
         !self.editor_shown
@@ -1042,11 +1426,11 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("first-run-open-panel")
+                        Button::new("first-run-open-app")
                             .ghost()
                             .label(tr("workspace.open_panel"))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.pick_panel_directory(window, cx)
+                                this.pick_app_directory(window, cx)
                             })),
                     ),
             )
@@ -1065,13 +1449,13 @@ mod tests {
     // `test` macro shadows the built-in `#[test]`.
     use super::{active_after_close, editor_target, EditorTarget, TabKind};
 
-    /// Three tabs with a panel in the middle, the arrangement the branch
+    /// Three tabs with an app in the middle, the arrangement the branch
     /// mistakes would show up in.
-    const MIXED: [TabKind; 3] = [TabKind::Query, TabKind::Panel, TabKind::Query];
+    const MIXED: [TabKind; 3] = [TabKind::Query, TabKind::App, TabKind::Query];
 
     #[test]
     fn closing_the_active_tab_moves_to_the_one_before_it() {
-        // The panel in the middle closes: the tab that takes its place is the
+        // The app in the middle closes: the tab that takes its place is the
         // one that slid into its index.
         assert_eq!(active_after_close(1, 1, 2), 1);
         // The last tab closes: there is nothing after it to move to.
@@ -1083,7 +1467,7 @@ mod tests {
 
     #[test]
     fn closing_a_tab_before_the_active_one_keeps_its_place() {
-        // A query tab before the active panel closes: the panel is still the
+        // A query tab before the active app closes: the app is still the
         // active tab, one index earlier.
         assert_eq!(active_after_close(2, 0, 2), 1);
         assert_eq!(active_after_close(1, 0, 2), 0);
@@ -1096,14 +1480,14 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_tab_never_takes_editor_content() {
-        // The active tab is the panel: the content goes to a query tab, and
-        // never into the panel.
+    fn an_app_tab_never_takes_editor_content() {
+        // The active tab is the app: the content goes to a query tab, and
+        // never into the app.
         assert_eq!(editor_target(&MIXED, 1), EditorTarget::Switch(2));
-        // With the panel last, the query tab before it is the nearest one.
-        let active_panel_last = [TabKind::Query, TabKind::Query, TabKind::Panel];
+        // With the app last, the query tab before it is the nearest one.
+        let active_app_last = [TabKind::Query, TabKind::Query, TabKind::App];
         assert_eq!(
-            editor_target(&active_panel_last, 2),
+            editor_target(&active_app_last, 2),
             EditorTarget::Switch(1)
         );
     }
@@ -1116,8 +1500,8 @@ mod tests {
 
     #[test]
     fn with_no_query_tab_open_the_content_needs_a_new_one() {
-        let only_panels = [TabKind::Panel, TabKind::Panel];
-        assert_eq!(editor_target(&only_panels, 0), EditorTarget::New);
+        let only_apps = [TabKind::App, TabKind::App];
+        assert_eq!(editor_target(&only_apps, 0), EditorTarget::New);
         assert_eq!(editor_target(&[], 0), EditorTarget::New);
     }
 }

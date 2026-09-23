@@ -16,7 +16,7 @@ DuckDB 从随仓库携带的源码构建，因此首次构建耗时很长，还�
 
 ## 被钉住的工具链
 
-UI 工具包、分析面板所依赖的脚本运行时、面板绘制所用的组件目录，是同一个仓库
+UI 工具包、分析应用所依赖的脚本运行时、应用绘制所用的组件目录，是同一个仓库
 `longbridge/gpui-kit` 里的三个 crate，`rquickjs` 也被 patch 到同一个仓库。四者一起钉在同一个
 revision 是有意为之：两个 revision 会让构建里出现两份 `gpui-base` 或两份 `rquickjs`，报出来的是
 一大片 trait 不匹配，而其中没有一条会说出原因。
@@ -121,8 +121,8 @@ npm --prefix docs run preview    # http://localhost:4173/DuckLocal/
 | `src/query.rs` | 查询执行、结果序列化、导出 |
 | `src/profile.rs` | `ducklocal profile` 背后的列画像 |
 | `src/schema.rs` | 为侧栏做 catalog 内省 |
-| `src/analysis/` | JavaScript 分析面板：脚本运行时、`ducklocal` host 模块、面板标签页、重载监控 |
-| `src/dash/` | `ducklocal dash export`：无界面运行面板，把其语句与结果写成一个独立 HTML 文件 |
+| `src/analysis/` | JavaScript 分析应用：脚本运行时、`ducklocal` host 模块、应用标签页、重载监控 |
+| `src/app_export/` | `ducklocal export`：无界面运行应用，把其语句与结果写成一个独立 HTML 文件 |
 | `src/history.rs` | 应用自己的数据库：查询历史、已登记的文件、设置 |
 | `src/s3.rs` | SigV4 签名与 S3 列举 |
 | `src/i18n.rs` | 字符串表和语言选择 |

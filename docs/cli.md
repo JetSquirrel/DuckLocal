@@ -4,9 +4,9 @@
 
 ## Run without a window
 
-`ducklocal query` executes SQL without initializing the GUI, history, registered files, language settings, or the GUI's global connection. Each invocation owns a new connection. With no command (or file, directory, and glob arguments), the existing GUI still opens. To open a GUI path named `query`, `profile` or `dash`, use `./query`, `./profile`, `./dash`.
+`ducklocal query` executes SQL without initializing the GUI, history, registered files, language settings, or the GUI's global connection. Each invocation owns a new connection. With no command (or file, directory, and glob arguments), the existing GUI still opens. To open a GUI path named `query`, `profile`, `export`, `check` or `dash`, use `./query`, `./profile`, `./export`, `./check`, `./dash`.
 
-`ducklocal dash export` is the one subcommand that starts the window platform, because a panel renders and rendering needs a window: it opens one hidden window, draws one frame, and exits when the panel has stopped asking the database. Nothing appears on screen.
+`ducklocal export` is the one subcommand that starts the window platform, because an analysis app renders and rendering needs a window: it opens one hidden window, draws one frame, and exits when the app has stopped asking the database. Nothing appears on screen.
 
 The supported release target remains **macOS 12+, Apple silicon**. There is no separate DuckDB CLI dependency. A build containing this CLI can be invoked directly inside its app bundle:
 
@@ -119,36 +119,92 @@ One JSON object comes back: `target`, `relation` (the SQL the statistics ran aga
 
 Statistics are exact and read the whole relation, so a profile costs a full scan. `--limit` does not apply: a profile of a sample is not a profile.
 
-## Export a panel as a static HTML file
+## Export an app as a static HTML file
 
-`ducklocal dash export` answers "what was that panel showing?" for someone who does not have DuckLocal. It runs the panel once — the same runtime, the same host module, the same database rules as `query` — and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file.
+`ducklocal export` answers "what was that app showing?" for someone who does not have DuckLocal. It runs the app once — the same runtime, the same host module, the same database rules as `query` — and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file.
 
 ```bash
-ducklocal dash export --html examples/analysis_app
-ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
+ducklocal export --html examples/analysis_app
+ducklocal export --html --out report.html --database warehouse.duckdb apps/sales
 ```
 
-- `--html` is required, and is the only format there is. PANEL is a panel folder (one holding `main.js`) or its `main.js`, resolved the way the app resolves it; a path that names neither is an argument error (exit 2).
-- `--out FILE` names the destination and defaults to `./<panel folder>.html` in the working directory. An existing file is refused unless `--force` is given — checked before the panel runs, so a refusal costs nothing.
-- `--database PATH` and `--read-write` mean exactly what they mean for `query`: an existing file, read-only unless asked otherwise, in memory when omitted. The panel runs on that connection, so a panel that writes needs `--read-write`.
-- `--timeout SECONDS` is a positive integer, default 15: the capture stops when the panel has stopped asking the database for a moment, or at the deadline, whichever comes first.
-- The command starts the window platform, because a panel renders and rendering needs a window. The window is hidden and never appears.
+- `--html` is required, and is the only format there is. APP is an app folder (one holding `main.js`) or its `main.js`, resolved the way the GUI resolves it; a path that names neither is an argument error (exit 2).
+- `--out FILE` names the destination and defaults to `./<app folder>.html` in the working directory. An existing file is refused unless `--force` is given — checked before the app runs, so a refusal costs nothing.
+- `--database PATH` and `--read-write` mean exactly what they mean for `query`: an existing file, read-only unless asked otherwise, in memory when omitted. The app runs on that connection, so an app that writes needs `--read-write`.
+- `--timeout SECONDS` is a positive integer, default 15: the capture stops when the app has stopped asking the database for a moment, or at the deadline, whichever comes first.
+- The command starts the window platform, because an app renders and rendering needs a window. The window is hidden and never appears.
 
 One JSON object goes to stdout:
 
 ```json
-{"html":"/abs/report.html","panel":"/abs/panel","queries":2,"rows":212,"panel_errors":0,"captured_ms":630,"stop_reason":"settled"}
+{"html":"/abs/report.html","app":"/abs/app","queries":2,"rows":212,"app_errors":0,"captured_ms":630,"stop_reason":"settled"}
 ```
 
-`queries` counts the captured statements, `rows` the rows across those that succeeded, and `panel_errors` what the panel logged as an error while it ran. `stop_reason` is `settled` when the panel went quiet on its own, `deadline` when `--timeout` cut the capture short — then the report may be missing statements, and the HTML shows a visible warning saying so.
+`queries` counts the captured statements, `rows` the rows across those that succeeded, and `app_errors` what the app logged as an error while it ran. `stop_reason` is `settled` when the app went quiet on its own, `deadline` when `--timeout` cut the capture short — then the report may be missing statements, and the HTML shows a visible warning saying so.
 
-The report holds the panel folder, the database it ran against, the export time, and one section per statement: the SQL, its columns and their Arrow types, the result as a table, and a bar chart when a result is a name and a number per row. A `catalog()` call becomes an appendix of tables, views and columns. Statements a panel runs more than once appear once, with the last result.
+The report holds the app folder, the database it ran against, the export time, and one section per statement: the SQL, its columns and their Arrow types, the result as a table, and a bar chart when a result is a name and a number per row. A `catalog()` call becomes an appendix of tables, views and columns. Statements an app runs more than once appear once, with the last result.
 
-The report does **not** hold the panel's own layout or its charts. A panel draws native components, and a chart's bars are decided while it is laid out, not described anywhere that can be read out — so the export shows the data the panel was built from, not the interface it built. Filters, toggles and later refreshes are not represented either, and there is no JavaScript in the file. It is a snapshot of the panel's loading state, and it says so at the top.
+The report does **not** hold the app's own layout or its charts. An app draws native components, and a chart's bars are decided while it is laid out, not described anywhere that can be read out — so the export shows the data the app was built from, not the interface it built. Filters, toggles and later refreshes are not represented either, and there is no JavaScript in the file. It is a snapshot of the app's loading state, and it says so at the top.
 
-The panel's JavaScript runs with the same privileges it always has: `query()` can `COPY`, `ATTACH` and write files. The export is not a sandbox.
+The app's JavaScript runs with the same privileges it always has: `query()` can `COPY`, `ATTACH` and write files. The export is not a sandbox.
 
-Exit codes: **0** with the file written; **2** for a bad command line, a panel path that names nothing, or a destination that already exists; **1** when the panel could not be loaded (nothing is written) or when it loaded and then failed (the report is written anyway, with the error in it, and the message names the file). A panel failure reports the error kind `panel`.
+Exit codes: **0** with the file written; **2** for a bad command line, an app path that names nothing, or a destination that already exists; **1** when the app could not be loaded (nothing is written) or when it loaded and then failed (the report is written anyway, with the error in it, and the message names the file). An app failure reports the error kind `app`.
+
+## Check a dashboard spec
+
+A `.dash` file declares a dashboard the way Terraform declares infrastructure — queries and plots as blocks, references between them — rather than scripting one as an analysis app. The two formats coexist: the spec covers query + standard plot and is easy for a person or an agent to diff; an app stays for bespoke layout and interaction.
+
+```hcl
+query "latency" {
+  sql = <<SQL
+    SELECT timestamp, service, avg(latency) AS latency
+    FROM logs
+    GROUP BY timestamp, service
+  SQL
+}
+
+plot "latency" {
+  type   = "line"
+  query  = query.latency
+  x      = timestamp
+  y      = latency
+  series = service
+}
+```
+
+```bash
+ducklocal check dashboard.dash
+ducklocal check dashboard.dash --database warehouse.duckdb
+```
+
+A `query` block holds one `sql` attribute — one statement, as a heredoc or a string. A `plot` block holds `type` (one of `line`, `bar`, `area`, `scatter`, `table`), `query` (a reference like `query.latency` to a query block in the same file), `x` and `y` (result columns, as bare identifiers or quoted strings; `y` is optional for `table`), plus optional `series` and `title`. `#` and `//` comment to end of line. That is the whole language: no functions, no conditionals, no interpolation.
+
+Without `--database` the check is fully static — no table needs to exist and nothing executes. Each query's SQL is validated by the real DuckDB parser on a throwaway connection, the way `query` validates before running. With `--database PATH` (existing file, read-only) every query is additionally described — planned, not run — and each plot's `x`/`y`/`series` is checked against the columns the query actually returns; a `y` that is not numeric is an error for every type but `table`.
+
+Success is one JSON object listing the file's queries (with their result columns when a database was given) and plots. A spec mistake is exit 2 with error kind `spec` and one `file:line: message` per diagnostic — all of them, not just the first. A database or I/O failure is exit 1.
+
+The same file opens as a dashboard tab in the GUI — `ducklocal dashboard.dash`, or drag it onto the window — with each plot in a resizable vertical stack and a plot that cannot draw showing the reason inline. See [the app guide](analysis-app.md#dashboard-specs-dash).
+
+## Edit a dashboard spec with LSP
+
+`ducklocal lsp` is a Language Server Protocol server for `.dash` files, over stdio, for editors to spawn. It gives any LSP-capable editor what the GUI's own spec editor has: the diagnostics `check` reports, published on every open and change (full-document sync, all of them severity Error — they are mistakes, not style); completion for block types, attribute names, plot types and query names, each with a text edit that replaces the word being typed; hover documentation for blocks, attributes and references; and go-to-definition from a `query.name` reference to the query block's name. With `--database PATH` each query's SQL is additionally validated by the real DuckDB parser, the way `check --database` does.
+
+Point your editor's generic LSP support at `ducklocal lsp` for `*.dash` files — the command takes no document arguments; the editor speaks to it on stdio. In Neovim (0.10+):
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "dash",
+  callback = function(event)
+    vim.lsp.start({
+      name = "ducklocal",
+      cmd = { "ducklocal", "lsp" },
+      root_dir = vim.fs.dirname(vim.api.nvim_buf_get_name(event.buf)),
+    })
+  end,
+})
+```
+
+In VS Code, any generic-LSP extension does the same with command `ducklocal`, arguments `["lsp"]`, document selector `dash`. Exit codes: **0** after a clean `shutdown`/`exit`, **1** when the client goes away without one, **2** for a bad command line or a failed protocol handshake.
 
 ## JSON contract
 
@@ -189,7 +245,7 @@ Errors write one JSON object to **stderr**, leaving stdout empty:
 {"error":{"kind":"argument","message":"Provide exactly one of --sql and --sql-file"}}
 ```
 
-Exit codes: **0** success, **2** invalid arguments/statement count, **1** SQL, database, I/O, or output failure. Error kinds are `argument`, `sql`, `database`, `io`, `output`, and — for `dash export` — `panel`. Check exit status before parsing stdout and inspect `truncated` before reporting completeness. Help/version are plain text exceptions. Transport failures such as a closed stdout pipe cannot guarantee an empty/complete output stream.
+Exit codes: **0** success, **2** invalid arguments/statement count, **1** SQL, database, I/O, or output failure. Error kinds are `argument`, `sql`, `database`, `io`, `output`, `spec` for `check`, and — for `export` — `app`. Check exit status before parsing stdout and inspect `truncated` before reporting completeness. Help/version are plain text exceptions. Transport failures such as a closed stdout pipe cannot guarantee an empty/complete output stream.
 
 ## Install the official skill
 

@@ -1,7 +1,7 @@
-//! The script runtime the panels run on.
+//! The script runtime the apps run on.
 //!
-//! One per process, created with the first panel and owned by the workspace —
-//! the view that owns the panel tabs — so it is dropped with the window, while
+//! One per process, created with the first app and owned by the workspace —
+//! the view that owns the app tabs — so it is dropped with the window, while
 //! the application is still alive.
 //!
 //! **That ownership and that timing are the point, not an implementation
@@ -24,7 +24,7 @@ use crate::analysis::host;
 /// Whether the shell's application-wide globals have been installed.
 ///
 /// They are installed once, not once per window: installing them resets what
-/// the base theme layer holds, and by the time a panel opens the main window
+/// the base theme layer holds, and by the time an app opens the main window
 /// is already drawn in this application's theme.
 struct ShellInstalled;
 

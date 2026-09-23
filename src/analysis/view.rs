@@ -1,11 +1,11 @@
-//! The panel view that lives inside a workspace tab.
+//! The app view that lives inside a workspace tab.
 //!
 //! It is an ordinary child view: the workspace renders it in the same region
 //! the SQL editor occupies, its toolbar controls are the workspace's, and it
 //! closes like any other tab. Nothing here knows about windows.
 //!
-//! The script runtime is not owned here. One runtime serves every panel tab, so
-//! the workspace owns it and hands each panel a reference; a panel that dies
+//! The script runtime is not owned here. One runtime serves every app tab, so
+//! the workspace owns it and hands each app a reference; an app that dies
 //! takes its mounted view with it and leaves the runtime for the next one.
 
 use std::path::{Path, PathBuf};
@@ -22,9 +22,9 @@ use crate::analysis::host::{self, Rejection};
 use crate::analysis::watch::{AppFiles, Debounce, POLL_INTERVAL};
 use crate::i18n::{tr, trf};
 
-/// The panel directory, the script view it mounts, and the states around it.
+/// The app directory, the script view it mounts, and the states around it.
 pub struct AnalysisHost {
-    /// The panel directory, once one has been chosen.
+    /// The app directory, once one has been chosen.
     directory: Option<PathBuf>,
     entry: String,
     /// The mounted script view, once one has loaded.
@@ -49,7 +49,7 @@ pub struct AnalysisHost {
 
 impl AnalysisHost {
     /// `runtime` is the workspace's shared one; an error here is the reason the
-    /// panel cannot run at all, and is shown as such.
+    /// app cannot run at all, and is shown as such.
     pub fn new(
         directory: PathBuf,
         runtime: Result<Rc<ShellRuntime>, String>,
@@ -75,14 +75,14 @@ impl AnalysisHost {
         this
     }
 
-    /// Whether the tab is showing the panel's source instead of the panel.
+    /// Whether the tab is showing the app's source instead of the app.
     pub fn is_showing_definition(&self) -> bool {
         self.showing_definition
     }
 
-    /// Swap between the panel and its source, reading the source on the way in
+    /// Swap between the app and its source, reading the source on the way in
     /// so the definition is what is on disk rather than what was on disk when
-    /// the panel loaded.
+    /// the app loaded.
     pub fn toggle_definition(&mut self, cx: &mut Context<Self>) {
         self.showing_definition = !self.showing_definition;
         if self.showing_definition {
@@ -91,9 +91,9 @@ impl AnalysisHost {
         cx.notify();
     }
 
-    /// Show `directory`: check it, watch it, and load its panel.
+    /// Show `directory`: check it, watch it, and load its app.
     ///
-    /// A directory that cannot be a panel leaves what is already up alone and
+    /// A directory that cannot be an app leaves what is already up alone and
     /// says why, inside this tab.
     pub fn show_directory(
         &mut self,
@@ -103,7 +103,7 @@ impl AnalysisHost {
     ) {
         if let Err(rejection) = host::validate_application(&directory) {
             let reason = rejection_reason(&directory, rejection);
-            tracing::warn!("Not an analysis panel: {reason}");
+            tracing::warn!("Not an analysis app: {reason}");
             if self.mounted.is_some() {
                 self.stale_reason = Some(reason);
             } else {
@@ -116,13 +116,13 @@ impl AnalysisHost {
         self.mounted = None;
         self.failure = None;
         self.stale_reason = None;
-        tracing::info!("Analysis panel directory: {}", directory.display());
+        tracing::info!("Analysis app directory: {}", directory.display());
         self.watch(directory, window, cx);
         self.load_soon(window, cx);
         cx.notify();
     }
 
-    /// Mount the panel again, the way the toolbar's Refresh does.
+    /// Mount the app again, the way the toolbar's Refresh does.
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.showing_definition {
             self.read_definition();
@@ -134,17 +134,17 @@ impl AnalysisHost {
     ///
     /// A failure never replaces a working view: the previous one stays up and
     /// the reason appears above it, which is the difference between a typo
-    /// while editing and losing the panel to it.
+    /// while editing and losing the app to it.
     pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(directory) = self.directory.clone() else {
             return;
         };
-        // A directory that is gone is not a broken panel: it is a panel with no
+        // A directory that is gone is not a broken app: it is an app with no
         // directory, which is the state the tab starts from and can leave by
         // choosing another one.
         if !directory.is_dir() {
             tracing::warn!(
-                "The analysis panel directory is gone: {}",
+                "The analysis app directory is gone: {}",
                 directory.display()
             );
             self.directory = None;
@@ -159,7 +159,7 @@ impl AnalysisHost {
         }
         match self.load(&directory, window, cx) {
             Ok(view) => {
-                tracing::debug!("Mounted the analysis panel from {}", directory.display());
+                tracing::debug!("Mounted the analysis app from {}", directory.display());
                 self.mounted = Some(view);
                 self.failure = None;
                 self.stale_reason = None;
@@ -170,7 +170,7 @@ impl AnalysisHost {
             Err(error) => {
                 let message = format!("{error:#}");
                 tracing::warn!(
-                    "The analysis panel in {} did not load: {message}",
+                    "The analysis app in {} did not load: {message}",
                     directory.display()
                 );
                 if self.mounted.is_some() {
@@ -191,7 +191,7 @@ impl AnalysisHost {
         let application = runtime.load_application(directory, &self.entry)?;
         // The directory is visible to the host module for this call and for
         // every host call the script's `init` makes inside it, which is where
-        // a panel asks for `panelDir()`.
+        // an app asks for `appDir()`.
         let view = host::with_panel_directory(directory, || {
             runtime.mount_application(&application, window, cx)
         })?;
@@ -230,7 +230,7 @@ impl AnalysisHost {
                     continue;
                 }
                 tracing::info!(
-                    "Reloading the analysis panel in {} ({files} JavaScript files)",
+                    "Reloading the analysis app in {} ({files} JavaScript files)",
                     watched.display()
                 );
                 if this
@@ -321,7 +321,7 @@ impl AnalysisHost {
                             .child(tr("analysis.definition.hint")),
                     )
                     .child(
-                        Button::new("panel-back")
+                        Button::new("app-back")
                             .outline()
                             .xsmall()
                             .label(tr("analysis.definition.back"))
@@ -351,7 +351,7 @@ impl AnalysisHost {
             )
             .child(
                 v_flex()
-                    .id("panel-definition")
+                    .id("app-definition")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -404,7 +404,7 @@ impl AnalysisHost {
             .into_any_element()
     }
 
-    /// A directory was chosen and its panel did not load. The tab's toolbar
+    /// A directory was chosen and its app did not load. The tab's toolbar
     /// still offers Refresh, so there is nothing to add here but the reason.
     fn render_failure(&self, cx: &App) -> AnyElement {
         let message = self.failure.clone().unwrap_or_default();
@@ -468,15 +468,15 @@ impl AnalysisHost {
 ///
 /// Its own function because the difference between two of them is invisible
 /// until it is wrong: a directory that has been chosen and has not mounted yet
-/// is *loading*, and drawing the empty state in that moment shows "no panel
-/// open" over a panel that is about to appear.
+/// is *loading*, and drawing the empty state in that moment shows "no app
+/// open" over an app that is about to appear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Body {
-    /// A panel is mounted.
-    Panel,
-    /// A directory was chosen and its panel is being mounted.
+    /// An app is mounted.
+    App,
+    /// A directory was chosen and its app is being mounted.
     Loading,
-    /// A directory was chosen and its panel did not load.
+    /// A directory was chosen and its app did not load.
     Failed,
     /// No directory is chosen.
     Empty,
@@ -484,7 +484,7 @@ enum Body {
 
 fn body(mounted: bool, directory: Option<&Path>, failure: Option<&str>) -> Body {
     if mounted {
-        Body::Panel
+        Body::App
     } else if directory.is_none() {
         // A rejected or vanished directory leaves this state, with the reason
         // shown: the step that starts the work has to stay available.
@@ -512,7 +512,7 @@ impl Render for AnalysisHost {
             self.directory.as_deref(),
             self.failure.as_deref(),
         ) {
-            Body::Panel => self
+            Body::App => self
                 .mounted
                 .clone()
                 .map(|view| {
@@ -538,7 +538,7 @@ impl Render for AnalysisHost {
     }
 }
 
-/// Why a directory cannot be a panel, in the reader's language.
+/// Why a directory cannot be an app, in the reader's language.
 fn rejection_reason(directory: &Path, rejection: Rejection) -> String {
     let display = directory.display().to_string();
     match rejection {
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn a_chosen_directory_that_has_not_mounted_is_loading_not_empty() {
-        let directory = Path::new("/panels/sales");
+        let directory = Path::new("/apps/sales");
         assert_eq!(body(false, Some(directory), None), Body::Loading);
         // The empty state belongs to the tab that has no directory at all.
         assert_eq!(body(false, None, None), Body::Empty);
@@ -568,30 +568,30 @@ mod tests {
         let reason = "no main.js";
         assert_eq!(body(false, None, Some(reason)), Body::Empty);
         assert_eq!(
-            body(false, Some(Path::new("/panels/sales")), Some(reason)),
+            body(false, Some(Path::new("/apps/sales")), Some(reason)),
             Body::Failed
         );
     }
 
     #[test]
-    fn a_mounted_panel_wins_over_a_failure_from_the_next_reload() {
-        // A reload that failed keeps the panel up; the reason is drawn above
+    fn a_mounted_app_wins_over_a_failure_from_the_next_reload() {
+        // A reload that failed keeps the app up; the reason is drawn above
         // it, not instead of it.
         assert_eq!(
-            body(true, Some(Path::new("/panels/sales")), Some("boom")),
-            Body::Panel
+            body(true, Some(Path::new("/apps/sales")), Some("boom")),
+            Body::App
         );
     }
 
     #[test]
     fn a_rejection_says_which_directory_and_what_is_missing() {
-        let path = Path::new("/panels/missing");
+        let path = Path::new("/apps/missing");
         let message = rejection_reason(path, Rejection::NoEntryFile);
-        assert!(message.contains("/panels/missing"), "{message}");
+        assert!(message.contains("/apps/missing"), "{message}");
         assert!(message.contains(host::ENTRY), "{message}");
 
         let message = rejection_reason(path, Rejection::NotADirectory);
-        assert!(message.contains("/panels/missing"), "{message}");
+        assert!(message.contains("/apps/missing"), "{message}");
         assert_ne!(message, rejection_reason(path, Rejection::NoEntryFile));
     }
 }

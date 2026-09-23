@@ -45,13 +45,21 @@ ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 
 结果为结构化 JSON，显式标记截断并保留数值精度；`--format md` 把同样的值输出为 Markdown 表格，便于写进文档引用。文件数据库默认只读，写入需 `--read-write`；只读不是文件系统/网络沙箱，`COPY` 仍可写文件。
 
-分析面板可以导出为一个独立 HTML 文件——面板 `query()` 发出的语句及其结果——方便发给没有 DuckLocal 的人：
+分析应用可以导出为一个独立 HTML 文件——应用 `query()` 发出的语句及其结果——方便发给没有 DuckLocal 的人：
 
 ```bash
-ducklocal dash export --html examples/analysis_app
+ducklocal export --html examples/analysis_app
 ```
 
-转换、stdin、输出编码、面板导出和安全说明见 [CLI 指南](docs/zh/cli.md)。
+dashboard 也可以声明为数据：一个由 query 和 plot block 组成的 `.dash` 文件，像应用一样以标签页打开，并可直接在 GUI 里编辑。`ducklocal check` 无窗口校验规格文件，`ducklocal lsp` 则把同样的诊断、补全、悬停和跳转定义提供给任何支持 LSP 的编辑器：
+
+```bash
+ducklocal dashboard.dash                  # 以 dashboard 标签页打开
+ducklocal check dashboard.dash            # 校验；JSON 诊断，有错误时退出码 2
+ducklocal lsp                             # 面向编辑器的语言服务器（stdio）
+```
+
+转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](docs/zh/cli.md)。
 
 [官方 agent skill](skills/ducklocal/SKILL.md) 教 AI 先查 schema，再进行 SQL 分析及验证格式转换。复制到目标项目支持的 skill 目录即可，例如在本仓库执行：
 

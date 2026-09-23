@@ -1,9 +1,9 @@
-//! Which panels are open, remembered between launches.
+//! Which apps are open, remembered between launches.
 //!
-//! A panel tab is a document like any other, so it comes back the way a
+//! An app tab is a document like any other, so it comes back the way a
 //! registered data file does: the list is one `settings` value, written when
 //! the set of tabs changes. A remembered directory that is gone, or that is no
-//! longer a panel, is dropped with a reason rather than reopened as an empty
+//! longer an app, is dropped with a reason rather than reopened as an empty
 //! tab — an empty tab would say "I lost your work" without saying which.
 
 use std::path::{Path, PathBuf};
@@ -12,17 +12,24 @@ use crate::analysis::host;
 use crate::i18n::trf;
 
 /// The `settings` key the list lives under.
+///
+/// The value predates the "app" name and must not change: it is the key the
+/// remembered tabs of every existing install live under.
 pub const SETTING: &str = "analysis_panels";
 
-/// One remembered panel tab.
+/// One remembered app tab.
+///
+/// The field names are the stored JSON's, so they keep their old shape even
+/// though the concept has been renamed: a stored list this build cannot read
+/// would come back as no tabs at all.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct OpenPanel {
+pub struct OpenApp {
     pub path: String,
     /// The tab's title, kept so a renamed tab comes back renamed.
     pub title: String,
 }
 
-impl OpenPanel {
+impl OpenApp {
     pub fn new(path: PathBuf, title: impl Into<String>) -> Self {
         Self {
             path: path.to_string_lossy().to_string(),
@@ -31,7 +38,7 @@ impl OpenPanel {
     }
 }
 
-/// The default title of a panel tab: its directory's name.
+/// The default title of an app tab: its directory's name.
 pub fn title_for(directory: &Path) -> String {
     directory
         .file_name()
@@ -39,59 +46,58 @@ pub fn title_for(directory: &Path) -> String {
         .unwrap_or_else(|| directory.to_string_lossy().to_string())
 }
 
-/// What reopening the remembered panels produced.
+/// What reopening the remembered apps produced.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Restored {
-    /// Directories that are still panels, in the order they were remembered.
-    pub panels: Vec<OpenPanel>,
-    /// One message per panel that was dropped, naming it and what changed.
+    /// Directories that are still apps, in the order they were remembered.
+    pub apps: Vec<OpenApp>,
+    /// One message per app that was dropped, naming it and what changed.
     pub problems: Vec<String>,
 }
 
-/// Separate the paths that name a panel from the ones that do not.
+/// Separate the paths that name an app from the ones that do not.
 ///
-/// A panel is a directory with the entry file in it; everything else — data
+/// An app is a directory with the entry file in it; everything else — data
 /// files, folders of data, databases, globs — keeps the path behaviour it had.
 pub fn split_paths(paths: &[String]) -> (Vec<PathBuf>, Vec<String>) {
-    let mut panels = Vec::new();
+    let mut apps = Vec::new();
     let mut rest = Vec::new();
     for path in paths {
-        // `~` is expanded by the data path resolver too; a panel has to test
+        // `~` is expanded by the data path resolver too; an app has to test
         // the same directory that resolver would open.
         let expanded = PathBuf::from(crate::db::expand_tilde(path));
         if host::validate_application(&expanded).is_ok() {
-            panels.push(expanded);
+            apps.push(expanded);
         } else {
             rest.push(path.clone());
         }
     }
-    (panels, rest)
+    (apps, rest)
 }
 
-pub fn to_json(panels: &[OpenPanel]) -> String {
-    serde_json::to_string(panels).unwrap_or_else(|_| "[]".to_string())
+pub fn to_json(apps: &[OpenApp]) -> String {
+    serde_json::to_string(apps).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Read back a remembered list. A value this build cannot read is no panels
+/// Read back a remembered list. A value this build cannot read is no apps
 /// rather than a launch that fails: the setting is a convenience, not data.
-pub fn from_json(json: &str) -> Vec<OpenPanel> {
+pub fn from_json(json: &str) -> Vec<OpenApp> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
-/// Drop the panels that can no longer be opened, saying which and why.
-pub fn keep_available(panels: Vec<OpenPanel>) -> Restored {
+/// Drop the apps that can no longer be opened, saying which and why.
+pub fn keep_available(apps: Vec<OpenApp>) -> Restored {
     let mut restored = Restored::default();
-    for panel in panels {
-        let path = Path::new(&panel.path);
+    for app in apps {
+        let path = Path::new(&app.path);
         match host::validate_application(path) {
-            Ok(()) => restored.panels.push(panel),
+            Ok(()) => restored.apps.push(app),
             Err(rejection) => restored.problems.push(match rejection {
-                host::Rejection::NotADirectory => trf(
-                    "analysis.restore.not_a_folder",
-                    &[&panel.path, &panel.title],
-                ),
+                host::Rejection::NotADirectory => {
+                    trf("analysis.restore.not_a_folder", &[&app.path, &app.title])
+                }
                 host::Rejection::NoEntryFile => {
-                    trf("analysis.restore.no_entry", &[&panel.path, &panel.title])
+                    trf("analysis.restore.no_entry", &[&app.path, &app.title])
                 }
             }),
         }
@@ -99,21 +105,21 @@ pub fn keep_available(panels: Vec<OpenPanel>) -> Restored {
     restored
 }
 
-/// Write the open panels, replacing what was there.
-pub fn remember(panels: &[OpenPanel]) {
-    if let Err(error) = crate::history::set_setting(SETTING, &to_json(panels)) {
-        tracing::warn!("Could not remember the open analysis panels: {error}");
+/// Write the open apps, replacing what was there.
+pub fn remember(apps: &[OpenApp]) {
+    if let Err(error) = crate::history::set_setting(SETTING, &to_json(apps)) {
+        tracing::warn!("Could not remember the open analysis apps: {error}");
     }
 }
 
-/// The panels to reopen at launch, and what happened to the ones that could
+/// The apps to reopen at launch, and what happened to the ones that could
 /// not be.
 pub fn restore() -> Restored {
     match crate::history::get_setting(SETTING) {
         Ok(Some(json)) => keep_available(from_json(&json)),
         Ok(None) => Restored::default(),
         Err(error) => {
-            tracing::warn!("Could not read the open analysis panels: {error}");
+            tracing::warn!("Could not read the open analysis apps: {error}");
             Restored::default()
         }
     }
@@ -129,7 +135,7 @@ mod tests {
     impl TempDir {
         fn new(label: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "ducklocal_panels_{label}_{}_{:?}",
+                "ducklocal_apps_{label}_{}_{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));
@@ -138,7 +144,7 @@ mod tests {
             Self(path)
         }
 
-        fn panel(&self) {
+        fn app(&self) {
             std::fs::write(self.0.join(host::ENTRY), "export default class A {}").unwrap();
         }
 
@@ -154,9 +160,9 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_directory_is_told_apart_from_the_paths_that_are_data() {
+    fn an_app_directory_is_told_apart_from_the_paths_that_are_data() {
         let directory = TempDir::new("split");
-        directory.panel();
+        directory.app();
         let data = TempDir::new("split_data");
         let csv = data.path().join("sales.csv");
         std::fs::write(&csv, "a\n1\n").unwrap();
@@ -167,10 +173,10 @@ mod tests {
             data.path().to_string_lossy().to_string(),
             "/no/such/path".to_string(),
         ];
-        let (panels, rest) = split_paths(&paths);
+        let (apps, rest) = split_paths(&paths);
 
-        assert_eq!(panels, vec![directory.path().to_path_buf()]);
-        // The folder of data files is not a panel, and neither is anything
+        assert_eq!(apps, vec![directory.path().to_path_buf()]);
+        // The folder of data files is not an app, and neither is anything
         // that does not exist: those keep their data-path behaviour.
         assert_eq!(rest.len(), 3);
         assert!(rest.contains(&csv.to_string_lossy().to_string()));
@@ -178,33 +184,33 @@ mod tests {
 
     #[test]
     fn the_remembered_list_survives_a_round_trip() {
-        let panels = vec![
-            OpenPanel::new(PathBuf::from("/panels/sales"), "Sales"),
-            OpenPanel::new(PathBuf::from("/panels/orders"), "orders"),
+        let apps = vec![
+            OpenApp::new(PathBuf::from("/apps/sales"), "Sales"),
+            OpenApp::new(PathBuf::from("/apps/orders"), "orders"),
         ];
-        assert_eq!(from_json(&to_json(&panels)), panels);
+        assert_eq!(from_json(&to_json(&apps)), apps);
     }
 
     #[test]
-    fn a_remembered_list_this_build_cannot_read_is_no_panels() {
+    fn a_remembered_list_this_build_cannot_read_is_no_apps() {
         assert_eq!(from_json("not json"), Vec::new());
         assert_eq!(from_json(""), Vec::new());
         assert_eq!(from_json("[{\"unexpected\": 1}]"), Vec::new());
     }
 
     #[test]
-    fn restoring_keeps_the_panels_that_are_still_there() {
+    fn restoring_keeps_the_apps_that_are_still_there() {
         let present = TempDir::new("restore_ok");
-        present.panel();
+        present.app();
         let missing = present.path().join("gone");
 
         let restored = keep_available(vec![
-            OpenPanel::new(present.path().to_path_buf(), "kept"),
-            OpenPanel::new(missing.clone(), "dropped"),
+            OpenApp::new(present.path().to_path_buf(), "kept"),
+            OpenApp::new(missing.clone(), "dropped"),
         ]);
 
-        assert_eq!(restored.panels.len(), 1);
-        assert_eq!(restored.panels[0].title, "kept");
+        assert_eq!(restored.apps.len(), 1);
+        assert_eq!(restored.apps[0].title, "kept");
         assert_eq!(restored.problems.len(), 1);
         let problem = &restored.problems[0];
         assert!(problem.contains("dropped"), "{problem}");
@@ -215,14 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn restoring_drops_a_directory_that_is_no_longer_a_panel() {
+    fn restoring_drops_a_directory_that_is_no_longer_an_app() {
         let directory = TempDir::new("restore_no_entry");
-        let restored = keep_available(vec![OpenPanel::new(
+        let restored = keep_available(vec![OpenApp::new(
             directory.path().to_path_buf(),
-            "was a panel",
+            "was an app",
         )]);
 
-        assert!(restored.panels.is_empty());
+        assert!(restored.apps.is_empty());
         assert_eq!(restored.problems.len(), 1);
         assert!(
             restored.problems[0].contains(host::ENTRY),
@@ -233,7 +239,7 @@ mod tests {
 
     #[test]
     fn a_title_falls_back_to_the_whole_path() {
-        assert_eq!(title_for(Path::new("/panels/sales")), "sales");
+        assert_eq!(title_for(Path::new("/apps/sales")), "sales");
         assert_eq!(title_for(Path::new("/")), "/");
     }
 }

@@ -4,7 +4,7 @@
 //! The questions this answers are the ones that decide a chart, a scale and a
 //! number format, and they are all answered wrong by guessing:
 //!
-//! - **How much time does this cover, and is it continuous?** A panel whose
+//! - **How much time does this cover, and is it continuous?** An app whose
 //!   default range is as long as the data has no previous period to compare
 //!   against, and one that plots a column with holes in it draws a continuous
 //!   line over days that are not there.

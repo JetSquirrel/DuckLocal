@@ -1,7 +1,7 @@
 mod analysis;
 mod app;
+mod app_export;
 mod cli;
-mod dash;
 mod db;
 mod excel;
 mod history;
@@ -10,9 +10,11 @@ mod i18n;
 mod perf_probe;
 mod profile;
 mod query;
+mod recents;
 mod s3;
 mod schema;
 mod sources;
+mod spec;
 mod state;
 mod ui;
 

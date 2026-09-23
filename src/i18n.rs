@@ -152,6 +152,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.history.rows", "{} 行", "{} rows"),
     ("sidebar.history.failed", "失败", "Failed"),
     ("sidebar.group.local_files", "本地文件", "Local files"),
+    ("sidebar.group.apps", "应用", "Apps"),
+    ("sidebar.group.dashboards", "仪表盘", "Dashboards"),
     ("sidebar.s3.configured", "已配置", "Configured"),
     ("sidebar.s3.loading", "加载中…", "Loading…"),
     ("sidebar.s3.empty", "（空）", "(Empty)"),
@@ -160,6 +162,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.table.generate_select", "生成 SELECT 查询", "Generate SELECT query"),
     ("sidebar.column.edit_type", "修改数据类型", "Change data type"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
+    (
+        "sidebar.recents.gone",
+        "{} 已不存在，已从最近列表移除",
+        "{} no longer exists; removed from recents",
+    ),
     ("dialog.remove_file.title", "移除“{}”？", "Remove “{}”?"),
     (
         "dialog.remove_file.description",
@@ -378,34 +385,34 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/analysis/ ───────────────────────────────────────────────────
     (
         "analysis.empty.title",
-        "这个面板没有目录",
-        "This panel has no folder",
+        "这个应用没有目录",
+        "This app has no folder",
     ),
     (
         "analysis.empty.hint",
-        "面板是包含 main.js 的文件夹，里面的 JavaScript 会查询当前连接的数据。",
-        "A panel is a folder with a main.js; its JavaScript queries the current connection.",
+        "应用是包含 main.js 的文件夹，里面的 JavaScript 会查询当前连接的数据。",
+        "An app is a folder with a main.js; its JavaScript queries the current connection.",
     ),
     (
         "analysis.picker.prompt",
-        "选择分析面板目录（包含 main.js）",
-        "Choose a panel folder (one with a main.js)",
+        "选择分析应用目录（包含 main.js）",
+        "Choose an app folder (one with a main.js)",
     ),
     (
         "analysis.loading",
-        "正在加载分析面板…",
-        "Loading the analysis panel…",
+        "正在加载分析应用…",
+        "Loading the analysis app…",
     ),
     ("analysis.reload", "重新加载", "Reload"),
     (
         "analysis.reload.tooltip",
-        "重新加载面板；保存 .js 文件也会自动重新加载",
-        "Reload the panel; saving a .js file reloads it too",
+        "重新加载应用；保存 .js 文件也会自动重新加载",
+        "Reload the app; saving a .js file reloads it too",
     ),
     (
         "analysis.load_failed",
-        "分析面板加载失败",
-        "The analysis panel could not be loaded",
+        "分析应用加载失败",
+        "The analysis app could not be loaded",
     ),
     (
         "analysis.load_failed.hint",
@@ -414,13 +421,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "analysis.no_runtime",
-        "脚本运行时不可用，无法加载面板。",
-        "The script runtime is unavailable, so the panel cannot load.",
+        "脚本运行时不可用，无法加载应用。",
+        "The script runtime is unavailable, so the app cannot load.",
     ),
     (
         "analysis.not_updated",
-        "面板未更新",
-        "Panel not updated",
+        "应用未更新",
+        "App not updated",
     ),
     (
         "analysis.rejected.not_a_folder",
@@ -439,13 +446,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "analysis.restore.not_a_folder",
-        "上次打开的面板 {}（{}）已不是文件夹，未重新打开。",
-        "The panel {} ({}) is no longer a folder; it was not reopened.",
+        "上次打开的应用 {}（{}）已不是文件夹，未重新打开。",
+        "The app {} ({}) is no longer a folder; it was not reopened.",
     ),
     (
         "analysis.restore.no_entry",
-        "上次打开的面板 {}（{}）里没有 main.js，未重新打开。",
-        "The panel {} ({}) has no main.js; it was not reopened.",
+        "上次打开的应用 {}（{}）里没有 main.js，未重新打开。",
+        "The app {} ({}) has no main.js; it was not reopened.",
     ),
     (
         "analysis.definition.show",
@@ -454,18 +461,18 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "analysis.definition.back",
-        "返回面板",
-        "Back to panel",
+        "返回应用",
+        "Back to app",
     ),
     (
         "analysis.definition.tooltip",
-        "读取这个面板的 JavaScript 源码",
-        "Read this panel's JavaScript source",
+        "读取这个应用的 JavaScript 源码",
+        "Read this app's JavaScript source",
     ),
     (
         "analysis.definition.hint",
-        "面板是留在该目录里的一个 JavaScript 视图——由 agent 或你自己编写；保存文件即会重新加载。",
-        "A panel is a JavaScript view left in that folder — by an agent, or by you. Saving the file reloads it.",
+        "应用是留在该目录里的一个 JavaScript 视图——由 agent 或你自己编写；保存文件即会重新加载。",
+        "An app is a JavaScript view left in that folder — by an agent, or by you. Saving the file reloads it.",
     ),
     (
         "analysis.definition.unreadable",
@@ -474,13 +481,130 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "workspace.open_panel",
-        "打开分析面板…",
-        "Open panel…",
+        "打开分析应用…",
+        "Open app…",
     ),
     (
         "workspace.add_tab.tooltip",
-        "新建查询，或打开一个分析面板",
-        "New query, or open a panel",
+        "新建查询，或打开一个分析应用",
+        "New query, or open an app",
+    ),
+
+    // ── src/spec/view.rs ──────────────────────────────────────────────────
+    (
+        "dashboard.reload.tooltip",
+        "重新读取 spec 文件，并重跑它的所有查询",
+        "Re-read the spec file and re-run its queries",
+    ),
+    (
+        "dashboard.source.show",
+        "查看 spec",
+        "View spec",
+    ),
+    (
+        "dashboard.source.back",
+        "返回 dashboard",
+        "Back to dashboard",
+    ),
+    (
+        "dashboard.source.tooltip",
+        "阅读这个 dashboard 的 .dash 源码",
+        "Read this dashboard's .dash source",
+    ),
+    (
+        "dashboard.source.unreadable",
+        "无法读取 {}：{}",
+        "Could not read {}: {}",
+    ),
+    (
+        "dashboard.spec_failed",
+        "仪表盘 spec 无法加载",
+        "The dashboard spec could not be loaded",
+    ),
+    (
+        "dashboard.plot_failed",
+        "这个图没有画出来",
+        "This plot could not be drawn",
+    ),
+    (
+        "dashboard.query_missing",
+        "plot 引用的查询 {} 不存在",
+        "The query {} a plot references does not exist",
+    ),
+    (
+        "dashboard.query_not_rows",
+        "查询 {} 没有返回结果集，无法绘图",
+        "Query {} returned no result set to plot",
+    ),
+    (
+        "dashboard.invalid_plot",
+        "这个 plot 没有声明 y 列，无法绘制。",
+        "This plot declares no y column to draw.",
+    ),
+    (
+        "dashboard.missing_column_named",
+        "查询结果中没有列 {}。可用的列：{}",
+        "The query result has no column {}. Available columns: {}",
+    ),
+    (
+        "dashboard.empty",
+        "这个 spec 没有声明任何 plot 块。",
+        "This spec declares no plot blocks.",
+    ),
+    (
+        "dashboard.notice.zero_filled",
+        "{} 个（系列 × x）组合没有数据，按 0 补齐",
+        "{} (series, x) cells had no data and were filled with 0",
+    ),
+    (
+        "dashboard.restore.gone",
+        "无法恢复上次打开的仪表盘 {}（{}）：文件已不存在",
+        "Could not restore dashboard {} ({}) from last session: the file is gone",
+    ),
+    (
+        "dashboard.save",
+        "保存",
+        "Save",
+    ),
+    (
+        "dashboard.save.tooltip",
+        "把修改写回 .dash 文件并重跑（⌘S）",
+        "Write changes back to the .dash file and re-run (⌘S)",
+    ),
+    (
+        "dashboard.save_failed",
+        "保存 {} 失败：{}",
+        "Could not save {}: {}",
+    ),
+    (
+        "dashboard.conflict",
+        "文件在磁盘上已被修改",
+        "The file changed on disk",
+    ),
+    (
+        "dashboard.conflict.hint",
+        "你的修改尚未保存；保存会覆盖磁盘上的改动。",
+        "You have unsaved edits; saving overwrites the changes on disk.",
+    ),
+    (
+        "dashboard.close_unsaved.title",
+        "未保存的修改",
+        "Unsaved changes",
+    ),
+    (
+        "dashboard.close_unsaved.body",
+        "“{}”有未保存的修改，关闭前要先保存吗？",
+        "\"{}\" has unsaved changes. Save before closing?",
+    ),
+    (
+        "dashboard.close_unsaved.save_close",
+        "保存并关闭",
+        "Save & close",
+    ),
+    (
+        "dashboard.close_unsaved.discard",
+        "不保存",
+        "Don't save",
     ),
 ];
 

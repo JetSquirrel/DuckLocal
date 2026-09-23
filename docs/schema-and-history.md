@@ -10,6 +10,9 @@ The tree shows, from the top:
 
 - **Local files** — the data files you have registered, each with its view
   name, file name, and row count. Its children are the view's columns.
+- **Apps** / **Dashboards** — the analysis apps and `.dash` dashboards you
+  have opened recently. Click one to reopen it as a tab, the way you would a
+  file; an entry whose path no longer exists is dropped from the list.
 - **S3** — present once [S3 is configured](s3.md). Loads lazily.
 - Each database, then its schemas, then tables and views, then columns.
 

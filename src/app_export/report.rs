@@ -1,8 +1,8 @@
-//! A panel's captured statements as one self-contained HTML file.
+//! An app's captured statements as one self-contained HTML file.
 //!
 //! Everything here is pure: the report is a string built from captures, so what
-//! the file says can be tested without running a panel. The one thing this does
-//! not do is reproduce the panel. The panel's charts and tables are native
+//! the file says can be tested without running an app. The one thing this does
+//! not do is reproduce the app. The app's charts and tables are native
 //! widgets whose contents are decided while they are laid out — the description
 //! says *that* a chart is there, never what its bars are — so the file shows
 //! the statements and their results, which is the part that travels.
@@ -13,7 +13,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::dash::capture::{Capture, Table};
+use crate::app_export::capture::{Capture, Table};
 use crate::query::{plain_text, CliResult};
 
 /// Longest a cell is given before the table stops being a table. The JSON
@@ -25,27 +25,27 @@ const CELL_CAP: usize = 400;
 const CHART_ROWS: usize = 25;
 
 pub struct Report<'a> {
-    pub panel: &'a Path,
+    pub app: &'a Path,
     pub entry: &'a str,
     pub database: &'a str,
     pub exported_at: &'a str,
     pub version: &'a str,
     pub captures: &'a [Capture],
-    pub panel_error: Option<&'a str>,
-    /// Errors the panel logged while it ran: a promise it left unhandled, a
+    pub app_error: Option<&'a str>,
+    /// Errors the app logged while it ran: a promise it left unhandled, a
     /// callback the shell could not attach. It still produced what is below.
     pub reported: &'a [String],
-    /// "settled" when the panel went quiet on its own, "deadline" when the
-    /// time limit cut the capture short and the panel may not be done.
+    /// "settled" when the app went quiet on its own, "deadline" when the
+    /// time limit cut the capture short and the app may not be done.
     pub stop_reason: &'a str,
 }
 
 pub fn build(report: &Report<'_>) -> String {
     let name = report
-        .panel
+        .app
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| report.panel.display().to_string());
+        .unwrap_or_else(|| report.app.display().to_string());
     let statements = report.captures.iter().filter_map(Capture::sql).count();
     let mut out = String::new();
     out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
@@ -57,7 +57,7 @@ pub fn build(report: &Report<'_>) -> String {
     let _ = writeln!(
         out,
         "<p class=\"where\">{}</p>",
-        escape(&report.panel.display().to_string())
+        escape(&report.app.display().to_string())
     );
     out.push_str("<dl class=\"meta\">");
     let _ = writeln!(
@@ -78,15 +78,15 @@ pub fn build(report: &Report<'_>) -> String {
     );
     out.push_str("</dl>\n");
     out.push_str(
-        "<p class=\"note\">What this panel asked the database while it loaded. The panel's own \
+        "<p class=\"note\">What this app asked the database while it loaded. The app's own \
          interface is not part of this file, and neither is anything that depends on using it: \
          filters, toggles and later refreshes are not represented, and there is no JavaScript here \
          to run.</p>\n",
     );
     out.push_str("</header>\n");
 
-    if let Some(error) = report.panel_error {
-        out.push_str("<section class=\"panel-error\">\n<h2>The panel did not finish</h2>\n");
+    if let Some(error) = report.app_error {
+        out.push_str("<section class=\"app-error\">\n<h2>The app did not finish</h2>\n");
         let _ = writeln!(out, "<pre>{}</pre>", escape(error));
         out.push_str(
             "<p class=\"note\">The statements below are what it managed before it stopped.</p>\n</section>\n",
@@ -95,15 +95,15 @@ pub fn build(report: &Report<'_>) -> String {
 
     if report.stop_reason == "deadline" {
         out.push_str(
-            "<section class=\"panel-error\">\n<h2>The capture hit the time limit</h2>\n\
-             <p class=\"note\">The panel was still working when the capture stopped, so the \
+            "<section class=\"app-error\">\n<h2>The capture hit the time limit</h2>\n\
+             <p class=\"note\">The app was still working when the capture stopped, so the \
              statements below may not be everything it asks. A longer \
              <code>--timeout</code> gives it more time.</p>\n</section>\n",
         );
     }
 
     if !report.reported.is_empty() {
-        out.push_str("<section class=\"panel-error\">\n<h2>The panel reported errors</h2>\n");
+        out.push_str("<section class=\"app-error\">\n<h2>The app reported errors</h2>\n");
         out.push_str(
             "<p class=\"note\">It kept running and asked the database the statements below, \
              but something in it failed.</p>\n",
@@ -118,7 +118,7 @@ pub fn build(report: &Report<'_>) -> String {
     let mut index = 1;
     for capture in report.captures {
         match &capture.statement {
-            crate::dash::capture::Statement::Query {
+            crate::app_export::capture::Statement::Query {
                 sql,
                 limit,
                 outcome,
@@ -126,15 +126,15 @@ pub fn build(report: &Report<'_>) -> String {
                 write_query(&mut out, index, sql, *limit, outcome, capture.runs);
                 index += 1;
             }
-            crate::dash::capture::Statement::Catalog { tables } => {
+            crate::app_export::capture::Statement::Catalog { tables } => {
                 write_catalog(&mut out, tables, capture.runs);
             }
         }
     }
     if report.captures.is_empty() {
         out.push_str(
-            "<p class=\"note\">The panel ran no statement against the database while it loaded. \
-             A panel that queries on a click has nothing to show here.</p>\n",
+            "<p class=\"note\">The app ran no statement against the database while it loaded. \
+             An app that queries on a click has nothing to show here.</p>\n",
         );
     }
     out.push_str("</main>\n");
@@ -486,7 +486,7 @@ footer { color: var(--muted); font-size: 0.82rem; border-top: 1px solid var(--li
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dash::capture::Statement;
+    use crate::app_export::capture::Statement;
     use crate::query::{CliColumn, CliResult};
     use serde_json::json;
 
@@ -519,13 +519,13 @@ mod tests {
 
     fn document(captures: &[Capture]) -> String {
         build(&Report {
-            panel: Path::new("/panels/sales"),
+            app: Path::new("/apps/sales"),
             entry: "main.js",
             database: "in-memory",
             exported_at: "2026-09-19 08:00:00",
             version: "0.1.0",
             captures,
-            panel_error: None,
+            app_error: None,
             reported: &[],
             stop_reason: "settled",
         })
@@ -680,42 +680,42 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_that_failed_says_so_above_what_it_managed() {
+    fn an_app_that_failed_says_so_above_what_it_managed() {
         let captures = [query(
             "SELECT 1 AS n",
             Ok(result(&["n"], vec![vec![json!(1)]])),
         )];
         let html = build(&Report {
-            panel: Path::new("/panels/sales"),
+            app: Path::new("/apps/sales"),
             entry: "main.js",
             database: "in-memory",
             exported_at: "2026-09-19 08:00:00",
             version: "0.1.0",
             captures: &captures,
-            panel_error: Some("ReferenceError: columns is not defined"),
+            app_error: Some("ReferenceError: columns is not defined"),
             reported: &[],
             stop_reason: "settled",
         });
-        let error = html.find("The panel did not finish").unwrap();
+        let error = html.find("The app did not finish").unwrap();
         assert!(error < html.find("Statement 1").unwrap());
         assert!(html.contains("ReferenceError: columns is not defined"));
     }
 
     #[test]
-    fn a_deadline_capture_warns_that_the_panel_may_not_be_done() {        let captures = [query(
+    fn a_deadline_capture_warns_that_the_app_may_not_be_done() {        let captures = [query(
             "SELECT 1 AS n",
             Ok(result(&["n"], vec![vec![json!(1)]])),
         )];
         let settled = document(&captures);
         assert!(!settled.contains("time limit"), "{settled}");
         let html = build(&Report {
-            panel: Path::new("/panels/sales"),
+            app: Path::new("/apps/sales"),
             entry: "main.js",
             database: "in-memory",
             exported_at: "2026-09-19 08:00:00",
             version: "0.1.0",
             captures: &captures,
-            panel_error: None,
+            app_error: None,
             reported: &[],
             stop_reason: "deadline",
         });
@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_that_asked_nothing_says_that_too() {
+    fn an_app_that_asked_nothing_says_that_too() {
         let html = document(&[]);
         assert!(
             html.contains("ran no statement against the database"),

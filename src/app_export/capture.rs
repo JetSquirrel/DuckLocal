@@ -1,8 +1,8 @@
-//! What a panel asked the database, kept so it can be written into a document.
+//! What an app asked the database, kept so it can be written into a document.
 //!
 //! The recording is process-global rather than thread-local, and that is not a
-//! stylistic choice: a panel's `query()` runs inside `smol::unblock`, so the
-//! thread that mounts the panel is not the thread that answers it. A
+//! stylistic choice: an app's `query()` runs inside `smol::unblock`, so the
+//! thread that mounts the app is not the thread that answers it. A
 //! thread-local would see nothing.
 //!
 //! Recording is off unless [`start`] was called, so the GUI — which mounts the
@@ -13,7 +13,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use crate::query::CliResult;
 
-/// A table or view the panel's `catalog()` call saw.
+/// A table or view the app's `catalog()` call saw.
 #[derive(Debug)]
 pub struct Table {
     pub database: String,
@@ -31,7 +31,7 @@ pub enum Statement {
     Query {
         sql: String,
         limit: usize,
-        /// The failure is kept as well as the success: a panel that asks for a
+        /// The failure is kept as well as the success: an app that asks for a
         /// table that is not there is exactly what a report should show.
         outcome: Result<CliResult, String>,
     },
@@ -40,7 +40,7 @@ pub enum Statement {
     },
 }
 
-/// One statement, and how many times the panel ran it.
+/// One statement, and how many times the app ran it.
 #[derive(Debug)]
 pub struct Capture {
     pub statement: Statement,
@@ -74,7 +74,7 @@ static RECORDING: AtomicBool = AtomicBool::new(false);
 
 /// Queries running right now. A statement is recorded only when it finishes,
 /// so a quiet period measured on recordings alone calls a slow query "idle"
-/// and stops the capture mid-panel — the settle loop waits this out first.
+/// and stops the capture mid-app — the settle loop waits this out first.
 static IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
 
 /// Counts one query as running until dropped, panic or not.
@@ -124,8 +124,8 @@ pub fn take() -> Vec<Capture> {
 
 /// Record a successful or failed statement.
 ///
-/// The same statement run twice is one capture with `runs` at two: a panel that
-/// refreshes is not a panel with more to say, and the report would otherwise
+/// The same statement run twice is one capture with `runs` at two: an app that
+/// refreshes is not an app with more to say, and the report would otherwise
 /// repeat itself for every poll. The later result is the one kept, because a
 /// refresh that changed nothing is not worth a second section and a refresh
 /// that changed something should not be contradicted by the older copy.

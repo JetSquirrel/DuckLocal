@@ -24,14 +24,16 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{tree, TreeEvent, TreeState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
+use crate::recents::{RecentDocument, RecentKind};
 use crate::state::{
-    format_rows, AppState, AttachedFilesChanged, ConnectionChanged, HistoryChanged, S3ConfigChanged,
+    format_rows, AppState, AttachedFilesChanged, ConnectionChanged, HistoryChanged, RecentsChanged,
+    S3ConfigChanged,
 };
 use crate::ui::workspace::Workspace;
 
@@ -56,6 +58,8 @@ pub struct Sidebar {
     node_meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
     /// S3 browse tree, present while S3 is configured.
     s3_browse: Option<S3Browse>,
+    /// Recently opened apps and dashboards, shown as clickable groups.
+    recents: Rc<Vec<RecentDocument>>,
     /// A schema reload is in flight; the refresh button shows loading and
     /// repeat clicks are ignored until it finishes.
     refreshing_schema: bool,
@@ -85,6 +89,11 @@ impl Sidebar {
                 this.rebuild_tree(cx);
                 cx.notify();
             }),
+            cx.subscribe(&state, |this, _, _: &RecentsChanged, cx| {
+                this.recents = Rc::new(crate::recents::list());
+                this.rebuild_tree(cx);
+                cx.notify();
+            }),
             cx.subscribe(&state, |this, _, _: &S3ConfigChanged, cx| {
                 this.s3_browse = this
                     .state
@@ -111,6 +120,7 @@ impl Sidebar {
             tree_state,
             node_meta: Rc::new(HashMap::new()),
             s3_browse,
+            recents: Rc::new(crate::recents::list()),
             refreshing_schema: false,
             _subscriptions: subscriptions,
         }
@@ -121,7 +131,12 @@ impl Sidebar {
             let state = self.state.read(cx);
             (state.catalog.clone(), state.attached_files.clone())
         };
-        let (items, meta) = build_tree_items(&catalog, &attached_files, self.s3_browse.as_ref());
+        let (items, meta) = build_tree_items(
+            &catalog,
+            &attached_files,
+            &self.recents,
+            self.s3_browse.as_ref(),
+        );
         self.node_meta = Rc::new(meta);
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
@@ -196,11 +211,13 @@ impl Sidebar {
 
     fn render_schema(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let meta = self.node_meta.clone();
+        let recents = self.recents.clone();
         let has_items = {
             let state = self.state.read(cx);
             !state.catalog.is_empty()
                 || !state.attached_files.is_empty()
                 || state.s3_config.is_some()
+                || !recents.is_empty()
         };
 
         if !has_items {
@@ -221,6 +238,7 @@ impl Sidebar {
 
         let sidebar = cx.entity().downgrade();
         let workspace = self.workspace.clone();
+        let state = self.state.clone();
         let s3_endpoint = self
             .state
             .read(cx)
@@ -232,13 +250,18 @@ impl Sidebar {
             let node_meta = meta.get(&item.id);
             let icon: Option<gpui_kit::assets::IconName> = node_meta.and_then(|m| match m.kind {
                 SchemaNodeKind::Database => Some(IconName::HardDrive.into()),
-                SchemaNodeKind::Schema | SchemaNodeKind::LocalFilesGroup => {
-                    Some(if entry.is_expanded() {
-                        IconName::FolderOpen.into()
-                    } else {
-                        IconName::Folder.into()
-                    })
-                }
+                SchemaNodeKind::Schema
+                | SchemaNodeKind::LocalFilesGroup
+                | SchemaNodeKind::AppsGroup
+                | SchemaNodeKind::DashboardsGroup => Some(if entry.is_expanded() {
+                    IconName::FolderOpen.into()
+                } else {
+                    IconName::Folder.into()
+                }),
+                SchemaNodeKind::RecentDocument => m.doc.as_ref().map(|doc| match doc.kind {
+                    RecentKind::App => gpui_kit::assets::IconName::AppWindow,
+                    RecentKind::Dashboard => gpui_kit::assets::IconName::LayoutDashboard,
+                }),
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
                 SchemaNodeKind::View => Some(IconName::Eye.into()),
                 SchemaNodeKind::File | SchemaNodeKind::S3File => Some(IconName::File.into()),
@@ -261,6 +284,7 @@ impl Sidebar {
             let table = node_meta.and_then(|m| m.table.clone());
             let column = node_meta.and_then(|m| m.column.clone());
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
+            let doc = node_meta.and_then(|m| m.doc.clone());
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
             ListItem::new(ix)
@@ -323,6 +347,35 @@ impl Sidebar {
                                                     window,
                                                     cx,
                                                 );
+                                            });
+                                        })
+                                })
+                                .when_some(doc, |this, doc| {
+                                    let workspace = workspace.clone();
+                                    let state = state.clone();
+                                    this.cursor_pointer()
+                                        .hover(|this| this.text_color(cx.theme().primary))
+                                        .active(|this| {
+                                            this.text_color(cx.theme().primary.opacity(0.7))
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            let path = std::path::PathBuf::from(&doc.path);
+                                            if !path.exists() {
+                                                crate::recents::remove(&doc.path);
+                                                window.push_notification(
+                                                    trf("sidebar.recents.gone", &[&doc.title]),
+                                                    cx,
+                                                );
+                                                state.update(cx, |_, cx| {
+                                                    cx.emit(RecentsChanged);
+                                                });
+                                                return;
+                                            }
+                                            workspace.update(cx, |ws, cx| match doc.kind {
+                                                RecentKind::App => ws.open_app(path, window, cx),
+                                                RecentKind::Dashboard => {
+                                                    ws.open_dashboard(path, window, cx)
+                                                }
                                             });
                                         })
                                 }),

@@ -21,7 +21,7 @@ CI uses plain stable.
 
 ## The pinned toolkit
 
-The UI toolkit, the script runtime that analysis panels run on, and the
+The UI toolkit, the script runtime that analysis apps run on, and the
 component catalog they draw from are three crates out of one repository,
 `longbridge/gpui-kit`, and `rquickjs` is patched to the same one. All four are
 pinned to a single revision on purpose: two revisions put two copies of
@@ -159,8 +159,8 @@ set to “GitHub Actions”.
 | `src/query.rs` | Query execution, result serialization, export |
 | `src/profile.rs` | Column profiling behind `ducklocal profile` |
 | `src/schema.rs` | Catalog introspection for the sidebar |
-| `src/analysis/` | JavaScript analysis panels: the script runtime, the `ducklocal` host module, the panel tab, the reload watcher |
-| `src/dash/` | `ducklocal dash export`: running a panel headless and writing its statements and results as one standalone HTML file |
+| `src/analysis/` | JavaScript analysis apps: the script runtime, the `ducklocal` host module, the app tab, the reload watcher |
+| `src/app_export/` | `ducklocal export`: running an app headless and writing its statements and results as one standalone HTML file |
 | `src/history.rs` | The app's own database: history, registered files, settings |
 | `src/s3.rs` | SigV4 signing and S3 listing |
 | `src/i18n.rs` | The string table and language selection |

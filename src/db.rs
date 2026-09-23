@@ -2,8 +2,8 @@
 //!
 //! One global connection behind a mutex: `duckdb::Connection` is `Send` but
 //! not `Sync`, so all access serializes through `with_connection`. Analysis
-//! panels take a second connection to the same database instead — see
-//! [`PANEL_CONNECTION`] — so a panel's SQL and the window's do not wait on each
+//! apps take a second connection to the same database instead — see
+//! [`APP_CONNECTION`] — so an app's SQL and the window's do not wait on each
 //! other.
 //! All functions here are blocking; UI code must call them via `smol::unblock`.
 
@@ -18,10 +18,10 @@ use crate::i18n::trf;
 static CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
-/// The connection analysis panels run their SQL on.
+/// The connection analysis apps run their SQL on.
 ///
 /// A second connection to the same database, not a second database: DuckDB
-/// serves many connections from one instance, so a panel sees the catalog
+/// serves many connections from one instance, so an app sees the catalog
 /// the window sees — the views DuckLocal registers included — without
 /// taking the lock the window's own queries take. Sharing the one
 /// connection meant a dashboard refreshing six statements held that lock
@@ -30,14 +30,14 @@ static CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
 ///
 /// What a second connection does not carry is connection-local state:
 /// `TEMP` tables and `SET` values belong to the connection they were made
-/// on. All panels share this one, so they still serialize among
+/// on. All apps share this one, so they still serialize among
 /// themselves — a host function is handed arguments, not a caller, so
-/// nothing at the moment a query runs says which panel asked.
+/// nothing at the moment a query runs says which app asked.
 ///
 /// It is cloned on demand and dropped by [`replace`], which is what keeps a
 /// closed database closed: a clone left behind would answer queries against
 /// a database the window has let go of, and for a file would hold it open.
-static PANEL_CONNECTION: LazyLock<Mutex<Option<Connection>>> = LazyLock::new(|| Mutex::new(None));
+static APP_CONNECTION: LazyLock<Mutex<Option<Connection>>> = LazyLock::new(|| Mutex::new(None));
 
 /// How the current database was opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,14 +114,14 @@ pub fn install(connection: Connection) -> Result<()> {
 
 /// Put the process on `connection`, releasing whatever it was on.
 ///
-/// The panel connection is dropped first, and both locks are taken in that
-/// order everywhere — here and in [`with_panel_connection`] — so the two never
-/// wait on each other in opposite directions. Opening another database while a
-/// panel is mid-query therefore waits for that query: a connection cannot be
+/// The app connection is dropped first, and both locks are taken in that
+/// order everywhere — here and in [`with_app_connection`] — so the two never
+/// wait on each other in opposite directions. Opening another database while an
+/// app is mid-query therefore waits for that query: a connection cannot be
 /// released out from under a statement that is still running.
 fn replace(connection: Option<Connection>) -> Result<()> {
-    let mut panel = panel_lock()?;
-    *panel = None;
+    let mut app = app_lock()?;
+    *app = None;
     let mut guard = lock()?;
     *guard = connection;
     Ok(())
@@ -141,23 +141,23 @@ pub fn with_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T>
     f(conn)
 }
 
-/// Run `f` on the connection analysis panels use, cloning one if there is none.
+/// Run `f` on the connection analysis apps use, cloning one if there is none.
 ///
-/// See [`PANEL_CONNECTION`] for why panels do not use [`with_connection`].
-/// Blocking, and the panel lock is held for as long as `f` runs, so callers
+/// See [`APP_CONNECTION`] for why apps do not use [`with_connection`].
+/// Blocking, and the app lock is held for as long as `f` runs, so callers
 /// belong off the UI thread like every other caller here.
-pub fn with_panel_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let mut panel = panel_lock()?;
-    if panel.is_none() {
+pub fn with_app_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let mut app = app_lock()?;
+    if app.is_none() {
         let guard = lock()?;
         let conn = guard
             .as_ref()
             .ok_or_else(|| anyhow!("No database connected"))?;
-        *panel = Some(conn.try_clone()?);
+        *app = Some(conn.try_clone()?);
     }
-    let conn = panel
+    let conn = app
         .as_ref()
-        .expect("a panel connection was just cloned into place");
+        .expect("an app connection was just cloned into place");
     f(conn)
 }
 
@@ -167,10 +167,10 @@ fn lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
         .map_err(|e| anyhow!("Database lock poisoned: {e}"))
 }
 
-fn panel_lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
-    PANEL_CONNECTION
+fn app_lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
+    APP_CONNECTION
         .lock()
-        .map_err(|e| anyhow!("Panel database lock poisoned: {e}"))
+        .map_err(|e| anyhow!("App database lock poisoned: {e}"))
 }
 
 /// Serializes tests that use the process-global connection: `open_memory` and

@@ -1,0 +1,45 @@
+// The analysis_app panel's data as a dashboard spec: same orders.csv,
+// declared rather than scripted. Check it from the repository root:
+//
+//   ducklocal check examples/analysis_app/dashboard.dash
+//
+// or open it as a dashboard tab in the GUI:
+//
+//   ducklocal examples/analysis_app/dashboard.dash
+//
+// Paths in SQL are relative to the working directory, like every other
+// ducklocal command.
+
+query "revenue_by_channel" {
+  sql = <<SQL
+    SELECT channel, sum(revenue) AS revenue
+    FROM 'examples/analysis_app/orders.csv'
+    GROUP BY channel
+    ORDER BY revenue DESC
+  SQL
+}
+
+query "daily_orders" {
+  sql = <<SQL
+    SELECT date, sum(orders) AS orders
+    FROM 'examples/analysis_app/orders.csv'
+    GROUP BY date
+    ORDER BY date
+  SQL
+}
+
+plot "revenue" {
+  type  = "bar"
+  query = query.revenue_by_channel
+  x     = channel
+  y     = revenue
+  title = "Revenue by channel"
+}
+
+plot "orders" {
+  type  = "line"
+  query = query.daily_orders
+  x     = date
+  y     = orders
+  title = "Orders per day"
+}

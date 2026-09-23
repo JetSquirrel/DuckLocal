@@ -13,7 +13,7 @@ import {
   GroupBox,
   Toggle,
 } from "gpui-component";
-import { catalog, panelDir, query, sqlIdentifier } from "ducklocal";
+import { catalog, appDir, query, sqlIdentifier } from "ducklocal";
 
 /** Rows one page of the table asks for. */
 const LIMIT = 100;
@@ -21,8 +21,8 @@ const LIMIT = 100;
 /** A date, time or timestamp encoding as readable text.
  *
  *  The host hands over the storage value — days since the epoch, microseconds
- *  since the epoch or since midnight — because that is what loses no digits. A
- *  panel that shows 1786896000000 has not shown the timestamp, so this is where
+ *  since the epoch or since midnight — because that is what loses no digits. An
+ *  app that shows 1786896000000 has not shown the timestamp, so this is where
  *  the value becomes a time. Timestamps print as UTC: the encoding carries the
  *  zone as metadata, and a browser that silently shifted every row into the
  *  viewer's zone would be inventing an offset the data did not state. */
@@ -74,7 +74,7 @@ function describe(error) {
 
 export default class RelationPanel extends View {
   init(_props, cx) {
-    this.directory = panelDir();
+    this.directory = appDir();
     this.loading = true;
     this.loaded = false;
     this.error = "";
@@ -92,7 +92,7 @@ export default class RelationPanel extends View {
 
   /** Read the catalog, then page whichever relation was chosen. The first load
    *  prefers `amount` when the connection has it, and the first relation
-   *  otherwise, so the panel says something about the connection it was opened
+   *  otherwise, so the app says something about the connection it was opened
    *  in without being asked. */
   load(cx) {
     if (this.loading && this.loaded) return; // a load is already in flight
@@ -307,7 +307,7 @@ export default class RelationPanel extends View {
               .child(new EmptyTitle().child("This connection has no relations"))
               .child(
                 new EmptyDescription().child(
-                  "Open a data file or database in the main window first; this panel queries that connection.",
+                  "Open a data file or database in the main window first; this app queries that connection.",
                 ),
               ),
           ),

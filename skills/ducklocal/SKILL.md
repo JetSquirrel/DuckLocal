@@ -16,19 +16,45 @@ Use the real DuckLocal executable, not GUI automation or a replacement Python sc
 5. Check the process exit code before parsing stdout. On success, parse the single JSON object and inspect `truncated`; `row_count` is only the returned row count. A truncated preview is not a complete result or a full-data statistic. When a person or a document will read the result, `--format md` prints the same values as a Markdown table (see the reference); JSON remains the form to parse.
 6. Answer from actual returned values, naming the input, query, and relevant completeness limits. For conversions, query the output back to verify schema and counts/aggregates. Do not treat file existence alone as proof.
 
-To write or edit an analysis panel (rather than only export one), see [Authoring a panel](#authoring-a-panel) below.
+To write or edit an analysis app (rather than only export one), see [Authoring an app](#authoring-an-app) below. For a dashboard of standard plots with no custom layout, a `.dash` spec is the simpler artifact — see [Authoring a dashboard spec](#authoring-a-dashboard-spec).
 
-## Authoring a panel
+## Authoring a dashboard spec
 
-A panel is a folder holding `main.js`: a default-exported `View` subclass. `init(props, cx)` runs at load; `render()` returns the UI tree. The smallest working panel:
+A `.dash` file declares a dashboard as blocks — easier to write and diff than an app script, and validated without opening a window:
+
+```hcl
+query "revenue" {
+  sql = <<SQL
+    SELECT channel, sum(amount) AS total
+    FROM read_csv_auto('orders.csv')
+    GROUP BY channel
+    ORDER BY total DESC
+  SQL
+}
+
+plot "revenue" {
+  type  = "bar"
+  query = query.revenue
+  x     = channel
+  y     = total
+}
+```
+
+A `query` block holds one `sql` attribute (one statement, heredoc or string). A `plot` block holds `type` (`line`, `bar`, `area`, `scatter`, `table`), `query` (a `query.name` reference), `x` and `y` (result columns, bare identifiers or quoted strings; `y` optional for `table`), optional `series` and `title`. No functions, conditionals, or interpolation exist. There is a working example at `examples/analysis_app/dashboard.dash`.
+
+Always validate before handing a spec over: `ducklocal check dashboard.dash`, or `ducklocal check dashboard.dash --database warehouse.duckdb` to also verify every `x`/`y`/`series` against the columns the queries actually return (a non-numeric `y` is an error outside `table`). A spec mistake is exit 2 with kind `spec`, one `file:line: message` per diagnostic — fix all of them, not just the first. To see it rendered, open the file in the GUI (`ducklocal dashboard.dash` or drag it onto the window): it becomes a dashboard tab, a resizable vertical stack of the plots with per-plot inline errors.
+
+## Authoring an app
+
+An analysis app is a folder holding `main.js`: a default-exported `View` subclass. `init(props, cx)` runs at load; `render()` returns the UI tree. The smallest working app:
 
 ```js
 import { View, div } from "gpui-kit";
-import { panelDir, query, sqlLiteral } from "ducklocal";
+import { appDir, query, sqlLiteral } from "ducklocal";
 
-export default class Panel extends View {
+export default class App extends View {
   init(_props, cx) {
-    this.dir = panelDir(); // answered only while the panel loads; keep it
+    this.dir = appDir(); // answered only while the app loads; keep it
     this.rows = [];
     cx.spawn(async (cx) => {
       const res = await query(
@@ -45,24 +71,24 @@ export default class Panel extends View {
 }
 ```
 
-Scaffold by copying `jsconfig.json` and `gpui-kit.d.ts` from `examples/analysis_app/` next to your `main.js`; that panel is the reference implementation — copy its structure. Bare specifiers available to panels: `gpui-kit`, `gpui-base`, `gpui-component`, `ducklocal`. Type-check before saving: `npx --yes -p typescript tsc -p <panel-dir>/jsconfig.json --noImplicitAny false`. For the UI side, use the `gpui-kit` and `gpui-kit-design-guides` skills.
+Scaffold by copying `jsconfig.json` and `gpui-kit.d.ts` from `examples/analysis_app/` next to your `main.js`; that app is the reference implementation — copy its structure. Bare specifiers available to apps: `gpui-kit`, `gpui-base`, `gpui-component`, `ducklocal`. Type-check before saving: `npx --yes -p typescript tsc -p <app-dir>/jsconfig.json --noImplicitAny false`. For the UI side, use the `gpui-kit` and `gpui-kit-design-guides` skills.
 
 Host functions, imported from `ducklocal`:
 
-- `await query(sql, limit?)` — one statement on the panel connection (a second connection to the same database the window is on). `limit` is optional, must be >= 1, defaults to 1000, caps at 100000; a 2,000,000-cell budget also applies. Returns the CLI's JSON shape (`columns`, `rows`, `row_count`, `truncated`, `elapsed_ms`). Throws on SQL error.
-- `await catalog()` — no arguments; every table and view of every database on the connection, including databases the panel ATTACHed itself. Each entry: `{database, schema, name, kind: "table"|"view", estimated_rows, comment, columns: [{name, type}]}`. Use `entry.database` to tell databases apart.
-- `panelDir()` — sync; the panel folder's path. Answered only while the panel loads: call it from `init()` and keep the result; calling it later throws.
+- `await query(sql, limit?)` — one statement on the app connection (a second connection to the same database the window is on). `limit` is optional, must be >= 1, defaults to 1000, caps at 100000; a 2,000,000-cell budget also applies. Returns the CLI's JSON shape (`columns`, `rows`, `row_count`, `truncated`, `elapsed_ms`). Throws on SQL error.
+- `await catalog()` — no arguments; every table and view of every database on the connection, including databases the app ATTACHed itself. Each entry: `{database, schema, name, kind: "table"|"view", estimated_rows, comment, columns: [{name, type}]}`. Use `entry.database` to tell databases apart.
+- `appDir()` — sync; the app folder's path. Answered only while the app loads: call it from `init()` and keep the result; calling it later throws. (`panelDir()` remains as a deprecated alias.)
 - `sqlLiteral(value)` — sync; `value` as a SQL string literal, quotes included, `'` doubled, NUL refused. For interpolating paths/values into SQL.
 - `sqlIdentifier(name)` — sync; `name` as a double-quoted identifier, `"` doubled; empty/NUL refused. For table/column names from `catalog()`.
 
-Export model (`ducklocal dash export --html PANEL`):
+Export model (`ducklocal export --html APP`):
 
 - The report contains only what `query()` returned — one "Statement N" section per distinct statement, in call order; repeated identical statements collapse to one section marked "run N times". Non-SELECT statements (ATTACH, SET) are captured too, and a `catalog()` call becomes its own section.
 - A leading `-- title: …` comment (the SQL's first line) names the section: "Statement N — title". The SQL shows verbatim.
-- Panel-rendered UI (KPI cards, charts) and JS constants do NOT appear. Ship constants as data: `SELECT * FROM (VALUES ('a', 1), ('b', 2)) AS t(name, n)`.
+- App-rendered UI (KPI cards, charts) and JS constants do NOT appear. Ship constants as data: `SELECT * FROM (VALUES ('a', 1), ('b', 2)) AS t(name, n)`.
 - A result becomes an inline SVG bar chart iff it has exactly 2 columns, at most 25 rows, and a non-negative numeric second column (first column is the label); anything else renders as a table.
-- Panels share one long-lived connection: state made by panel code (ATTACH, SET, TEMP tables) survives a panel Reload in the GUI. Write setup idempotently (`ATTACH IF NOT EXISTS`, `CREATE OR REPLACE TEMP TABLE`).
-- TIMESTAMP/DATE cells arrive as encoded objects (`{"encoding":"timestamp","value":"…"}`, see [the CLI reference](references/cli.md)); CAST the column to VARCHAR in SQL for human-readable dashboard output.
+- Apps share one long-lived connection: state made by app code (ATTACH, SET, TEMP tables) survives an app Reload in the GUI. Write setup idempotently (`ATTACH IF NOT EXISTS`, `CREATE OR REPLACE TEMP TABLE`).
+- TIMESTAMP/DATE cells arrive as encoded objects (`{"encoding":"timestamp","value":"…"}`, see [the CLI reference](references/cli.md)); CAST the column to VARCHAR in SQL for human-readable report output.
 
 ## Safety and scope
 
@@ -71,7 +97,7 @@ Export model (`ducklocal dash export --html PANEL`):
 - Do not automatically retry writes. A failed command may already have written data, including when output serialization fails. Inspect the result and destination first.
 - Do not save credentials, tokens, or secrets in SQL files, skill files, history, or project configuration. This skill has no credential store.
 - Each CLI invocation is a separate process/connection. GUI registered views and in-memory tables do not carry over. Use explicit `--database` for authorized persistent work; use separate single-statement invocations.
-- `ducklocal dash export --html` runs an analysis panel once and writes its statements and results as one standalone HTML file. It is the only subcommand that starts the window platform (a hidden window, no visible UI). The report carries the panel's data, not its interface or its interactive state.
+- `ducklocal export --html` runs an analysis app once and writes its statements and results as one standalone HTML file. It is the only subcommand that starts the window platform (a hidden window, no visible UI). The report carries the app's data, not its interface or its interactive state.
 - No dedicated S3 browsing, spatial command suite, session memory, or MCP server is provided. Do not invent flags or claim these capabilities.
 
 ## Failures

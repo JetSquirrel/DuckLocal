@@ -715,40 +715,40 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
     s.error(&["query", "--sql", "SELECT 1", "--format"], 2, "argument");
 }
 
-/// `dash export` answers "what was this panel showing?" without DuckLocal, a
-/// database, or a browser extension: it runs the panel once and writes down
-/// what it asked. The panel here is a real one — it builds SQL from
-/// `panelDir()`, which only answers while a panel is loading.
+/// `export` answers "what was this app showing?" without DuckLocal, a
+/// database, or a browser extension: it runs the app once and writes down
+/// what it asked. The app here is a real one — it builds SQL from
+/// `appDir()`, which only answers while an app is loading.
 ///
 /// This is the one test that starts the window platform (hidden, for one
-/// frame). It is also the reason the export has a settle deadline: a panel's
+/// frame). It is also the reason the export has a settle deadline: an app's
 /// statements arrive asynchronously, and waiting for them is the whole job.
 #[test]
-fn dash_export_writes_a_report_that_needs_nothing_to_open() {
+fn export_writes_a_report_that_needs_nothing_to_open() {
     let s = Sandbox::new();
-    std::fs::create_dir_all(s.0.join("panel")).unwrap();
+    std::fs::create_dir_all(s.0.join("app")).unwrap();
     std::fs::write(
-        s.0.join("panel/orders.csv"),
+        s.0.join("app/orders.csv"),
         "channel,amount\n手机银行,10\n柜面,20\n手机银行,5\n",
     )
     .unwrap();
     std::fs::write(
-        s.0.join("panel/main.js"),
+        s.0.join("app/main.js"),
         r#"
 import { View, div } from "gpui-kit";
-import { panelDir, query, sqlLiteral } from "ducklocal";
+import { appDir, query, sqlLiteral } from "ducklocal";
 
 export default class App extends View {
   init(_props, cx) {
     this.rows = 0;
     cx.spawn(async (cx) => {
-      const source = sqlLiteral(panelDir() + "/orders.csv");
+      const source = sqlLiteral(appDir() + "/orders.csv");
       const result = await query(
         `SELECT channel, sum(amount) AS total FROM ${source} GROUP BY 1 ORDER BY 2 DESC`,
         50,
       );
       this.rows = result.rows.length;
-      // A statement that fails is part of what a panel did, and the report
+      // A statement that fails is part of what an app did, and the report
       // says so rather than dropping it.
       await query("SELECT * FROM absent_table").catch(() => {});
       cx.notify();
@@ -760,14 +760,14 @@ export default class App extends View {
     )
     .unwrap();
 
-    let report = s.object(&["dash", "export", "--html", "panel", "--out", "report.html"]);
+    let report = s.object(&["export", "--html", "app", "--out", "report.html"]);
     assert_eq!(report["queries"], 2);
     assert_eq!(report["rows"], 2);
-    assert_eq!(report["panel_errors"], 0);
+    assert_eq!(report["app_errors"], 0);
     assert_eq!(report["stop_reason"], "settled");
     assert_eq!(
-        report["panel"],
-        s.0.join("panel").canonicalize().unwrap().to_str().unwrap()
+        report["app"],
+        s.0.join("app").canonicalize().unwrap().to_str().unwrap()
     );
 
     let html = std::fs::read_to_string(s.0.join("report.html")).unwrap();
@@ -788,15 +788,14 @@ export default class App extends View {
     // An existing report is not overwritten by a command that was not asked to
     // replace it, and the refusal costs nothing because it happens first.
     s.error(
-        &["dash", "export", "--html", "panel", "--out", "report.html"],
+        &["export", "--html", "app", "--out", "report.html"],
         2,
         "argument",
     );
     let replaced = s.object(&[
-        "dash",
         "export",
         "--html",
-        "panel",
+        "app",
         "--out",
         "report.html",
         "--force",
@@ -804,65 +803,199 @@ export default class App extends View {
     assert_eq!(replaced["rows"], 2);
 }
 
-/// Everything wrong with a dash export that can be said before running one is
+/// `check` validates a dashboard spec the way the CLI validates everything:
+/// statically first — no database, nothing executes — and, when `--database`
+/// is given, against the columns the queries really return.
+#[test]
+fn check_validates_a_dash_spec_with_and_without_a_database() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("dashboard.dash"),
+        r#"
+// Revenue by channel, declared rather than scripted.
+query "revenue" {
+  sql = <<SQL
+    SELECT channel, sum(amount) AS total
+    FROM read_csv_auto('usage.csv')
+    GROUP BY channel
+    ORDER BY total DESC
+  SQL
+}
+
+plot "revenue" {
+  type  = "bar"
+  query = query.revenue
+  x     = channel
+  y     = total
+  title = "Revenue by channel"
+}
+
+plot "raw" {
+  type  = "table"
+  query = query.revenue
+  x     = channel
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        s.0.join("usage.csv"),
+        "channel,amount\n手机银行,10\n柜面,20\n",
+    )
+    .unwrap();
+
+    // Static check: no database, and the CSV need not even be readable — the
+    // SQL is parsed, never executed.
+    let out = s.object(&["check", "dashboard.dash"]);
+    assert_eq!(out["queries"].as_array().unwrap().len(), 1);
+    assert_eq!(out["plots"].as_array().unwrap().len(), 2);
+    assert_eq!(out["plots"][0]["type"], "bar");
+    assert_eq!(out["plots"][0]["x"], "channel");
+    assert_eq!(out["plots"][1]["y"], Value::Null, "a table needs no y");
+    assert_eq!(out["database"], Value::Null);
+
+    // Against a real database the columns are checked too.
+    s.success(&[
+        "query",
+        "--database",
+        "data.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE usage AS SELECT * FROM read_csv_auto('usage.csv')",
+    ]);
+    std::fs::write(
+        s.0.join("db.dash"),
+        r#"
+query "revenue" {
+  sql = <<SQL
+    SELECT channel, sum(amount) AS total FROM usage GROUP BY channel
+  SQL
+}
+plot "revenue" { type = "line" query = query.revenue x = channel y = total }
+"#,
+    )
+    .unwrap();
+    let out = s.object(&["check", "db.dash", "--database", "data.duckdb"]);
+    assert_eq!(out["queries"][0]["columns"][0]["name"], "channel");
+    assert_eq!(out["queries"][0]["columns"][1]["type"], "HUGEINT");
+
+    // A column the query does not return, and a y that is not numeric, are
+    // spec mistakes — said with their lines, all in one pass.
+    std::fs::write(
+        s.0.join("bad.dash"),
+        r#"
+query "revenue" {
+  sql = "SELECT channel, sum(amount) AS total FROM usage GROUP BY channel"
+}
+plot "a" { type = "bar" query = query.revenue x = nope y = total }
+plot "b" { type = "line" query = query.revenue x = channel y = channel }
+"#,
+    )
+    .unwrap();
+    let error = s.error(&["check", "bad.dash", "--database", "data.duckdb"], 2, "spec");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("\"nope\""), "{message}");
+    assert!(message.contains("not numeric"), "{message}");
+    assert!(message.contains("bad.dash:5"), "{message}");
+    assert!(message.contains("bad.dash:6"), "{message}");
+
+    // Everything wrong before a database opens is said without opening one:
+    // syntax, unknown blocks, dangling references, multi-statement SQL.
+    s.error(&["check"], 2, "argument");
+    s.error(&["check", "missing.dash"], 1, "io");
+    s.error(&["check", "dashboard.dash", "extra.dash"], 2, "argument");
+    std::fs::write(s.0.join("syntax.dash"), "plot {\n").unwrap();
+    s.error(&["check", "syntax.dash"], 2, "spec");
+    std::fs::write(s.0.join("dangling.dash"), "plot \"p\" { type = \"line\" query = query.ghost x = a y = b }").unwrap();
+    let error = s.error(&["check", "dangling.dash"], 2, "spec");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("does not define"));
+    std::fs::write(
+        s.0.join("script.dash"),
+        "query \"q\" { sql = \"SELECT 1; SELECT 2\" }",
+    )
+    .unwrap();
+    let error = s.error(&["check", "script.dash"], 2, "spec");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exactly one SQL statement"));
+    // A query whose table does not exist describes nothing: a database
+    // failure, not a spec mistake.
+    std::fs::write(s.0.join("absent.dash"), "query \"q\" { sql = \"SELECT * FROM absent\" }").unwrap();
+    s.error(&["check", "absent.dash", "--database", "data.duckdb"], 1, "sql");
+
+    // Help is help, and it is not a spec.
+    let help = s.text(&["check", "--help"]);
+    assert!(help.contains(".dash"), "{help}");
+}
+
+/// Everything wrong with an export that can be said before running one is
 /// said without running one: no window opens for a missing flag.
 #[test]
-fn dash_export_argument_errors_never_start_a_panel() {
+fn export_argument_errors_never_start_an_app() {
     let s = Sandbox::new();
-    std::fs::create_dir_all(s.0.join("panel")).unwrap();
-    std::fs::write(s.0.join("panel/main.js"), "export default class App {}").unwrap();
+    std::fs::create_dir_all(s.0.join("app")).unwrap();
+    std::fs::write(s.0.join("app/main.js"), "export default class App {}").unwrap();
 
-    s.error(&["dash"], 2, "argument");
-    s.error(&["dash", "nope"], 2, "argument");
-    s.error(&["dash", "export"], 2, "argument");
-    s.error(&["dash", "export", "panel"], 2, "argument");
-    s.error(&["dash", "export", "--html"], 2, "argument");
+    s.error(&["export"], 2, "argument");
+    s.error(&["export", "nope"], 2, "argument");
+    s.error(&["export", "--html"], 2, "argument");
     s.error(
-        &["dash", "export", "--html", "--out", "x.html"],
+        &["export", "--html", "--out", "x.html"],
         2,
         "argument",
     );
     s.error(
-        &["dash", "export", "--html", "panel", "--format", "md"],
+        &["export", "--html", "app", "--format", "md"],
         2,
         "argument",
     );
     s.error(
-        &["dash", "export", "--html", "panel", "--read-write"],
+        &["export", "--html", "app", "--read-write"],
         2,
         "argument",
     );
     s.error(
         &[
-            "dash", "export", "--html", "panel", "--out", "a.html", "--out", "b.html",
+            "export", "--html", "app", "--out", "a.html", "--out", "b.html",
         ],
         2,
         "argument",
     );
     s.error(
-        &["dash", "export", "--html", "panel", "another"],
+        &["export", "--html", "app", "another"],
         2,
         "argument",
     );
-    s.error(&["dash", "export", "--html", "absent"], 2, "argument");
+    s.error(&["export", "--html", "absent"], 2, "argument");
+
+    // The pre-rename command says where it went instead of falling through to
+    // the GUI on a path named "dash".
+    let moved = s.error(&["dash", "export", "--html", "app"], 2, "argument");
+    assert!(
+        moved["error"]["message"].as_str().unwrap().contains("`export`"),
+        "{moved}"
+    );
     s.error(
-        &["dash", "export", "--html", "panel", "--timeout"],
+        &["export", "--html", "app", "--timeout"],
         2,
         "argument",
     );
     for bad in ["abc", "0", "-5", "1.5"] {
         s.error(
-            &["dash", "export", "--html", "panel", "--timeout", bad],
+            &["export", "--html", "app", "--timeout", bad],
             2,
             "argument",
         );
     }
     s.error(
         &[
-            "dash",
             "export",
             "--html",
-            "panel/main.js",
+            "app/main.js",
             "--database",
             ":memory:",
         ],
@@ -870,17 +1003,15 @@ fn dash_export_argument_errors_never_start_a_panel() {
         "argument",
     );
 
-    // A folder that is not a panel is refused by name, not loaded and failed.
+    // A folder that is not an app is refused by name, not loaded and failed.
     std::fs::create_dir_all(s.0.join("empty")).unwrap();
-    let error = s.error(&["dash", "export", "--html", "empty"], 2, "argument");
+    let error = s.error(&["export", "--html", "empty"], 2, "argument");
     assert!(error["error"]["message"]
         .as_str()
         .unwrap()
         .contains("main.js"));
 
-    // Help is help, and it is not a panel.
-    let help = s.text(&["dash", "--help"]);
-    assert!(help.contains("dash export"), "{help}");
-    let help = s.text(&["dash", "export", "--help"]);
-    assert!(help.contains("dash export"), "{help}");
+    // Help is help, and it is not an app.
+    let help = s.text(&["export", "--help"]);
+    assert!(help.contains("export --html"), "{help}");
 }

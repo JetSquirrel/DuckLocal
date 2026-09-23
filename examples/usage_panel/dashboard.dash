@@ -1,0 +1,85 @@
+// The usage_panel app's data as a dashboard spec: the same four questions
+// main.js asks, declared rather than scripted. Check it from the repository
+// root:
+//
+//   ducklocal check examples/usage_panel/dashboard.dash
+//
+// or open it as a dashboard tab in the GUI:
+//
+//   ducklocal examples/usage_panel/dashboard.dash
+//
+// The app finds its relations by prefix (the latest amount-* and cost-* in
+// the catalog); a spec cannot, so the two relation names below are written
+// out — point them at the exports you have open. The names carry dashes, so
+// they stay double-quoted in the SQL.
+
+query "usage_by_type" {
+  sql = <<SQL
+    SELECT type, sum(amount) AS total
+    FROM "amount-2026-09-01_2026-09-18"
+    GROUP BY type
+    ORDER BY total DESC
+  SQL
+}
+
+query "usage_by_model" {
+  sql = <<SQL
+    SELECT model, type, sum(amount) AS total
+    FROM "amount-2026-09-01_2026-09-18"
+    GROUP BY model, type
+    ORDER BY model, type
+  SQL
+}
+
+// CAST(CAST(... AS VARCHAR) AS DATE): this DuckDB build cannot cast a
+// TIMESTAMP WITH TIME ZONE straight to DATE, and the export's column is
+// exactly that type.
+query "daily_output_tokens" {
+  sql = <<SQL
+    SELECT CAST(CAST(start_time_iso AS VARCHAR) AS DATE) AS day, sum(amount) AS tokens
+    FROM "amount-2026-09-01_2026-09-18"
+    WHERE type = 'output_tokens'
+    GROUP BY day
+    ORDER BY day
+  SQL
+}
+
+query "daily_cost" {
+  sql = <<SQL
+    SELECT CAST(CAST(start_time_iso AS VARCHAR) AS DATE) AS day, sum(cost) AS cost
+    FROM "cost-2026-09-01_2026-09-18"
+    GROUP BY day
+    ORDER BY day
+  SQL
+}
+
+plot "daily_cost" {
+  type  = "line"
+  query = query.daily_cost
+  x     = day
+  y     = cost
+  title = "Daily cost"
+}
+
+plot "daily_tokens" {
+  type  = "line"
+  query = query.daily_output_tokens
+  x     = day
+  y     = tokens
+  title = "Daily output tokens"
+}
+
+plot "by_type" {
+  type  = "bar"
+  query = query.usage_by_type
+  x     = type
+  y     = total
+  title = "Usage by type"
+}
+
+plot "by_model" {
+  type  = "table"
+  query = query.usage_by_model
+  x     = model
+  title = "By model and type"
+}

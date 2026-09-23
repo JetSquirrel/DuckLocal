@@ -28,6 +28,11 @@ pub struct S3ConfigChanged;
 #[derive(Clone, Debug)]
 pub struct OpenStateChanged;
 
+/// The recent-documents list gained an entry (an app or dashboard tab
+/// opened). The sidebar rebuilds its document groups on this.
+#[derive(Clone, Debug)]
+pub struct RecentsChanged;
+
 /// Status-bar summary of the most recent query run.
 #[derive(Clone, Debug)]
 pub struct QueryStats {
@@ -72,6 +77,7 @@ impl EventEmitter<QueryStatsChanged> for AppState {}
 impl EventEmitter<AttachedFilesChanged> for AppState {}
 impl EventEmitter<S3ConfigChanged> for AppState {}
 impl EventEmitter<OpenStateChanged> for AppState {}
+impl EventEmitter<RecentsChanged> for AppState {}
 
 impl AppState {
     pub fn new(_cx: &mut Context<Self>) -> Self {

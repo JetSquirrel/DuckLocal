@@ -26,6 +26,19 @@ pub struct FileStamp {
     pub modified: Option<SystemTime>,
 }
 
+impl FileStamp {
+    /// Stamp one file. A missing or unreadable file stamps as `len` zero and
+    /// no mtime, so it appearing later is a change like any other.
+    pub fn capture(path: &Path) -> Self {
+        let metadata = std::fs::metadata(path).ok();
+        Self {
+            path: path.to_path_buf(),
+            len: metadata.as_ref().map(|data| data.len()).unwrap_or(0),
+            modified: metadata.and_then(|data| data.modified().ok()),
+        }
+    }
+}
+
 /// Every `.js`/`.mjs` file the runtime could load, by path.
 ///
 /// Compared as a whole: a file added, removed, resized, or touched all change
@@ -79,15 +92,9 @@ fn collect(directory: &Path, out: &mut Vec<FileStamp>) {
         ) {
             continue;
         }
-        let metadata = entry.metadata().ok();
-        out.push(FileStamp {
-            path,
-            len: metadata.as_ref().map(|data| data.len()).unwrap_or(0),
-            modified: metadata.and_then(|data| data.modified().ok()),
-        });
+        out.push(FileStamp::capture(&path));
     }
 }
-
 /// Turns a stream of "did the stamp change" answers into one reload.
 ///
 /// Reports `true` once the tree has been unchanged for [`DEBOUNCE`] since the
@@ -165,7 +172,7 @@ mod tests {
             "main.js",
             "export default class A { render() { return 1; } }",
         );
-        dir.write("lib/panel.mjs", "export const x = 1;");
+        dir.write("lib/chart.mjs", "export const x = 1;");
 
         assert_eq!(AppFiles::capture(dir.path()), AppFiles::capture(dir.path()));
         assert_eq!(AppFiles::capture(dir.path()).file_count(), 2);
@@ -237,6 +244,24 @@ mod tests {
         let missing = std::env::temp_dir().join("ducklocal_watch_does_not_exist");
         std::fs::remove_dir_all(&missing).ok();
         assert_eq!(AppFiles::capture(&missing).file_count(), 0);
+    }
+
+    #[test]
+    fn a_single_file_stamps_and_changes() {
+        let dir = TempDir::new("filestamp");
+        dir.write("spec.dash", "plot \"p\" {}");
+
+        let before = FileStamp::capture(&dir.path().join("spec.dash"));
+        assert_eq!(before.len, 11);
+        assert_eq!(before, FileStamp::capture(&dir.path().join("spec.dash")));
+
+        dir.write("spec.dash", "plot \"p\" { x = 1 }");
+        assert_ne!(before, FileStamp::capture(&dir.path().join("spec.dash")));
+
+        // A missing file stamps as zero-length without failing.
+        let gone = FileStamp::capture(&dir.path().join("gone.dash"));
+        assert_eq!(gone.len, 0);
+        assert_eq!(gone.modified, None);
     }
 
     #[test]

@@ -12,6 +12,12 @@ pub(super) enum SchemaNodeKind {
     Column,
     LocalFilesGroup,
     File,
+    /// Group header for recently opened analysis apps.
+    AppsGroup,
+    /// Group header for recently opened dashboards.
+    DashboardsGroup,
+    /// A recently opened document row (app or dashboard).
+    RecentDocument,
     S3Status,
     S3Bucket,
     S3Prefix,
@@ -52,6 +58,8 @@ pub(super) struct SchemaNodeMeta {
     pub(super) column: Option<ColumnRef>,
     /// `s3://bucket/key` on S3 file rows, for generating the SELECT query.
     pub(super) s3_uri: Option<String>,
+    /// The document a recent-document row reopens on click.
+    pub(super) doc: Option<crate::recents::RecentDocument>,
 }
 
 impl SchemaNodeMeta {
@@ -63,6 +71,7 @@ impl SchemaNodeMeta {
             table: None,
             column: None,
             s3_uri: None,
+            doc: None,
         }
     }
 }

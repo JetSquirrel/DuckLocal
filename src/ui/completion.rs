@@ -343,7 +343,7 @@ fn push_match(
 /// `starts_with` against an already-lowercased prefix, without lowercasing
 /// the candidate first. The ASCII path covers keywords, functions, and plain
 /// identifiers; anything else falls back so case folding stays correct.
-fn starts_with_ignore_case(name: &str, prefix_lower: &str) -> bool {
+pub(crate) fn starts_with_ignore_case(name: &str, prefix_lower: &str) -> bool {
     if name.is_ascii() && prefix_lower.is_ascii() {
         name.len() >= prefix_lower.len()
             && name.as_bytes()[..prefix_lower.len()].eq_ignore_ascii_case(prefix_lower.as_bytes())

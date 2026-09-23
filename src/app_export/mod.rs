@@ -1,16 +1,16 @@
-//! `ducklocal dash export --html`: a panel's data as one standalone file.
+//! `ducklocal export --html`: an app's data as one standalone file.
 //!
-//! An analysis panel is a script that draws itself with native components, and
+//! An analysis app is a script that draws itself with native components, and
 //! none of that travels: the description the runtime builds says *that* a chart
-//! is there, not what its bars are. What does travel is what the panel asked
-//! the database, so the export runs the panel once and writes down its
+//! is there, not what its bars are. What does travel is what the app asked
+//! the database, so the export runs the app once and writes down its
 //! statements and their results — a file you can send to someone with no
 //! DuckLocal, no database, and no JavaScript.
 //!
 //! ```text
-//! src/dash/capture.rs  what the panel asked, recorded at the host module
-//! src/dash/run.rs      the panel, run once in a hidden window
-//! src/dash/report.rs   the captures, as HTML (pure, and tested as such)
+//! src/app_export/capture.rs  what the app asked, recorded at the host module
+//! src/app_export/run.rs      the app, run once in a hidden window
+//! src/app_export/report.rs   the captures, as HTML (pure, and tested as such)
 //! ```
 
 pub mod capture;
@@ -25,8 +25,8 @@ use serde_json::json;
 use crate::cli::{parse_args, Arg, CliError, FlagSpec, HELP};
 
 struct Request {
-    /// The path as given; resolved to a panel folder before anything runs.
-    panel: PathBuf,
+    /// The path as given; resolved to an app folder before anything runs.
+    app: PathBuf,
     out: PathBuf,
     database: Option<PathBuf>,
     read_write: bool,
@@ -34,39 +34,18 @@ struct Request {
     timeout_secs: u64,
 }
 
-/// `ducklocal dash export --html [--out FILE] [--force] [--database PATH]
-/// [--read-write] [--timeout SECONDS] PANEL`.
+/// `ducklocal export --html [--out FILE] [--force] [--database PATH]
+/// [--read-write] [--timeout SECONDS] APP`.
 ///
 /// Returns only for `--help` and for a mistake in the arguments: the export
 /// itself finishes inside the application loop, where it writes the file,
 /// prints its one JSON object, and exits with the status it earned.
 pub fn dispatch(args: &[OsString]) -> Result<String, CliError> {
-    let first = args.first().and_then(|arg| arg.to_str());
-    match first {
-        Some("--help") if args.len() == 1 => return Ok(HELP.to_string()),
-        Some("export") => {}
-        // An option where the subcommand goes is a command line to correct,
-        // not a subcommand that does not exist.
-        Some(other) if other.starts_with("--") => {
-            return Err(CliError::argument(
-                "Unknown or extra arguments; use ducklocal --help",
-            ))
-        }
-        Some(other) => {
-            return Err(CliError::argument(format!(
-                "Unknown dash subcommand: {other}; use ducklocal --help"
-            )))
-        }
-        None => {
-            return Err(CliError::argument(
-                "Name a subcommand: ducklocal dash export --html PANEL",
-            ))
-        }
-    }
-    if args.len() == 2 && args[1] == "--help" {
+    // Help is help, wherever the subcommand's own flags begin.
+    if args.len() == 1 && args[0] == "--help" {
         return Ok(HELP.to_string());
     }
-    export(&args[1..])?;
+    export(args)?;
     Err(CliError::failure(
         "internal",
         "the export returned instead of exiting from the application loop",
@@ -75,7 +54,7 @@ pub fn dispatch(args: &[OsString]) -> Result<String, CliError> {
 
 fn export(args: &[OsString]) -> Result<(), CliError> {
     let request = parse(args)?;
-    let directory = gpui_shell::resolve_app_root(&request.panel, crate::analysis::host::ENTRY)
+    let directory = gpui_shell::resolve_app_root(&request.app, crate::analysis::host::ENTRY)
         .map_err(|error| CliError::argument(error.to_string()))?;
     if request.out.exists() && !request.force {
         return Err(CliError::argument(format!(
@@ -91,14 +70,14 @@ fn export(args: &[OsString]) -> Result<(), CliError> {
         None => "in-memory".to_string(),
     };
 
-    let panel = directory.clone();
+    let app = directory.clone();
     run::capture(
         run::Job {
-            panel: directory,
+            app: directory,
             connection,
             timeout: std::time::Duration::from_secs(request.timeout_secs),
         },
-        move |outcome| finish(&request, &panel, &database, outcome),
+        move |outcome| finish(&request, &app, &database, outcome),
     )
 }
 
@@ -135,9 +114,9 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
     let mut database = None;
     let mut read_write = false;
     let mut force = false;
-    let mut panel = None;
+    let mut app = None;
     let mut timeout_secs = run::DEFAULT_TIMEOUT.as_secs();
-    for arg in parse_args("dash", args, SPEC, &[])? {
+    for arg in parse_args("export", args, SPEC, &[])? {
         match arg {
             Arg::Flag("--html", None) => html = true,
             Arg::Flag("--force", None) => force = true,
@@ -158,45 +137,45 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
                     })?;
             }
             Arg::Positional(value) => {
-                if panel.is_some() {
+                if app.is_some() {
                     return Err(CliError::argument(
-                        "Name one panel: the export writes one file for one panel",
+                        "Name one app: the export writes one file for one app",
                     ));
                 }
-                panel = Some(PathBuf::from(value));
+                app = Some(PathBuf::from(value));
             }
             _ => {
                 return Err(CliError::failure(
                     "internal",
-                    "the argument walker produced a flag dash does not declare",
+                    "the argument walker produced a flag export does not declare",
                 ));
             }
         }
     }
     if !html {
         return Err(CliError::argument(
-            "dash export needs --html; it is the only format there is",
+            "export needs --html; it is the only format there is",
         ));
     }
-    let panel = panel.ok_or_else(|| {
-        CliError::argument("Name a panel folder (containing main.js), or its main.js")
+    let app = app.ok_or_else(|| {
+        CliError::argument("Name an app folder (containing main.js), or its main.js")
     })?;
     if read_write && database.is_none() {
         return Err(CliError::argument("--read-write requires --database"));
     }
-    // Named after the panel so that the common case needs no `--out`, and
-    // beside the working directory rather than inside the panel folder: the
-    // folder is the panel, and a report in it is one more thing to commit.
+    // Named after the app so that the common case needs no `--out`, and
+    // beside the working directory rather than inside the app folder: the
+    // folder is the app, and a report in it is one more thing to commit.
     let out = out.unwrap_or_else(|| {
-        let name = panel
+        let name = app
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "panel".to_string());
+            .unwrap_or_else(|| "app".to_string());
         let name = name.strip_suffix(".js").unwrap_or(&name).to_string();
         PathBuf::from(format!("{name}.html"))
     });
     Ok(Request {
-        panel,
+        app,
         out,
         database,
         read_write,
@@ -209,17 +188,17 @@ fn parse(args: &[OsString]) -> Result<Request, CliError> {
 ///
 /// The exit happens here rather than in a caller because everything that knows
 /// the answer runs inside the application loop, which does not unwind.
-fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: run::Outcome) -> ! {
-    let (captures, panel_error, reported, elapsed_ms, stop_reason) = match outcome {
+fn finish(request: &Request, app: &std::path::Path, database: &str, outcome: run::Outcome) -> ! {
+    let (captures, app_error, reported, elapsed_ms, stop_reason) = match outcome {
         run::Outcome::Captured {
             captures,
-            panel_error,
+            app_error,
             reported,
             elapsed_ms,
             stop_reason,
-        } => (captures, panel_error, reported, elapsed_ms, stop_reason),
+        } => (captures, app_error, reported, elapsed_ms, stop_reason),
         run::Outcome::Failed(message) => {
-            fail(&CliError::failure("panel", message));
+            fail(&CliError::failure("app", message));
         }
     };
     let queries = captures
@@ -234,13 +213,13 @@ fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: r
         .sum();
     let exported_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let html = report::build(&report::Report {
-        panel,
+        app,
         entry: crate::analysis::host::ENTRY,
         database,
         exported_at: &exported_at,
         version: env!("CARGO_PKG_VERSION"),
         captures: &captures,
-        panel_error: panel_error.as_deref(),
+        app_error: app_error.as_deref(),
         reported: &reported,
         stop_reason,
     });
@@ -250,10 +229,10 @@ fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: r
     let written = std::fs::canonicalize(&request.out).unwrap_or_else(|_| request.out.clone());
     let report = json!({
         "html": written.display().to_string(),
-        "panel": panel.display().to_string(),
+        "app": app.display().to_string(),
         "queries": queries,
         "rows": rows,
-        "panel_errors": reported.len(),
+        "app_errors": reported.len(),
         "captured_ms": elapsed_ms as u64,
         "stop_reason": stop_reason,
     });
@@ -262,13 +241,13 @@ fn finish(request: &Request, panel: &std::path::Path, database: &str, outcome: r
     let _ = writeln!(stdout, "{report}");
     let _ = stdout.flush();
 
-    // A panel that threw still produced the only evidence of what it managed;
-    // the file is written, and the exit status says the panel did not finish.
-    if let Some(error) = panel_error {
+    // An app that threw still produced the only evidence of what it managed;
+    // the file is written, and the exit status says the app did not finish.
+    if let Some(error) = app_error {
         eprintln!(
             "{}",
             json!({"error": {
-                "kind": "panel",
+                "kind": "app",
                 "message": format!("{error} (the report was written to {})", written.display()),
             }})
         );

@@ -19,7 +19,7 @@ Use exactly one `--sql`/`--sql-file`. A file is UTF-8, `-` means stdin. Exactly 
 
 `--limit N` is positive, defaults to 1000, and caps output rows. A 2,000,000-cell budget also applies. An extra row determines `truncated`; this is not a computation or memory limit. Paths resolve against the working directory. Quote shell paths and escape SQL apostrophes by doubling them: `'O''Brien.csv'`. Quote SQL identifiers with double quotes.
 
-Without `--database`, each call has a new in-memory database. `--database PATH` opens an existing file read-only. `--read-write` requires `--database` and authorizes database writes/creation at that path, not parent directory creation. Do not silently fall back to memory after open/lock errors. No GUI history/settings/registered views are read or changed. A GUI path named `query` uses `./query`.
+Without `--database`, each call has a new in-memory database. `--database PATH` opens an existing file read-only. `--read-write` requires `--database` and authorizes database writes/creation at that path, not parent directory creation. Do not silently fall back to memory after open/lock errors. No GUI history/settings/registered views are read or changed. A GUI path named `query`, `profile`, `export`, `check` or `dash` must be written `./query`, `./profile`, `./export`, `./check`, `./dash`.
 
 ## Profile a relation
 
@@ -36,15 +36,24 @@ Read it before choosing how to present a column. `missing_days` above 0 means th
 
 Statistics are exact and scan the whole relation; `--limit` does not apply. It is a read, but a full one: on a very large file it costs a full pass.
 
-## Export a dashboard as a static HTML file
+## Export an analysis app as a static HTML file
 
 ```bash
-ducklocal dash export --html panels/sales
-ducklocal dash export --html --out report.html --database warehouse.duckdb panels/sales
-ducklocal dash export --html --timeout 60 panels/sales
+ducklocal export --html apps/sales
+ducklocal export --html --out report.html --database warehouse.duckdb apps/sales
+ducklocal export --html --timeout 60 apps/sales
 ```
 
-Runs an analysis panel once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<panel folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. `--timeout SECONDS` is a positive integer, default 15: the capture stops when the panel has gone quiet, or at the deadline, whichever comes first. One JSON object on stdout names the file and counts `queries`, `rows` and `panel_errors`; its `stop_reason` is `"settled"` when the panel went quiet in time and `"deadline"` when the time limit cut the capture short — then the report may be missing statements, and the HTML carries a visible warning saying so. The report holds the panel's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `panel` means the panel failed; when it failed after loading, the report is still written and the message names it.
+Runs an analysis app once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<app folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. `--timeout SECONDS` is a positive integer, default 15: the capture stops when the app has gone quiet, or at the deadline, whichever comes first. One JSON object on stdout names the file and counts `queries`, `rows` and `app_errors`; its `stop_reason` is `"settled"` when the app went quiet in time and `"deadline"` when the time limit cut the capture short — then the report may be missing statements, and the HTML carries a visible warning saying so. The report holds the app's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `app` means the app failed; when it failed after loading, the report is still written and the message names it.
+
+## Check a dashboard spec
+
+```bash
+ducklocal check dashboard.dash
+ducklocal check dashboard.dash --database warehouse.duckdb
+```
+
+Validates a `.dash` file — `query "name" { sql = <<SQL … SQL }` blocks and `plot "name" { type/query/x/y/series/title }` blocks joined by `query.name` references — without opening a window. Static checks (syntax, duplicate names, dangling references, SQL through the real parser) need no database; `--database` (existing file, read-only) additionally describes each query and checks plot columns against what it returns, including a numeric-type check on `y`. Success prints one JSON object with the spec's queries and plots. A spec mistake is exit 2, kind `spec`, one `file:line: message` per diagnostic, all diagnostics at once; database/I/O failures are exit 1.
 
 ## Discover, aggregate, convert
 
@@ -111,4 +120,4 @@ Check exit status before parsing. Codes: 0 success, 2 arguments/statement count,
 {"error":{"kind":"sql","message":"..."}}
 ```
 
-Kinds: `argument`, `sql`, `database`, `io`, `output`, and `panel` for a dashboard export whose panel failed. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.
+Kinds: `argument`, `sql`, `database`, `io`, `output`, and `app` for an app export whose app failed. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.

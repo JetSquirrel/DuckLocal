@@ -126,7 +126,7 @@ pub struct ResultTableDelegate {
 }
 
 impl ResultTableDelegate {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             columns: Vec::new(),
             result: None,
@@ -144,7 +144,7 @@ impl ResultTableDelegate {
         spec
     }
 
-    fn set_result(&mut self, result: Rc<QueryResult>) {
+    pub(crate) fn set_result(&mut self, result: Rc<QueryResult>) {
         let mut columns = Vec::with_capacity(result.columns.len() + LEADING_COLUMNS);
         columns.push(Self::index_column());
         columns.extend(result.columns.iter().enumerate().map(|(ix, column)| {

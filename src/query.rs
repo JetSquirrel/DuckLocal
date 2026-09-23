@@ -22,7 +22,7 @@ pub const MAX_ROWS: usize = 100_000;
 pub const MAX_CELLS: usize = 2_000_000;
 
 /// Field visibility is crate-wide because the structured encoding below is
-/// what any second reader of a result must reuse: the analysis panel's
+/// what any second reader of a result must reuse: the analysis app's
 /// `query()` host function hands these same values to JavaScript, and a
 /// second encoder is how a big integer quietly becomes a float.
 #[derive(serde::Serialize, Clone, Debug)]

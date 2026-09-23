@@ -1,9 +1,10 @@
-//! Running a panel once, in a window nobody sees, to capture what it asks.
+//! Running an app once, in a window nobody sees, to capture what it asks.
 //!
-//! The panel is a script: it asks the database for what it wants while it
-//! loads, so the only way to know what a panel shows is to run it. This runs
-//! it the way the app does — same runtime, same host module, same catalog —
-//! with a recorder in front of `query()`, and reports what came back.
+//! The app is a script: it asks the database for what it wants while it
+//! loads, so the only way to know what an app shows is to run it. This runs
+//! it the way the workspace does — same runtime, same host module, same
+//! catalog — with a recorder in front of `query()`, and reports what came
+//! back.
 //!
 //! Two things about the shape of this file are forced rather than chosen:
 //!
@@ -14,7 +15,7 @@
 //! * **The queries settle asynchronously.** `init()` is called at mount and
 //!   spawns the work; the statements arrive through `smol::unblock` on another
 //!   thread. There is no event to wait for, so the wait is a quiet period: the
-//!   panel has stopped asking for this long, or the deadline has passed. A
+//!   app has stopped asking for this long, or the deadline has passed. A
 //!   statement is recorded when it finishes, so "quiet" also requires nothing
 //!   in flight — a slow query is not idleness.
 
@@ -35,33 +36,33 @@ use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context as LayerContext, Layer, SubscriberExt as _};
 
 use crate::analysis::host;
-use crate::dash::capture;
+use crate::app_export::capture;
 
 /// How often the settle loop looks for new statements.
 const POLL: Duration = Duration::from_millis(60);
 
-/// How long the panel must go without asking anything before it is done.
+/// How long the app must go without asking anything before it is done.
 ///
-/// Longer than one query on a local file, and short enough that a panel that
+/// Longer than one query on a local file, and short enough that an app that
 /// has finished does not keep the export waiting: the cost of being wrong is a
 /// statement missing from the report, which is why there is a deadline as well.
 const QUIET: Duration = Duration::from_millis(400);
 
-/// The default for `Job::timeout`. A panel that polls the database forever
-/// must not make `dash export` a command that never returns.
+/// The default for `Job::timeout`. An app that polls the database forever
+/// must not make `export` a command that never returns.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The slot the window-open closure fills with the mounted panel, so the code
+/// The slot the window-open closure fills with the mounted app, so the code
 /// that waits on it can see whether the mount worked.
 type MountSlot = Rc<RefCell<Option<Result<gpui_kit::Entity<gpui_shell::ScriptView>, String>>>>;
 
-/// The window's root: the panel, when it mounted, and nothing when it did not.
+/// The window's root: the app, when it mounted, and nothing when it did not.
 ///
 /// A window needs a root view, and the root has to be one type whether the
-/// panel loaded or not — so this holds either.
-struct PanelHost(Option<gpui_kit::Entity<gpui_shell::ScriptView>>);
+/// app loaded or not — so this holds either.
+struct AppHost(Option<gpui_kit::Entity<gpui_shell::ScriptView>>);
 
-impl Render for PanelHost {
+impl Render for AppHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         match &self.0 {
             Some(view) => view.clone().into_any_element(),
@@ -71,25 +72,25 @@ impl Render for PanelHost {
 }
 
 pub struct Job {
-    /// The panel's folder; `entry` is the file inside it.
-    pub panel: PathBuf,
-    /// The connection the panel's `query()` runs against, already opened with
+    /// The app's folder; `entry` is the file inside it.
+    pub app: PathBuf,
+    /// The connection the app's `query()` runs against, already opened with
     /// the access mode the caller asked for.
     pub connection: Connection,
-    /// The longest the panel may take before the capture stops with whatever
+    /// The longest the app may take before the capture stops with whatever
     /// it has; `--timeout` on the command line, [`DEFAULT_TIMEOUT`] otherwise.
     pub timeout: Duration,
 }
 
 /// What the run found.
 pub enum Outcome {
-    /// The panel ran. `panel_error` is why it stopped, when it stopped early;
+    /// The app ran. `app_error` is why it stopped, when it stopped early;
     /// `reported` is what it logged as an error while running. `stop_reason`
-    /// is "settled" when the panel went quiet, "deadline" when the time limit
+    /// is "settled" when the app went quiet, "deadline" when the time limit
     /// cut the capture short.
     Captured {
         captures: Vec<capture::Capture>,
-        panel_error: Option<String>,
+        app_error: Option<String>,
         reported: Vec<String>,
         elapsed_ms: u128,
         stop_reason: &'static str,
@@ -98,7 +99,7 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Run `job`'s panel and hand the outcome to `finish`, which ends the process.
+/// Run `job`'s app and hand the outcome to `finish`, which ends the process.
 ///
 /// Returns only when the platform loop returns without having finished, which
 /// is why the call after it is unreachable.
@@ -125,55 +126,55 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
             }
             // The same runtime the workspace builds, which installs the
             // component catalog and exports the `ducklocal` module. The module
-            // has to be exported before the panel is loaded: an import is
+            // has to be exported before the app is loaded: an import is
             // resolved while the script's module graph is linked.
             let runtime = match crate::analysis::runtime::create(cx) {
                 Ok(runtime) => runtime,
                 Err(error) => stop!(Outcome::Failed(format!("{error:#}"))),
             };
-            let loaded = match runtime.load_application(&job.panel, crate::analysis::host::ENTRY) {
+            let loaded = match runtime.load_application(&job.app, crate::analysis::host::ENTRY) {
                 Ok(loaded) => loaded,
                 Err(error) => stop!(Outcome::Failed(format!("{error:#}"))),
             };
 
-            // Before the mount, not after: `init` is where a panel asks.
+            // Before the mount, not after: `init` is where an app asks.
             capture::start();
 
             let mounted: MountSlot = Rc::new(RefCell::new(None));
             let slot = mounted.clone();
-            let panel = job.panel.clone();
+            let app = job.app.clone();
             let options = hidden_window(cx);
             let window = match cx.open_window(options, move |window, cx| {
-                // The panel's folder answers `panelDir()` for this call and for
+                // The app's folder answers `appDir()` for this call and for
                 // every host call `init` makes inside it.
-                let view = host::with_panel_directory(&panel, || {
+                let view = host::with_panel_directory(&app, || {
                     runtime.mount_application(&loaded, window, cx)
                 });
                 match view {
                     Ok(view) => {
                         *slot.borrow_mut() = Some(Ok(view.clone()));
-                        cx.new(|_| PanelHost(Some(view)))
+                        cx.new(|_| AppHost(Some(view)))
                     }
                     Err(error) => {
                         *slot.borrow_mut() = Some(Err(format!("{error:#}")));
-                        cx.new(|_| PanelHost(None))
+                        cx.new(|_| AppHost(None))
                     }
                 }
             }) {
                 Ok(window) => window,
                 Err(error) => stop!(Outcome::Failed(format!("{error:#}"))),
             };
-            // Opening the window drew one frame, so a panel that renders
+            // Opening the window drew one frame, so an app that renders
             // before it asks has already been through `render`.
             let view = match mounted.borrow_mut().take() {
                 Some(Ok(view)) => view,
                 Some(Err(message)) => stop!(Outcome::Failed(message)),
-                None => stop!(Outcome::Failed("The panel did not mount".to_string())),
+                None => stop!(Outcome::Failed("The app did not mount".to_string())),
             };
 
             cx.spawn(async move |cx| {
                 // The window outlives this task: without a window there is
-                // nothing to draw into, and a panel that renders its state
+                // nothing to draw into, and an app that renders its state
                 // after a query would stop being rendered at all.
                 let _window = window;
                 let mut revision = capture::revision();
@@ -188,9 +189,8 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                     // A statement is recorded when it finishes, so a slow
                     // query looks exactly like idleness on the revision
                     // counter alone; the in-flight count tells them apart.
-                    let settled = revision > 0
-                        && capture::in_flight() == 0
-                        && quiet_since.elapsed() >= QUIET;
+                    let settled =
+                        revision > 0 && capture::in_flight() == 0 && quiet_since.elapsed() >= QUIET;
                     if settled {
                         break "settled";
                     }
@@ -198,12 +198,12 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                         break "deadline";
                     }
                 };
-                // A panel that threw said why in its own view, which is the
+                // An app that threw said why in its own view, which is the
                 // only place the reason exists.
-                let panel_error = cx.update(|cx| view.read(cx).build_error().map(str::to_string));
+                let app_error = cx.update(|cx| view.read(cx).build_error().map(str::to_string));
                 stop!(Outcome::Captured {
                     captures: capture::take(),
-                    panel_error,
+                    app_error,
                     reported: reported
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -218,9 +218,9 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
     unreachable!("the export exits from inside the application loop")
 }
 
-/// Collect what the shell logs as an error while the panel runs.
+/// Collect what the shell logs as an error while the app runs.
 ///
-/// A promise the panel leaves unhandled is logged and dropped: the shell has no
+/// A promise the app leaves unhandled is logged and dropped: the shell has no
 /// view to attach it to, so this is the only place that reason exists. In the
 /// window it reaches the log; here it reaches the report, which is the same
 /// thing for a file someone else will open.
@@ -272,10 +272,10 @@ impl Visit for Message<'_> {
     }
 }
 
-/// A window is needed to render a panel, and nothing should appear on screen
+/// A window is needed to render an app, and nothing should appear on screen
 /// while it is being captured: this runs from a script, an agent, or an editor.
 ///
-/// It is laid out wide because a panel is written for a window: a panel that
+/// It is laid out wide because an app is written for a window: an app that
 /// decides what to query from the space it has would otherwise ask a different
 /// question than it asks on screen.
 fn hidden_window(cx: &mut App) -> WindowOptions {

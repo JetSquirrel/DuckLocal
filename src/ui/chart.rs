@@ -206,7 +206,7 @@ fn bucket_average(
 
 /// Parse a rendered cell back to a number, tolerating thousands separators.
 /// Avoids allocating unless the cell actually contains one.
-fn parse_number(cell: &str) -> Option<f64> {
+pub(crate) fn parse_number(cell: &str) -> Option<f64> {
     if cell.contains(',') {
         cell.replace(',', "").parse().ok()
     } else {
@@ -382,7 +382,7 @@ fn empty_chart_state(message: &str, hints: &[String], cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn format_value(value: f64) -> String {
+pub(crate) fn format_value(value: f64) -> String {
     if value.abs() >= 1_000_000.0 {
         format!("{:.1}M", value / 1_000_000.0)
     } else if value.abs() >= 10_000.0 {

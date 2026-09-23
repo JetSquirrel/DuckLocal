@@ -6,13 +6,13 @@ use std::ptr;
 use duckdb::{ffi, AccessMode, Config, Connection};
 use serde_json::json;
 
-pub(crate) const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal profile TARGET [--database PATH]  Per-column statistics, JSON\n  ducklocal dash export --html [OPTIONS] PANEL  Panel data as a standalone HTML file\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --format FORMAT    json (default) or md, a Markdown table to read and quote\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation. --format md\nrenders the same values as readable text: dates and timestamps in ISO form,\nDECIMALs with their digits, NULL as NULL. It is a rendering, not the contract;\nuse JSON where a caller parses the result.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named `query`, `profile` or `dash` must be written `./query`, `./profile`, `./dash`.\n\nProfile: TARGET is a data file (csv/tsv/parquet/json) or a workbook\n(xlsx/xls/xlsb/ods; its first sheet is imported and profiled), or, with\n--database, a table or view name. Per column it reports type, nulls, distinct,\nmin, max; for numbers the decimals actually used, the median and\nmax_over_median; for dates covered_days, span_days and missing_days.\nStatistics are exact and read the whole relation.\n\nDash export: PANEL is an analysis panel folder (main.js) or its entry file.\nThe panel is run once, in a hidden window, and the statements its query()\ncalls issue are captured with their results. Output is one JSON object naming\nthe written file; the file itself is self-contained HTML with no JavaScript.\nDash export options:\n  --html             Required; the only format\n  --out FILE         Destination; defaults to ./<panel folder>.html\n  --force            Replace an existing destination\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --timeout SECONDS  Capture time limit, default 15\n";
+pub(crate) const HELP: &str = "DuckLocal — local data workspace and headless SQL\n\nUsage:\n  ducklocal [PATH ...]                   Open the GUI (files, folders, globs)\n  ducklocal query --sql SQL [OPTIONS]    Execute one statement, return JSON\n  ducklocal query --sql-file FILE [OPTIONS]\n  ducklocal profile TARGET [--database PATH]  Per-column statistics, JSON\n  ducklocal export --html [OPTIONS] APP  App data as a standalone HTML file\n  ducklocal check FILE [--database PATH]   Validate a .dash dashboard spec\n  ducklocal lsp [--database PATH]          Language server for .dash files (stdio)\n  ducklocal --help\n  ducklocal --version\n\nQuery options:\n  --sql SQL          SQL text; exactly one of --sql and --sql-file is required\n  --sql-file FILE    UTF-8 SQL file; - reads stdin\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --limit N          Maximum returned rows, default 1000; positive integer\n  --format FORMAT    json (default) or md, a Markdown table to read and quote\n  --help            Show this help\n\nOutput: one JSON object with columns, rows, row_count, truncated, elapsed_ms.\nColumn types are Arrow debug names, not SQL type names. A 2,000,000-cell\nbudget also applies. Limits constrain output, not computation. --format md\nrenders the same values as readable text: dates and timestamps in ISO form,\nDECIMALs with their digits, NULL as NULL. It is a rendering, not the contract;\nuse JSON where a caller parses the result.\nErrors: JSON on stderr, empty stdout; exit 2 for arguments, 1 for SQL/I/O.\nRead-only is NOT a filesystem/network sandbox: COPY can write files.\nExtensions are not automatically installed. GUI state/history is not used.\nA GUI path named `query`, `profile`, `export`, `check`, `dash` or `lsp` must be written ./query, ./profile, ./export, ./check, ./dash, ./lsp.\n\nProfile: TARGET is a data file (csv/tsv/parquet/json) or a workbook\n(xlsx/xls/xlsb/ods; its first sheet is imported and profiled), or, with\n--database, a table or view name. Per column it reports type, nulls, distinct,\nmin, max; for numbers the decimals actually used, the median and\nmax_over_median; for dates covered_days, span_days and missing_days.\nStatistics are exact and read the whole relation.\n\nExport: APP is an analysis app folder (main.js) or its entry file.\nThe app is run once, in a hidden window, and the statements its query()\ncalls issue are captured with their results. Output is one JSON object naming\nthe written file; the file itself is self-contained HTML with no JavaScript.\nExport options:\n  --html             Required; the only format\n  --out FILE         Destination; defaults to ./<app folder>.html\n  --force            Replace an existing destination\n  --database PATH    File database; must exist, opened read-only by default\n  --read-write       Allow database writes/creation (requires --database)\n  --timeout SECONDS  Capture time limit, default 15\n\nCheck: FILE is a .dash dashboard spec — query blocks holding SQL heredocs,\nplot blocks with type/query/x/y/series attributes, references like\nquery.latency between them. The check parses the file, resolves every\nreference and attribute, and validates each query's SQL with the real DuckDB\nparser; nothing executes and no table needs to exist. With --database it\nalso describes every query on that database (read-only) and checks each\nplot's x/y/series against the columns the query actually returns.\nOutput: one JSON object with the file's queries and plots; a spec mistake is\nexit 2 with one line per diagnostic, a database or I/O failure is exit 1.\n\nLsp: a Language Server Protocol server for .dash files, over stdio, for\neditors to spawn. Full-document sync; on every open and change it publishes\nthe same parse and semantic diagnostics `check` reports (exit-2 mistakes,\nall severity Error), plus each query's SQL through the real DuckDB parser\nwhen --database is given. Completion offers block, attribute, type and\nquery-name candidates; hover documents blocks, attributes and references;\ngo-to-definition jumps a query.name reference to its query block. Exit 0 on\na clean shutdown, 1 if the client goes away without one, 2 for a bad command\nline or a failed protocol handshake.\n";
 
 #[derive(Debug)]
 pub(crate) struct CliError {
-    kind: &'static str,
-    message: String,
-    code: i32,
+    pub(crate) kind: &'static str,
+    pub(crate) message: String,
+    pub(crate) code: i32,
 }
 
 impl CliError {
@@ -285,7 +285,7 @@ impl Drop for ExtractedStatements {
 /// runs on a throwaway in-memory connection, so a multi-statement script
 /// (say `COPY ... TO ...; SELECT 2`) is rejected before anything has a chance
 /// to run it.
-fn validate_sql(sql: &str) -> Result<(), CliError> {
+pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
     let sql =
         CString::new(sql).map_err(|_| CliError::argument("SQL must not contain NUL bytes"))?;
     unsafe {
@@ -443,10 +443,18 @@ fn profile(args: &[OsString]) -> Result<String, CliError> {
 
 pub fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
-    if !matches!(first, "query" | "profile" | "dash" | "--help" | "--version")
-        && !first.starts_with("--")
+    if !matches!(
+        first,
+        "query" | "profile" | "export" | "check" | "dash" | "lsp" | "--help" | "--version"
+    ) && !first.starts_with("--")
     {
         return None;
+    }
+    // The language server's stdio is a frame stream, not a document: it
+    // handles its own output and exit code, so it never reaches the writeln
+    // path below.
+    if first == "lsp" && args.get(1).map(|arg| arg.as_os_str()) != Some(std::ffi::OsStr::new("--help")) {
+        return Some(crate::spec::lsp::main(&args[1..]));
     }
     let result = match (first, args.len()) {
         ("--help", 1) => Ok(HELP.to_string()),
@@ -455,7 +463,16 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("query", _) => query(&args[1..]),
         ("profile", 2) if args[1] == "--help" => Ok(HELP.to_string()),
         ("profile", _) => profile(&args[1..]),
-        ("dash", _) => crate::dash::dispatch(&args[1..]),
+        ("export", _) => crate::app_export::dispatch(&args[1..]),
+        ("check", 2) if args[1] == "--help" => Ok(HELP.to_string()),
+        ("check", _) => crate::spec::check(&args[1..]),
+        ("lsp", 2) if args[1] == "--help" => Ok(HELP.to_string()),
+        // `dash export` was the app's HTML export before the command was
+        // renamed; `dash` alone now means the .dash spec format. Saying so
+        // beats the fallback, which would open a GUI on a path named "dash".
+        ("dash", _) => Err(CliError::argument(
+            "`dash export` is now `export`: ducklocal export --html APP",
+        )),
         _ => Err(CliError::argument(
             "Unknown or extra arguments; use ducklocal --help",
         )),

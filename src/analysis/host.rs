@@ -1,10 +1,11 @@
 //! The `ducklocal` host module scripts import.
 //!
-//! The four functions are the whole surface between a panel and this app:
+//! The functions are the whole surface between an analysis app and DuckLocal:
 //! `catalog()` and `query()` run against the connection the main window is
-//! using — the panel is a second face on the same database, not a sandbox —
-//! `panelDir()` tells a panel where its own files are, and `sqlLiteral()`
-//! escapes a value into a SQL string literal so a panel does not build SQL by
+//! using — the app is a second face on the same database, not a sandbox —
+//! `appDir()` tells an app where its own files are (`panelDir()` is the same
+//! answer under its old name), and `sqlLiteral()`
+//! escapes a value into a SQL string literal so an app does not build SQL by
 //! concatenation. The encoding of a cell is the CLI's
 //! (`crate::query::run_cli_of`), so a `DECIMAL(38,10)`, a `HUGEINT`, a
 //! `TIMESTAMP` or a `BLOB` arrives in JavaScript as the same explicit
@@ -48,28 +49,31 @@ export interface QueryResult {
 }
 export function catalog(): Promise<CatalogEntry[]>;
 export function query(sql: string, limit?: number): Promise<QueryResult>;
+export function appDir(): string;
+/** @deprecated Use `appDir()` — the same answer under the old name. */
 export function panelDir(): string;
 export function sqlLiteral(value: string): string;
 export function sqlIdentifier(name: string): string;
 "#;
 
 thread_local! {
-    /// The directory of the panel being mounted right now.
+    /// The directory of the app being mounted right now.
     ///
-    /// `panelDir()` has to answer "where is the panel that is asking?", and
+    /// `appDir()` has to answer "where is the app that is asking?", and
     /// nothing in the call reaches back to a view: a host function is handed
     /// arguments, not a caller. What it does have is the moment a host controls
     /// — mounting — so the directory is visible for exactly that call and for
     /// every host call the script's `init` makes inside it. Outside it the
     /// question has no answer that is not a guess, and a guess would hand two
-    /// panels the same directory, so it is refused instead.
+    /// apps the same directory, so it is refused instead.
     static MOUNTING: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
-/// Makes `directory` the answer `panelDir()` gives, for the duration of `body`.
+/// Makes `directory` the answer `appDir()` (and its `panelDir()` alias) gives,
+/// for the duration of `body`.
 ///
-/// The answer is restored by a guard rather than after `body` returns, so a
-/// panel whose `init` panics still leaves the next panel a clean answer.
+/// The answer is restored by a guard rather than after `body` returns, so an
+/// app whose `init` panics still leaves the next app a clean answer.
 pub fn with_panel_directory<T>(directory: &Path, body: impl FnOnce() -> T) -> T {
     struct Restore(Option<PathBuf>);
 
@@ -84,7 +88,7 @@ pub fn with_panel_directory<T>(directory: &Path, body: impl FnOnce() -> T) -> T 
     body()
 }
 
-/// The directory of the panel being mounted, if one is.
+/// The directory of the app being mounted, if one is.
 pub fn panel_directory() -> Option<PathBuf> {
     MOUNTING.with(|slot| slot.borrow().clone())
 }
@@ -114,6 +118,21 @@ pub fn module() -> HostModule {
                     .map_err(|error| HostError::new(error.to_string()))
             })
         })
+        .function("appDir", |arguments| {
+            if !arguments.is_empty() {
+                return Err(HostError::new("appDir() takes no arguments"));
+            }
+            panel_directory()
+                .map(|directory| HostValue::from(directory.to_string_lossy().to_string()))
+                .ok_or_else(|| {
+                    HostError::new(
+                        "appDir() is answered while the app loads: call it from init() and keep the result",
+                    )
+                })
+        })
+        // The pre-rename name, kept working: existing apps import it. Its
+        // errors name `panelDir()`, because that is the function that was
+        // called.
         .function("panelDir", |arguments| {
             if !arguments.is_empty() {
                 return Err(HostError::new("panelDir() takes no arguments"));
@@ -122,7 +141,7 @@ pub fn module() -> HostModule {
                 .map(|directory| HostValue::from(directory.to_string_lossy().to_string()))
                 .ok_or_else(|| {
                     HostError::new(
-                        "panelDir() is answered while the panel loads: call it from init() and keep the result",
+                        "panelDir() is answered while the app loads: call it from init() and keep the result",
                     )
                 })
         })
@@ -148,25 +167,25 @@ pub fn module() -> HostModule {
 
 /// Every table and view of the current database, with its columns.
 ///
-/// On the panel connection, like [`query`]: a catalog read of a database with
+/// On the app connection, like [`query`]: a catalog read of a database with
 /// many attached files is not instant either, and it is not worth stopping the
 /// window for. Blocking; call through `smol::unblock`.
 pub fn catalog() -> anyhow::Result<HostValue> {
-    let databases = crate::db::with_panel_connection(crate::schema::load_catalog_of)?;
-    crate::dash::capture::catalog(captured_tables(&databases));
+    let databases = crate::db::with_app_connection(crate::schema::load_catalog_of)?;
+    crate::app_export::capture::catalog(captured_tables(&databases));
     Ok(catalog_value(&databases))
 }
 
-/// The catalog in the shape an export writes down: the panel's own view of the
+/// The catalog in the shape an export writes down: the app's own view of the
 /// database, without the bridge's types.
-fn captured_tables(databases: &[DatabaseInfo]) -> Vec<crate::dash::capture::Table> {
+fn captured_tables(databases: &[DatabaseInfo]) -> Vec<crate::app_export::capture::Table> {
     databases
         .iter()
         .flat_map(|database| {
             database
                 .tables
                 .iter()
-                .map(|table| crate::dash::capture::Table {
+                .map(|table| crate::app_export::capture::Table {
                     database: database.name.clone(),
                     schema: table.schema.clone(),
                     name: table.name.clone(),
@@ -186,23 +205,23 @@ fn captured_tables(databases: &[DatabaseInfo]) -> Vec<crate::dash::capture::Tabl
         .collect()
 }
 
-/// Run `sql` on the panel connection — the same database the window is on, a
+/// Run `sql` on the app connection — the same database the window is on, a
 /// different connection, so a slow statement here does not freeze the SQL
 /// editor. Blocking; call through `smol::unblock`.
 pub fn query(sql: &str, limit: usize) -> anyhow::Result<HostValue> {
     // A statement is recorded when it finishes; the guard is what tells a
     // watching settle loop that a slow query is running, not idle.
-    let _in_flight = crate::dash::capture::track_query();
-    match crate::db::with_panel_connection(|conn| run_cli_of(conn, sql, limit)) {
+    let _in_flight = crate::app_export::capture::track_query();
+    match crate::db::with_app_connection(|conn| run_cli_of(conn, sql, limit)) {
         Ok(result) => {
             let value = query_value(&result);
-            crate::dash::capture::query(sql, limit, Ok(&result));
+            crate::app_export::capture::query(sql, limit, Ok(&result));
             Ok(value)
         }
         Err(error) => {
-            // A statement that failed is worth recording: a report of a panel
+            // A statement that failed is worth recording: a report of an app
             // whose query was rejected should say so.
-            crate::dash::capture::query(sql, limit, Err(error.to_string()));
+            crate::app_export::capture::query(sql, limit, Err(error.to_string()));
             Err(error)
         }
     }
@@ -358,7 +377,7 @@ pub fn sql_literal(value: &str) -> Result<String, String> {
 /// `name` as a quoted SQL identifier, quotes and all.
 ///
 /// The counterpart to [`sql_literal`] for the other half of a generated
-/// statement. A panel builds SQL from names it did not choose — `catalog()`
+/// statement. An app builds SQL from names it did not choose — `catalog()`
 /// answers with whatever the database holds — and a name is not a string
 /// literal: `SELECT * FROM "my table"` needs the quotes, and a name holding a
 /// `"` closes them early unless it is doubled. Quoting also settles the case
@@ -373,7 +392,7 @@ pub fn sql_identifier(name: &str) -> Result<String, String> {
     Ok(format!("\"{}\"", name.replace('"', "\"\"")))
 }
 
-/// Why a directory cannot be loaded as a panel.
+/// Why a directory cannot be loaded as an app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
     /// The path is not a directory — a file was named, or the path is gone.
@@ -658,11 +677,12 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["catalog", "panelDir", "query", "sqlIdentifier", "sqlLiteral"]
+            vec!["appDir", "catalog", "panelDir", "query", "sqlIdentifier", "sqlLiteral"]
         );
         assert!(module.is_async("catalog"));
         assert!(module.is_async("query"));
-        // The other three answer immediately: none has anything to wait for.
+        // The other four answer immediately: none has anything to wait for.
+        assert!(!module.is_async("appDir"));
         assert!(!module.is_async("panelDir"));
         assert!(!module.is_async("sqlLiteral"));
         assert!(!module.is_async("sqlIdentifier"));
@@ -758,9 +778,9 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_reads_the_database_the_window_is_on() {
-        // The panel connection is a second connection, not a second database:
-        // what the window created is there, and what the panel creates is there
+    fn an_app_reads_the_database_the_window_is_on() {
+        // The app connection is a second connection, not a second database:
+        // what the window created is there, and what the app creates is there
         // for the window.
         let _guard = crate::db::connection_guard();
         crate::db::open_memory().unwrap();
@@ -770,20 +790,20 @@ mod tests {
         })
         .unwrap();
 
-        let rows: i64 = crate::db::with_panel_connection(|conn| {
+        let rows: i64 = crate::db::with_app_connection(|conn| {
             conn.query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
                 .map_err(Into::into)
         })
         .unwrap();
         assert_eq!(rows, 1);
 
-        crate::db::with_panel_connection(|conn| {
-            conn.execute_batch("CREATE TABLE from_a_panel AS SELECT 2 AS id")
+        crate::db::with_app_connection(|conn| {
+            conn.execute_batch("CREATE TABLE from_an_app AS SELECT 2 AS id")
                 .map_err(Into::into)
         })
         .unwrap();
         let seen: i64 = crate::db::with_connection(|conn| {
-            conn.query_row("SELECT id FROM from_a_panel", [], |row| row.get(0))
+            conn.query_row("SELECT id FROM from_an_app", [], |row| row.get(0))
                 .map_err(Into::into)
         })
         .unwrap();
@@ -792,8 +812,8 @@ mod tests {
     }
 
     #[test]
-    fn a_panel_follows_the_window_to_another_database() {
-        // Opening another database has to take the panel connection with it.
+    fn an_app_follows_the_window_to_another_database() {
+        // Opening another database has to take the app connection with it.
         // A clone left behind would keep answering from the database the window
         // closed, which is the one failure a second connection could introduce.
         let _guard = crate::db::connection_guard();
@@ -803,7 +823,7 @@ mod tests {
                 .map_err(Into::into)
         })
         .unwrap();
-        crate::db::with_panel_connection(|conn| {
+        crate::db::with_app_connection(|conn| {
             conn.query_row("SELECT count(*) FROM only_in_the_first", [], |row| {
                 row.get::<_, i64>(0)
             })
@@ -812,7 +832,7 @@ mod tests {
         .unwrap();
 
         crate::db::open_memory().unwrap();
-        assert!(crate::db::with_panel_connection(|conn| {
+        assert!(crate::db::with_app_connection(|conn| {
             conn.query_row("SELECT count(*) FROM only_in_the_first", [], |row| {
                 row.get::<_, i64>(0)
             })
@@ -823,13 +843,13 @@ mod tests {
     }
 
     #[test]
-    fn panel_dir_is_answered_while_a_panel_is_mounting_and_not_after() {
+    fn panel_dir_is_answered_while_an_app_is_mounting_and_not_after() {
         let directory = TempDir::new("panel_dir");
         assert_eq!(panel_directory(), None);
         let inside = with_panel_directory(directory.path(), panel_directory);
         assert_eq!(inside.as_deref(), Some(directory.path()));
 
-        // Answering outside a mount would hand every panel the same directory,
+        // Answering outside a mount would hand every app the same directory,
         // so the question is refused instead.
         assert_eq!(panel_directory(), None);
     }
@@ -864,7 +884,7 @@ mod tests {
     impl TempDir {
         fn new(label: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
-                "ducklocal_panel_{label}_{}_{:?}",
+                "ducklocal_app_{label}_{}_{:?}",
                 std::process::id(),
                 std::thread::current().id()
             ));
@@ -885,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_with_an_entry_file_is_a_panel() {
+    fn a_directory_with_an_entry_file_is_an_app() {
         let directory = TempDir::new("valid");
         std::fs::write(directory.path().join(ENTRY), "export default class A {}").unwrap();
         assert_eq!(validate_application(directory.path()), Ok(()));

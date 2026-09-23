@@ -1,14 +1,14 @@
-// A channel-analysis dashboard: what an agent leaves behind for a panel tab.
+// A channel-analysis dashboard: what an agent leaves behind for an app tab.
 //
-// Open it with the tab strip's `+` → "Open panel…", or on the command line
+// Open it with the tab strip's `+` → "Open app…", or on the command line
 // with `ducklocal examples/analysis_app`, or by dropping the folder on the
 // window. Closing the tab closes it; it comes back on the next launch.
 //
 // It reads its own `orders.csv` rather than whatever the user has open, so it
-// works on a machine that has never seen this data: `panelDir()` names the
-// folder the panel was loaded from, and `sqlLiteral()` quotes it.
+// works on a machine that has never seen this data: `appDir()` names the
+// folder the app was loaded from, and `sqlLiteral()` quotes it.
 //
-// `catalog()` and `query()` run on the app's own DuckDB connection, so a panel
+// `catalog()` and `query()` run on the app's own DuckDB connection, so an app
 // can do anything the SQL editor can — reads and writes alike.
 
 import { View, div } from "gpui-kit";
@@ -29,9 +29,9 @@ import {
   Progress,
   Toggle,
 } from "gpui-component";
-import { panelDir, query, sqlLiteral } from "ducklocal";
+import { appDir, query, sqlLiteral } from "ducklocal";
 
-/** Rows the panel asks for; the host caps this at its own maximum. */
+/** Rows the app asks for; the host caps this at its own maximum. */
 const ROW_LIMIT = 5000;
 
 /** The time ranges the segmented control offers, in days. */
@@ -102,9 +102,9 @@ function share(part, whole) {
 
 export default class ChannelDashboard extends View {
   init(_props, cx) {
-    // `panelDir()` is answered while the panel loads, which is why it is read
-    // here and kept: outside `init` the host has no panel to name.
-    this.directory = panelDir();
+    // `appDir()` is answered while the app loads, which is why it is read
+    // here and kept: outside `init` the host has no app to name.
+    this.directory = appDir();
     this.dataFile = this.directory + "/orders.csv";
 
     this.range = 14;
@@ -147,10 +147,10 @@ export default class ChannelDashboard extends View {
   }
 
   async fetchAll() {
-    // The window is the last N days of the data itself, so the panel works
+    // The window is the last N days of the data itself, so the app works
     // whatever the file holds — and it is computed in SQL, not by guessing.
     // `CAST(... AS VARCHAR)`: a DATE crosses as { encoding: "date", value:
-    // "20546" }, and the string form is what this panel wants. The comparison
+    // "20546" }, and the string form is what this app wants. The comparison
     // against the cutoff stays a DATE comparison, in SQL.
     const window = await this.rows(
       `SELECT CAST(max(date) AS VARCHAR) AS last_day FROM ${this.file()}`,
@@ -318,7 +318,7 @@ export default class ChannelDashboard extends View {
       .p_4()
       .child(
         new ErrorAlert("panel-error", this.error)
-          .title("Could not load the panel's data")
+          .title("Could not load the app's data")
           .visible(true),
       )
       .child(
@@ -343,7 +343,7 @@ export default class ChannelDashboard extends View {
             .child(new EmptyTitle().child("No data in this range"))
             .child(
               new EmptyDescription().child(
-                "Try another time range or channel; this panel reads the orders.csv in its own folder.",
+                "Try another time range or channel; this app reads the orders.csv in its own folder.",
               ),
             ),
         ),
@@ -639,13 +639,13 @@ export default class ChannelDashboard extends View {
             div()
               .text_xs()
               .text_color(colors.muted_foreground)
-              .child("Panel folder: " + this.directory),
+              .child("App folder: " + this.directory),
           )
           .child(
             div()
               .text_xs()
               .text_color(colors.muted_foreground)
-              .child("The panel itself is a gpui-shell View in main.js; below is the SQL this load used."),
+              .child("The app itself is a gpui-shell View in main.js; below is the SQL this load used."),
           )
           .child(div().text_xs().font_family("monospace").child(this.source)),
       );
@@ -676,7 +676,7 @@ function renderRegionCell(row, column, cx) {
 }
 
 /** `YYYY-MM-DD` shifted back by `days`, done on the string the data gave back
- *  so the panel does not need a date library. */
+ *  so the app does not need a date library. */
 function dayString(lastDay, days) {
   const parts = String(lastDay).split("-");
   const date = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
