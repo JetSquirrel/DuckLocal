@@ -165,7 +165,18 @@ impl Render for DuckLocalApp {
                                 resizable_panel()
                                     .size(px(280.))
                                     .size_range(px(220.)..px(420.))
-                                    .child(self.sidebar.clone()),
+                                    // Cached: the sidebar re-renders when it
+                                    // is notified (its state events, hover,
+                                    // clicks) or the window refreshes (theme,
+                                    // language, size) — not with every frame
+                                    // of the editor's blinking cursor, which
+                                    // would rebuild the history list and the
+                                    // tree twice a second while idle.
+                                    .child(
+                                        self.sidebar
+                                            .clone()
+                                            .cached(StyleRefinement::default().size_full()),
+                                    ),
                             )
                             .child(resizable_panel().child(self.workspace.clone())),
                     )

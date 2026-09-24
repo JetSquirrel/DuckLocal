@@ -33,7 +33,7 @@ use crate::analysis::view::AnalysisHost;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
 use crate::spec::view::Dashboard;
-use crate::state::{AppState, ConnectionChanged, QueryStats};
+use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
 use crate::ui::{
@@ -72,6 +72,10 @@ pub struct DashboardTab {
     pub title: SharedString,
     pub path: PathBuf,
     pub host: Entity<Dashboard>,
+    /// The catalog changed while this tab was in the background; it re-runs
+    /// when it is next shown rather than competing with the query that
+    /// changed it.
+    pub stale: bool,
 }
 
 pub enum WorkspaceTab {
@@ -280,13 +284,26 @@ impl Workspace {
                     // A dashboard queries the window's connection, so a switch
                     // of database re-runs it — the way an app follows the
                     // window to another database.
-                    for tab in &this.tabs {
+                    for tab in &mut this.tabs {
                         if let WorkspaceTab::Dashboard(tab) = tab {
+                            tab.stale = false;
                             tab.host.update(cx, |dashboard, cx| dashboard.reload(cx));
                         }
                     }
                     cx.notify()
-                })
+                }),
+                cx.subscribe(&state, |this, _, _: &CatalogChanged, cx| {
+                    // A table a dashboard reads may have changed: re-run the
+                    // one on screen, and the rest when they are next shown.
+                    // Re-running every open dashboard after each DDL would
+                    // compete with the user's next query.
+                    for tab in &mut this.tabs {
+                        if let WorkspaceTab::Dashboard(tab) = tab {
+                            tab.stale = true;
+                        }
+                    }
+                    this.refresh_stale_dashboard(cx);
+                }),
             ],
             runtime: None,
         };
@@ -419,6 +436,7 @@ impl Workspace {
             title: title.clone().into(),
             path: path.clone(),
             host,
+            stale: false,
         }));
         self.active = self.tabs.len() - 1;
         self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
@@ -563,8 +581,20 @@ impl Workspace {
             return;
         }
         self.active = index;
+        self.refresh_stale_dashboard(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
+    }
+
+    /// Re-run the active tab's dashboard if the catalog changed since it last
+    /// ran (see `DashboardTab::stale`).
+    fn refresh_stale_dashboard(&mut self, cx: &mut Context<Self>) {
+        let active = self.active;
+        if let Some(WorkspaceTab::Dashboard(tab)) = self.tabs.get_mut(active) {
+            if std::mem::take(&mut tab.stale) {
+                tab.host.update(cx, |dashboard, cx| dashboard.reload(cx));
+            }
+        }
     }
 
     fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -658,6 +688,7 @@ impl Workspace {
         };
         self.tabs.remove(ix);
         self.active = active_after_close(self.active, ix, self.tabs.len());
+        self.refresh_stale_dashboard(cx);
         self.remember_apps();
         self.remember_dashboards();
         cx.notify();

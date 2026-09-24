@@ -244,12 +244,18 @@ impl AnalysisHost {
     /// watched at the moment it stops being shown.
     fn watch(&mut self, directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let watched = directory.clone();
+        // The walk runs off the UI thread: it is a `read_dir` per folder and a
+        // `stat` per script, four times a second, and an app folder that
+        // sits next to a few thousand data files would otherwise cost the
+        // UI thread that many syscalls per tick.
+        let capture = move |root: PathBuf| smol::unblock(move || (AppFiles::capture(&root), root));
         let watcher = cx.spawn_in(window, async move |this, cx| {
-            let mut stamp = AppFiles::capture(&watched);
+            let (mut stamp, mut watched) = capture(watched).await;
             let mut debounce = Debounce::new();
             loop {
                 smol::Timer::after(POLL_INTERVAL).await;
-                let next = AppFiles::capture(&watched);
+                let next;
+                (next, watched) = capture(watched).await;
                 let changed = next != stamp;
                 let files = next.file_count();
                 stamp = next;

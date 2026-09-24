@@ -10,8 +10,14 @@ use crate::history::HistoryEntry;
 use crate::i18n::trf;
 use crate::schema::DatabaseInfo;
 
+/// The window moved to another database (or first connected).
 #[derive(Clone, Debug)]
 pub struct ConnectionChanged;
+
+/// The catalog was re-read: a query or sidebar action may have created,
+/// dropped or altered something. Also emitted alongside `ConnectionChanged`.
+#[derive(Clone, Debug)]
+pub struct CatalogChanged;
 
 #[derive(Clone, Debug)]
 pub struct HistoryChanged;
@@ -82,6 +88,7 @@ pub struct AppState {
 const SIDEBAR_COLLAPSED: &str = "sidebar_collapsed";
 
 impl EventEmitter<ConnectionChanged> for AppState {}
+impl EventEmitter<CatalogChanged> for AppState {}
 impl EventEmitter<HistoryChanged> for AppState {}
 impl EventEmitter<QueryStatsChanged> for AppState {}
 impl EventEmitter<AttachedFilesChanged> for AppState {}
@@ -178,6 +185,9 @@ impl AppState {
         // connection starts unconfigured.
         self.s3_config = None;
         self.is_ready = true;
+        // Catalog first: ConnectionChanged then re-runs every dashboard and
+        // clears the marks CatalogChanged left on the background ones.
+        cx.emit(CatalogChanged);
         cx.emit(ConnectionChanged);
         cx.notify();
     }
@@ -201,7 +211,7 @@ impl AppState {
     /// Replace just the catalog (e.g. after a query that may have run DDL).
     pub fn set_catalog(&mut self, catalog: Vec<DatabaseInfo>, cx: &mut Context<Self>) {
         self.catalog = catalog;
-        cx.emit(ConnectionChanged);
+        cx.emit(CatalogChanged);
         cx.notify();
     }
 

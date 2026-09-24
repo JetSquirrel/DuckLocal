@@ -32,7 +32,7 @@ use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
 use crate::recents::{RecentDocument, RecentKind};
 use crate::state::{
-    format_rows, AppState, AttachedFilesChanged, ConnectionChanged, HistoryChanged, RecentsChanged,
+    format_rows, AppState, AttachedFilesChanged, CatalogChanged, HistoryChanged, RecentsChanged,
     S3ConfigChanged,
 };
 use crate::ui::workspace::Workspace;
@@ -75,8 +75,8 @@ impl Sidebar {
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let subscriptions = vec![
-            cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
-                // `set_catalog` also emits ConnectionChanged, so only drop the
+            cx.subscribe(&state, |this, _, _: &CatalogChanged, cx| {
+                // A new connection also emits CatalogChanged; only drop the
                 // browse tree when S3 actually became unconfigured.
                 if this.state.read(cx).s3_config.is_none() {
                     this.s3_browse = None;
