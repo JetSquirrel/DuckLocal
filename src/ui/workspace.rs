@@ -1147,6 +1147,19 @@ impl Workspace {
                         this.run_active(window, cx);
                     })),
             )
+            // An accidental cross join can run for minutes; this ends it
+            // rather than leaving the only way out to quit the app.
+            .when(self.running, |this| {
+                this.child(
+                    Button::new("stop-query")
+                        .outline()
+                        .small()
+                        .icon(AssetIcon::CircleStop)
+                        .label(tr("workspace.stop"))
+                        .tooltip(tr("workspace.stop.tooltip"))
+                        .on_click(|_, _, _| crate::db::interrupt()),
+                )
+            })
             .child(
                 Button::new("format-sql")
                     .outline()

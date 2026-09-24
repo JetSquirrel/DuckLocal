@@ -298,6 +298,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.new_query", "新建查询", "New query"),
     ("workspace.run", "运行", "Run"),
     ("workspace.run.tooltip", "运行查询", "Run query"),
+    ("workspace.stop", "停止", "Stop"),
+    ("workspace.stop.tooltip", "中断正在运行的查询", "Interrupt the running query"),
     ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
