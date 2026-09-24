@@ -8,6 +8,8 @@
 # hang an identity, a version or an icon on. A .dmg with an app bundle and
 # an Applications symlink is the drag-to-install shape people know.
 #
+# Needs dmgbuild (pipx install dmgbuild) for the dmg window's layout.
+#
 # Signing and notarization are *required*, not optional. An ad-hoc signed
 # build is refused by Gatekeeper on every current macOS — and since 15
 # (Sequoia) there is no Control-click bypass left, so an unnotarized
@@ -81,6 +83,8 @@ App Store Connect -> Users and Access -> Integrations -> Keys, then set
 NOTARY_KEY (path to the .p8), NOTARY_KEY_ID and NOTARY_ISSUER."
 done
 [ -f "$NOTARY_KEY" ] || die "NOTARY_KEY points at no file: $NOTARY_KEY"
+command -v dmgbuild >/dev/null || die "dmgbuild is not installed; it lays out
+the dmg window. Install it with: pipx install dmgbuild"
 [ -f "$ENTITLEMENTS" ] || die "$ENTITLEMENTS is missing; run this from the \
 repository root."
 
@@ -94,7 +98,7 @@ echo "package-macos: signing as $MACOS_SIGN_IDENTITY"
 # argument, so the two paths cannot drift apart.
 # ---------------------------------------------------------------------------
 
-rm -rf "$APP" dmg-root "$DMG"
+rm -rf "$APP" "$DMG"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$EXECUTABLE"
 chmod +x "$APP/Contents/MacOS/$EXECUTABLE"
@@ -158,11 +162,9 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 # the verdict to staple, so the budget has to outlast the queue.
 # ---------------------------------------------------------------------------
 
-mkdir -p dmg-root
-cp -R "$APP" dmg-root/
-ln -s /Applications dmg-root/Applications
-hdiutil create -volname DuckLocal -srcfolder dmg-root -ov -format UDZO "$DMG" >/dev/null
-rm -rf dmg-root
+# The window someone sees on opening the dmg: the app and Applications
+# side by side, big, with an arrow between them. scripts/dmg-settings.py has the layout.
+dmgbuild -s scripts/dmg-settings.py -D app="$APP" DuckLocal "$DMG"
 
 # The disk image gets its own signature too: Gatekeeper's open assessment
 # (the spctl check below) rejects a notarized, stapled dmg that carries no
