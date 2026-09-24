@@ -14,10 +14,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    # The app is macOS-only: bundle.sh ships a .app and package-macos.sh
-    # turns it into a signed, notarized dmg. There is no Windows or Linux
-    # artifact to build yet.
+  build-macos:
+    # bundle.sh ships a .app and package-macos.sh turns it into a signed,
+    # notarized dmg: the one platform with an installer and a signature.
     runs-on: macos-14
 
     steps:
@@ -88,10 +87,87 @@ jobs:
           name: ducklocal-macos-arm64.dmg
           path: ducklocal-macos-arm64.dmg
 
+  build-linux:
+    # A tarball of the binary. Ubuntu 22.04 rather than latest, so the glibc
+    # it links against is old enough for most current distributions. The
+    # packages are the ones gpui-kit's own CI installs for its Linux build.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc g++ clang libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev \
+            libvulkan1
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          DIR=ducklocal-linux-x86_64
+          mkdir "$DIR"
+          cp target/release/ducklocal LICENSE README.md "$DIR"/
+          tar -czf "$DIR.tar.gz" "$DIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ducklocal-linux-x86_64.tar.gz
+          path: ducklocal-linux-x86_64.tar.gz
+
+  build-windows:
+    # A zip of the executable. It is not code-signed — there is no Windows
+    # certificate — so SmartScreen warns on first run.
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $dir = "ducklocal-windows-x86_64"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item target/release/ducklocal.exe, LICENSE, README.md $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ducklocal-windows-x86_64.zip
+          path: ducklocal-windows-x86_64.zip
+
   release:
-    needs: build
-    # No `if: always()`: a macOS job that failed to sign or notarize must
-    # fail the whole release, not ship a half-empty one.
+    needs: [build-macos, build-linux, build-windows]
+    # No `if: always()`: a platform that failed to build — or, for macOS, to
+    # sign or notarize — fails the whole release, not ship a partial one.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -100,39 +176,53 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
-          name: ducklocal-macos-arm64.dmg
           path: artifacts
 
-      - name: Locate the dmg
-        id: dmg
+      - name: Locate the packages
+        id: packages
         run: |
           # download-artifact@v8 decides at download time whether to unpack
-          # the artifact, and its "download all" mode adds a per-artifact
-          # subdirectory on top of that — so the dmg can end up either at
-          # artifacts/<name> or artifacts/<name>/<name>. Find it instead of
-          # assuming, and print what is there when it is missing.
+          # each artifact, and its "download all" mode adds a per-artifact
+          # subdirectory on top of that — so a package can end up at
+          # artifacts/<name> or artifacts/<name>/<name>. Find each one instead
+          # of assuming, and check it is the package rather than the artifact
+          # archive that wraps it: publishing that would ship a zip with the
+          # wrong contents under the right name.
           set -euo pipefail
-          FOUND=$(find artifacts -type f -name 'ducklocal-macos-arm64.dmg' | head -1)
-          if [ -z "$FOUND" ]; then
-            echo "::error::no dmg under artifacts/"
-            find artifacts -type f | head -20
-            exit 1
-          fi
-
-          # A zip header here means the download skipped decompression and
-          # named the archive after the artifact: publishing that would ship
-          # a 31 MB zip with a .dmg extension.
-          if [ "$(head -c 2 "$FOUND" | tr -d '\0')" = "PK" ]; then
-            echo "::error::$FOUND is a zip archive, not a dmg"
-            exit 1
-          fi
-
-          echo "found $FOUND"
-          file "$FOUND" || true
-          echo "path=$FOUND" >> "$GITHUB_OUTPUT"
+          files=""
+          for name in ducklocal-macos-arm64.dmg ducklocal-linux-x86_64.tar.gz ducklocal-windows-x86_64.zip; do
+            found=$(find artifacts -type f -name "$name" | head -1)
+            if [ -z "$found" ]; then
+              echo "::error::no $name under artifacts/"
+              find artifacts -type f | head -20
+              exit 1
+            fi
+            case "$name" in
+              *.zip)
+                # A real package holds the executable; a wrapping artifact
+                # archive holds the package.
+                unzip -l "$found" | grep -q 'ducklocal.exe' \
+                  || { echo "::error::$found does not contain ducklocal.exe"; exit 1; }
+                ;;
+              *)
+                if [ "$(head -c 2 "$found" | LC_ALL=C tr -d '\0')" = "PK" ]; then
+                  echo "::error::$found is a zip archive, not the package"
+                  exit 1
+                fi
+                ;;
+            esac
+            echo "found $found"
+            file "$found" || true
+            files="$files$found"$'\n'
+          done
+          {
+            echo "files<<EOF"
+            printf '%s' "$files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Determine version
         id: version
@@ -152,6 +242,6 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: ${{ steps.dmg.outputs.path }}
+          files: ${{ steps.packages.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
