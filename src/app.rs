@@ -15,7 +15,7 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
-use crate::ui::{apply_open_outcome, open_paths, ToggleSidebar};
+use crate::ui::{apply_open_outcome, open_paths, CloseTab, NewQuery, OpenData, ToggleSidebar};
 
 pub struct DuckLocalApp {
     state: Entity<AppState>,
@@ -153,6 +153,18 @@ impl Render for DuckLocalApp {
             .drag_over::<ExternalPaths>(|style, _, _, cx| style.border_color(cx.theme().primary))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
+            }))
+            .on_action(cx.listener(|this, _: &NewQuery, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.add_query_tab(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.close_active_tab(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &OpenData, window, cx| {
+                this.title_bar
+                    .update(cx, |title_bar, cx| title_bar.open_data(window, cx));
             }))
             .child(self.title_bar.clone())
             .child(div().flex_1().min_h_0().map(|this| {

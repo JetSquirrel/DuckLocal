@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{tree, TreeEvent, TreeState};
@@ -245,6 +246,12 @@ impl Sidebar {
             .s3_config
             .as_ref()
             .map(|config| config.endpoint.clone());
+        let menu = RowMenu {
+            meta: meta.clone(),
+            sidebar: sidebar.clone(),
+            workspace: workspace.clone(),
+            state: state.clone(),
+        };
         tree(&self.tree_state, move |ix, entry, selected, _window, cx| {
             let item = entry.item();
             let node_meta = meta.get(&item.id);
@@ -538,7 +545,111 @@ impl Sidebar {
                         ),
                 )
         })
+        // Every hover button on a row is a shortcut to an entry here: the
+        // buttons only show under the pointer, and a command that can only
+        // be found by hovering is not one a keyboard or a new user finds.
+        .context_menu(move |_, entry, popup, _, _| menu.build(&entry.item().id, popup))
         .into_any_element()
+    }
+}
+
+/// What a schema row's context menu needs: the row's metadata and handles
+/// to act on.
+struct RowMenu {
+    meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
+    sidebar: WeakEntity<Sidebar>,
+    workspace: Entity<Workspace>,
+    state: Entity<AppState>,
+}
+
+impl RowMenu {
+    fn build(&self, id: &SharedString, mut menu: PopupMenu) -> PopupMenu {
+        let Some(meta) = self.meta.get(id) else {
+            return menu;
+        };
+        let sql = match (&meta.column, &meta.table) {
+            (Some(column), _) => Some(select_column_sql(column)),
+            (None, Some(table)) => Some(select_star_sql(table)),
+            _ => None,
+        };
+        if let Some(sql) = sql {
+            let workspace = self.workspace.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.table.generate_select"))
+                    .icon(IconName::Play)
+                    .on_click(move |_, window, cx| {
+                        workspace
+                            .update(cx, |ws, cx| ws.fill_active_editor(sql.clone(), window, cx));
+                    }),
+            );
+        }
+        let name = meta
+            .column
+            .as_ref()
+            .map(|column| column.name.clone())
+            .or_else(|| meta.table.as_ref().map(|table| table.name.clone()))
+            .or_else(|| meta.file.as_ref().map(|file| file.view_name.clone()));
+        if let Some(name) = name {
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.menu.copy_name"))
+                    .icon(IconName::Copy)
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                    }),
+            );
+        }
+        if let Some(column) = meta.column.clone().filter(|column| !column.table.is_view) {
+            let sidebar = self.sidebar.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.column.edit_type"))
+                    .icon(gpui_kit::assets::IconName::CaseSensitive)
+                    .on_click(move |_, window, cx| {
+                        if let Some(sidebar) = sidebar.upgrade() {
+                            sidebar.update(cx, |this, cx| {
+                                this.open_alter_type_dialog(column.clone(), window, cx)
+                            });
+                        }
+                    }),
+            );
+        }
+        if meta.kind == SchemaNodeKind::S3Status {
+            let sidebar = self.sidebar.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.s3.refresh_buckets"))
+                    .icon(IconName::RotateCw)
+                    .on_click(move |_, _, cx| {
+                        if let Some(sidebar) = sidebar.upgrade() {
+                            sidebar.update(cx, |this, cx| this.refresh_s3(cx));
+                        }
+                    }),
+            );
+        }
+        if let Some(doc) = meta.doc.clone() {
+            let state = self.state.clone();
+            menu = menu.separator().item(
+                PopupMenuItem::new(tr("sidebar.menu.remove_recent"))
+                    .icon(IconName::Close)
+                    .on_click(move |_, _, cx| {
+                        crate::recents::remove(&doc.path);
+                        state.update(cx, |_, cx| cx.emit(RecentsChanged));
+                    }),
+            );
+        }
+        if let Some(file) = meta.file.clone() {
+            let sidebar = self.sidebar.clone();
+            menu = menu.separator().item(
+                PopupMenuItem::new(tr("sidebar.file.remove"))
+                    .icon(IconName::Close)
+                    .on_click(move |_, window, cx| {
+                        if let Some(sidebar) = sidebar.upgrade() {
+                            sidebar.update(cx, |this, cx| {
+                                this.confirm_remove_file(file.clone(), window, cx)
+                            });
+                        }
+                    }),
+            );
+        }
+        menu
     }
 }
 

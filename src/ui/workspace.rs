@@ -37,7 +37,8 @@ use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
 use crate::ui::{
-    pick_paths, PickerTarget, RunQuery, SaveSpec, RUN_QUERY_KEYSTROKE, WORKSPACE_KEY_CONTEXT,
+    pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, RUN_QUERY_KEYSTROKE,
+    WORKSPACE_KEY_CONTEXT,
 };
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
@@ -597,7 +598,7 @@ impl Workspace {
         }
     }
 
-    fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.new_tab_editor(window, cx);
         self.tabs.push(WorkspaceTab::Query(tab));
         self.active = self.tabs.len() - 1;
@@ -660,6 +661,14 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// ⌘W and the File menu: the tab in front, asking first if it holds
+    /// unsaved edits, the way the tab's own close button does.
+    pub fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.close_tab(tab.id(), window, cx);
+        }
     }
 
     fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -1089,6 +1098,7 @@ impl Workspace {
                                             .ghost()
                                             .xsmall()
                                             .icon(IconName::Close)
+                                            .tooltip(tr("menu.close_tab"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.close_tab(tab_id, window, cx);
                                             })),
@@ -1187,7 +1197,7 @@ impl Workspace {
                         .small()
                         .icon(AssetIcon::CircleStop)
                         .label(tr("workspace.stop"))
-                        .tooltip(tr("workspace.stop.tooltip"))
+                        .tooltip_with_action(tr("workspace.stop.tooltip"), &StopQuery, None)
                         .on_click(|_, _, _| crate::db::interrupt()),
                 )
             })
@@ -1345,7 +1355,11 @@ impl Workspace {
                     .small()
                     .icon(AssetIcon::Save)
                     .label(tr("dashboard.save"))
-                    .tooltip(tr("dashboard.save.tooltip"))
+                    .tooltip_with_action(
+                        tr("dashboard.save.tooltip"),
+                        &SaveSpec,
+                        Some(WORKSPACE_KEY_CONTEXT),
+                    )
                     .disabled(!dirty)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(tab_id) = this
