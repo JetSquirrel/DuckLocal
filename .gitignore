@@ -1,10 +1,6 @@
 # Rust build artifacts
 /target
 
-# Docs site dependencies and VitePress build cache
-docs/node_modules/
-docs/.vitepress/cache/
-
 # macOS packaging output (scripts/package-macos.sh writes these into the
 # repository root; CI uploads them as release assets)
 /DuckLocal.app/
