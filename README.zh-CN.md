@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" width="128" alt="DuckLocal logo">
 
-**[ducklocal.app](https://ducklocal.app/zh/)** · **[文档](https://docs.ducklocal.app/zh/)** · **[English](README.md)**
+**[ducklocal.app](https://ducklocal.app/zh/)** · **[文档](https://ducklocal.app/docs/zh/)** · **[English](README.md)**
 
 本地优先的数据查询与分析工作台，原生基于 DuckDB。直接指向你的文件即可——不用配置连接、不用建 schema，也不会上传任何数据。
 
@@ -59,7 +59,7 @@ ducklocal check dashboard.dash            # 校验；JSON 诊断，有错误时�
 ducklocal lsp                             # 面向编辑器的语言服务器（stdio）
 ```
 
-转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](https://docs.ducklocal.app/zh/cli)。
+转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](https://ducklocal.app/docs/zh/cli)。
 
 [官方 agent skill](skills/ducklocal/SKILL.md) 教 AI 先查 schema，再进行 SQL 分析及验证格式转换。复制到目标项目支持的 skill 目录即可，例如在本仓库执行：
 
@@ -72,7 +72,7 @@ cp -R skills/ducklocal /path/to/your-project/.claude/skills/
 
 ## 文档
 
-完整指南在 **[docs.ducklocal.app](https://docs.ducklocal.app/zh/)**：[快速上手](https://docs.ducklocal.app/zh/getting-started)、带样例数据的 [10 分钟上手教程](https://docs.ducklocal.app/zh/tutorial)、[常见问题排查](https://docs.ducklocal.app/zh/troubleshooting)、[数据源](https://docs.ducklocal.app/zh/data-sources)、[S3 与 httpfs](https://docs.ducklocal.app/zh/s3)、[SQL 编辑器](https://docs.ducklocal.app/zh/sql-editor)、[Schema 浏览与历史](https://docs.ducklocal.app/zh/schema-and-history)、[结果与图表](https://docs.ducklocal.app/zh/results-and-charts)、[设置与应用数据](https://docs.ducklocal.app/zh/settings-and-data)、[Dashboard](https://docs.ducklocal.app/zh/dashboards)、[开发](https://docs.ducklocal.app/zh/development)。
+完整指南在 **[ducklocal.app/docs](https://ducklocal.app/docs/zh/)**：[快速上手](https://ducklocal.app/docs/zh/getting-started)、带样例数据的 [10 分钟上手教程](https://ducklocal.app/docs/zh/tutorial)、[常见问题排查](https://ducklocal.app/docs/zh/troubleshooting)、[数据源](https://ducklocal.app/docs/zh/data-sources)、[S3 与 httpfs](https://ducklocal.app/docs/zh/s3)、[SQL 编辑器](https://ducklocal.app/docs/zh/sql-editor)、[Schema 浏览与历史](https://ducklocal.app/docs/zh/schema-and-history)、[结果与图表](https://ducklocal.app/docs/zh/results-and-charts)、[设置与应用数据](https://ducklocal.app/docs/zh/settings-and-data)、[Dashboard](https://ducklocal.app/docs/zh/dashboards)、[开发](https://ducklocal.app/docs/zh/development)。
 
 网站——[ducklocal.app](https://ducklocal.app/zh/) 产品首页与文档——放在独立的仓库 [JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site)。这里的改动如果改变了文档里的说法，也需要向那边提交 pull request。
 
@@ -90,7 +90,7 @@ cargo run -- ./data/logs/     # 或直接打开数据
 # 生成 target/release/DuckLocal.app
 ```
 
-发布的安装包要求 macOS 12 及以上、Apple 芯片。`bundle.sh` 不做签名；正式发布走 `scripts/package-macos.sh`，它会签名并对 dmg 做公证。详见[开发](https://docs.ducklocal.app/zh/development)。
+发布的安装包要求 macOS 12 及以上、Apple 芯片。`bundle.sh` 不做签名；正式发布走 `scripts/package-macos.sh`，它会签名并对 dmg 做公证。详见[开发](https://ducklocal.app/docs/zh/development)。
 
 ## 开源协议
 

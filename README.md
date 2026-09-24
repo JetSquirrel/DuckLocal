@@ -2,7 +2,7 @@
 
 <img src="assets/logo.png" width="128" alt="DuckLocal logo">
 
-**[ducklocal.app](https://ducklocal.app/)** · **[Docs](https://docs.ducklocal.app/)** · **[中文文档](README.zh-CN.md)**
+**[ducklocal.app](https://ducklocal.app/)** · **[Docs](https://ducklocal.app/docs/)** · **[中文文档](README.zh-CN.md)**
 
 A local-first workspace for querying and exploring your data, built natively on DuckDB. Point it at your files — there is no connection to configure, no schema to create, and nothing is uploaded anywhere.
 
@@ -59,7 +59,7 @@ ducklocal check dashboard.dash            # validate; JSON diagnostics, exit 2 o
 ducklocal lsp                             # language server over stdio, for editors
 ```
 
-See the [CLI guide](https://docs.ducklocal.app/cli) for conversion, stdin, output, app export, and safety details.
+See the [CLI guide](https://ducklocal.app/docs/cli) for conversion, stdin, output, app export, and safety details.
 
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and verified file conversion. Copy it into your target project's supported skills directory; for example, from this checkout:
 
@@ -72,7 +72,7 @@ Inspect existing destinations before overwriting. No global configuration is cha
 
 ## Documentation
 
-The guides are at **[docs.ducklocal.app](https://docs.ducklocal.app/)**: [getting started](https://docs.ducklocal.app/getting-started), a [10-minute tutorial](https://docs.ducklocal.app/tutorial) with sample data, [troubleshooting](https://docs.ducklocal.app/troubleshooting), [data sources](https://docs.ducklocal.app/data-sources), [S3 and httpfs](https://docs.ducklocal.app/s3), [SQL editor](https://docs.ducklocal.app/sql-editor), [schema browser and history](https://docs.ducklocal.app/schema-and-history), [results and charts](https://docs.ducklocal.app/results-and-charts), [settings and app data](https://docs.ducklocal.app/settings-and-data), [dashboards](https://docs.ducklocal.app/dashboards), and [development](https://docs.ducklocal.app/development).
+The guides are at **[ducklocal.app/docs](https://ducklocal.app/docs/)**: [getting started](https://ducklocal.app/docs/getting-started), a [10-minute tutorial](https://ducklocal.app/docs/tutorial) with sample data, [troubleshooting](https://ducklocal.app/docs/troubleshooting), [data sources](https://ducklocal.app/docs/data-sources), [S3 and httpfs](https://ducklocal.app/docs/s3), [SQL editor](https://ducklocal.app/docs/sql-editor), [schema browser and history](https://ducklocal.app/docs/schema-and-history), [results and charts](https://ducklocal.app/docs/results-and-charts), [settings and app data](https://ducklocal.app/docs/settings-and-data), [dashboards](https://ducklocal.app/docs/dashboards), and [development](https://ducklocal.app/docs/development).
 
 The website — the product page at [ducklocal.app](https://ducklocal.app/) and the docs — lives in its own repository, [JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site). A change here that changes what the docs say needs a pull request there too.
 
@@ -90,7 +90,7 @@ cargo run -- ./data/logs/     # or open something straight away
 # Produces target/release/DuckLocal.app
 ```
 
-The released disk image runs on macOS 12 or later, Apple silicon only. `bundle.sh` does not sign what it builds; `scripts/package-macos.sh` is the shipping path and signs and notarizes the dmg. See [development](https://docs.ducklocal.app/development).
+The released disk image runs on macOS 12 or later, Apple silicon only. `bundle.sh` does not sign what it builds; `scripts/package-macos.sh` is the shipping path and signs and notarizes the dmg. See [development](https://ducklocal.app/docs/development).
 
 ## License
 

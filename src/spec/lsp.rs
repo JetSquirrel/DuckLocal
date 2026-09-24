@@ -457,7 +457,7 @@ fn validate(source: &str) -> Option<Spec> {
 }
 
 /// One line of documentation per attribute name — the language rules of
-/// <https://docs.ducklocal.app/dashboards>, not localized: like completion details, these read as
+/// <https://ducklocal.app/docs/dashboards>, not localized: like completion details, these read as
 /// vocabulary, not sentences.
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {

@@ -1,6 +1,6 @@
 name: Redirect the old docs address
 
-# The docs moved to docs.ducklocal.app (source: JetSquirrel/ducklocal-site).
+# The docs moved to ducklocal.app/docs/ (source: JetSquirrel/ducklocal-site).
 # This repository's GitHub Pages site, jetsquirrel.github.io/DuckLocal/, now
 # only redirects each old page to its new address.
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # The old documentation address, jetsquirrel.github.io/DuckLocal/, as redirects.
 #
-# The docs moved to docs.ducklocal.app and the product page to ducklocal.app;
+# The docs moved to ducklocal.app/docs/ and the product page to ducklocal.app;
 # links to the old site live on in READMEs, issues and search results. GitHub
 # Pages cannot answer with a real redirect, so every page it used to serve is
 # a small HTML file that points at the new address — a canonical link and a
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 out="${1:?usage: $0 OUT_DIR}"
-docs="https://docs.ducklocal.app/"
+docs="https://ducklocal.app/docs/"
 home="https://ducklocal.app/"
 
 # Every page the old site published, under both its English and Chinese

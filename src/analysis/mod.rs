@@ -17,7 +17,7 @@
 //! src/analysis/watch.rs    the host-side reload watcher
 //! ```
 //!
-//! See <https://docs.ducklocal.app/analysis-app> for the script-facing
+//! See <https://ducklocal.app/docs/analysis-app> for the script-facing
 //! description.
 
 pub mod apps;
