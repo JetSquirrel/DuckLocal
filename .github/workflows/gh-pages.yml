@@ -1,10 +1,14 @@
-name: Deploy docs
+name: Redirect the old docs address
+
+# The docs moved to ducklocal.app/docs/ (source: JetSquirrel/ducklocal-site).
+# This repository's GitHub Pages site, jetsquirrel.github.io/DuckLocal/, now
+# only redirects each old page to its new address.
 
 on:
   push:
     branches: [main]
     paths:
-      - 'docs/**'
+      - 'scripts/pages-redirects.sh'
       - '.github/workflows/gh-pages.yml'
   workflow_dispatch:
 
@@ -28,18 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
-
-      - name: Install dependencies
-        run: npm --prefix docs ci
-
-      - name: Build the docs site
-        run: npm --prefix docs run build
+      - name: Write the redirect pages
+        run: scripts/pages-redirects.sh target/pages-redirects
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -47,7 +41,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'target/docs-site'
+          path: 'target/pages-redirects'
 
       - name: Deploy to GitHub Pages
         id: deployment

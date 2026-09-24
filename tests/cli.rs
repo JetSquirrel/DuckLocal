@@ -927,6 +927,36 @@ plot "b" { type = "line" query = query.revenue x = channel y = channel }
     std::fs::write(s.0.join("absent.dash"), "query \"q\" { sql = \"SELECT * FROM absent\" }").unwrap();
     s.error(&["check", "absent.dash", "--database", "data.duckdb"], 1, "sql");
 
+    // A query that plans but fails once rows are read — here a cast that the
+    // data cannot satisfy — fails the check the way it would fail the
+    // dashboard. DESCRIBE alone passes both; every failing query is named.
+    std::fs::write(
+        s.0.join("runtime.dash"),
+        r#"
+query "ok" {
+  sql = "SELECT channel, sum(amount) AS total FROM usage GROUP BY channel"
+}
+query "cast" {
+  sql = "SELECT channel, CAST(channel AS INTEGER) AS n FROM usage"
+}
+query "cast_again" {
+  sql = "SELECT channel, CAST(channel AS INTEGER) + 1 AS n FROM usage"
+}
+plot "ok" { type = "bar" query = query.ok x = channel y = total }
+plot "cast" { type = "bar" query = query.cast x = channel y = n }
+plot "cast_again" { type = "bar" query = query.cast_again x = channel y = n }
+"#,
+    )
+    .unwrap();
+    let error = s.error(&["check", "runtime.dash", "--database", "data.duckdb"], 1, "sql");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("runtime.dash:5: query \"cast\""), "{message}");
+    assert!(message.contains("runtime.dash:8: query \"cast_again\""), "{message}");
+    assert!(message.contains("Conversion Error"), "{message}");
+    assert!(!message.contains("query \"ok\""), "{message}");
+    // Without a database nothing runs, so the same file checks clean.
+    s.object(&["check", "runtime.dash"]);
+
     // Help is help, and it is not a spec.
     let help = s.text(&["check", "--help"]);
     assert!(help.contains(".dash"), "{help}");

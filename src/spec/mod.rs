@@ -20,8 +20,9 @@
 //! `ducklocal check FILE` validates a spec without touching a database: parse,
 //! references, required attributes, and each query's SQL through the real
 //! DuckDB parser (parse-only, nothing executes). With `--database PATH` it
-//! also describes every query on that database and checks each plot's
-//! `x`/`y`/`series` against the columns the query actually returns. The view
+//! also runs every query on that database, read-only — so an error that only
+//! shows once rows are read fails the check, not the dashboard — and checks
+//! each plot's `x`/`y`/`series` against the columns the query returns. The view
 //! half runs the same parse and validation before drawing anything, so a file
 //! that fails `check` opens as its diagnostics, not as a broken chart.
 
@@ -98,19 +99,40 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         })?;
     }
 
-    // Column checking needs the queries described, not run: DESCRIBE plans the
-    // statement and reports its result columns without reading the data.
+    // Against a database every query is described — its result columns, for
+    // the column check — and then run, the way opening the dashboard runs it.
+    // DESCRIBE only plans: a cast the build cannot perform or a value deep in
+    // the data that will not convert surfaces only once rows are read, and a
+    // check that passes a dashboard the GUI then cannot draw is no check. The
+    // SQL has been shown read-only above and the connection is read-only, so
+    // running it changes nothing; it goes through the view's own `run_of`, so
+    // the two stop at the same row budget and fail on the same statements.
+    // Every failing query is reported, not only the first.
     let mut query_columns: Vec<Option<Vec<(String, String)>>> = vec![None; spec.queries.len()];
     if let Some(database) = &database {
         let connection = crate::cli::open(Some(database.clone()), false)?;
+        let mut failures = Vec::new();
         for (index, query) in spec.queries.iter().enumerate() {
-            query_columns[index] = Some(
-                describe(&connection, &query.sql)
-                    .map_err(|message| CliError::failure("sql", format!(
-                        "{}:{}: query {:?}: {message}",
-                        path_display, query.line, query.name
-                    )))?,
-            );
+            let located = |message: String| {
+                format!("{}:{}: query {:?}: {message}", path_display, query.line, query.name)
+            };
+            match describe(&connection, &query.sql) {
+                Ok(columns) => query_columns[index] = Some(columns),
+                Err(message) => {
+                    failures.push(located(message));
+                    continue;
+                }
+            }
+            match crate::query::run_of(&connection, &query.sql) {
+                Ok(crate::query::QueryOutcome::Rows(_)) => {}
+                Ok(crate::query::QueryOutcome::Affected { .. }) => {
+                    failures.push(located("returns no rows to plot".to_string()));
+                }
+                Err(error) => failures.push(located(format!("{error:#}"))),
+            }
+        }
+        if !failures.is_empty() {
+            return Err(CliError::failure("sql", failures.join("\n")));
         }
         let lookup = |name: &str| -> Result<Vec<(String, String)>, String> {
             let index = spec
