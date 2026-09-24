@@ -28,3 +28,36 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+  build:
+    # The release ships Linux and Windows builds too; nothing else compiles
+    # them, so a change that breaks either shows up here, on the pull request,
+    # rather than on a release tag. Build only: the tests run on macOS above.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # The packages gpui-kit's own CI installs for its Linux build.
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc g++ clang libfontconfig-dev libwayland-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev \
+            libvulkan1
+
+      - name: Build
+        run: cargo build --locked
