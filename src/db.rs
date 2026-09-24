@@ -39,6 +39,22 @@ static CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
 /// a database the window has let go of, and for a file would hold it open.
 static APP_CONNECTION: LazyLock<Mutex<Option<Connection>>> = LazyLock::new(|| Mutex::new(None));
 
+/// The window connection's interrupt handle, kept apart from [`CONNECTION`]:
+/// a running query holds that lock for as long as it runs, so a Stop button
+/// that had to take it would wait for the very query it means to stop.
+static INTERRUPT: LazyLock<Mutex<Option<Arc<duckdb::InterruptHandle>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Interrupt whatever the window's connection is running. The query fails
+/// with DuckDB's "Interrupted" error; with nothing running, nothing happens.
+pub fn interrupt() {
+    if let Ok(handle) = INTERRUPT.lock() {
+        if let Some(handle) = handle.as_ref() {
+            handle.interrupt();
+        }
+    }
+}
+
 /// How the current database was opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DatabaseTarget {
@@ -133,8 +149,12 @@ pub fn install(connection: Connection) -> Result<()> {
 fn replace(connection: Option<Connection>) -> Result<()> {
     let mut app = app_lock()?;
     *app = None;
+    let handle = connection.as_ref().map(Connection::interrupt_handle);
     let mut guard = lock()?;
     *guard = connection;
+    if let Ok(mut interrupt) = INTERRUPT.lock() {
+        *interrupt = handle;
+    }
     Ok(())
 }
 
@@ -422,6 +442,27 @@ fn relation_names_of(conn: &Connection) -> Result<HashSet<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupt_stops_a_running_query_without_its_lock() {
+        let _guard = connection_guard();
+        open_memory().unwrap();
+        let running = std::thread::spawn(|| {
+            // A cross join that would run for a very long time.
+            crate::query::run("SELECT count(*) FROM range(1000000000) a, range(1000000000) b")
+        });
+        // The query holds the connection lock the whole time; interrupting
+        // must not need it.
+        let started = std::time::Instant::now();
+        while !running.is_finished() && started.elapsed().as_secs() < 20 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            interrupt();
+        }
+        let outcome = running.join().unwrap();
+        let error = outcome.expect_err("the query should have been interrupted");
+        assert!(error.to_string().contains("nterrupt"), "{error}");
+        close().unwrap();
+    }
 
     #[test]
     fn memory_connection_roundtrip() {

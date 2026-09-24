@@ -10,8 +10,14 @@ use crate::history::HistoryEntry;
 use crate::i18n::trf;
 use crate::schema::DatabaseInfo;
 
+/// The window moved to another database (or first connected).
 #[derive(Clone, Debug)]
 pub struct ConnectionChanged;
+
+/// The catalog was re-read: a query or sidebar action may have created,
+/// dropped or altered something. Also emitted alongside `ConnectionChanged`.
+#[derive(Clone, Debug)]
+pub struct CatalogChanged;
 
 #[derive(Clone, Debug)]
 pub struct HistoryChanged;
@@ -82,6 +88,7 @@ pub struct AppState {
 const SIDEBAR_COLLAPSED: &str = "sidebar_collapsed";
 
 impl EventEmitter<ConnectionChanged> for AppState {}
+impl EventEmitter<CatalogChanged> for AppState {}
 impl EventEmitter<HistoryChanged> for AppState {}
 impl EventEmitter<QueryStatsChanged> for AppState {}
 impl EventEmitter<AttachedFilesChanged> for AppState {}
@@ -178,6 +185,9 @@ impl AppState {
         // connection starts unconfigured.
         self.s3_config = None;
         self.is_ready = true;
+        // Catalog first: ConnectionChanged then re-runs every dashboard and
+        // clears the marks CatalogChanged left on the background ones.
+        cx.emit(CatalogChanged);
         cx.emit(ConnectionChanged);
         cx.notify();
     }
@@ -201,7 +211,7 @@ impl AppState {
     /// Replace just the catalog (e.g. after a query that may have run DDL).
     pub fn set_catalog(&mut self, catalog: Vec<DatabaseInfo>, cx: &mut Context<Self>) {
         self.catalog = catalog;
-        cx.emit(ConnectionChanged);
+        cx.emit(CatalogChanged);
         cx.notify();
     }
 
@@ -456,20 +466,39 @@ fn attach_outcome(sources: &crate::sources::Sources) -> AttachOutcome {
 
 /// Blocking helper: registered files with row counts resolved against the
 /// current connection (`None` when the count query fails).
+///
+/// This runs on every startup and after every attach, and a count over a
+/// CSV or JSON view reads the whole file. So a count is kept, keyed by the
+/// file's size and modification time, and only an unchanged file reuses it:
+/// attaching a small file next to three 2 GB CSVs no longer re-scans them.
 pub fn load_attached_files() -> Vec<AttachedFileView> {
     crate::history::attached_files()
         .unwrap_or_default()
         .into_iter()
         .map(|file| {
             let row_count = registered_path(&file.path)
-                .and_then(|_| {
-                    crate::db::with_connection(|conn| {
+                .and_then(|path| {
+                    let stamp = file_stamp(&path);
+                    if let Some(count) = stamp
+                        .as_deref()
+                        .and_then(|s| cached_count(&file.view_name, &path, s))
+                    {
+                        return Ok(count);
+                    }
+                    let count = crate::db::with_connection(|conn| {
                         let quoted = file.view_name.replace('"', "\"\"");
                         conn.query_row(&format!("SELECT count(*) FROM \"{quoted}\""), [], |r| {
                             r.get::<_, i64>(0)
                         })
                         .map_err(Into::into)
-                    })
+                    })?;
+                    if let Some(stamp) = stamp {
+                        let _ = crate::history::set_setting(
+                            &count_key(&file.view_name, &path),
+                            &format!("{stamp}|{count}"),
+                        );
+                    }
+                    Ok(count)
                 })
                 .ok();
             AttachedFileView {
@@ -480,6 +509,30 @@ pub fn load_attached_files() -> Vec<AttachedFileView> {
             }
         })
         .collect()
+}
+
+/// Per view, not per path: the sheets of one workbook share a path.
+fn count_key(view: &str, path: &str) -> String {
+    format!("row_count:{view}:{path}")
+}
+
+/// Size and modification time, or `None` for a path that is not one file
+/// (a glob, a folder): those are counted every time.
+fn file_stamp(path: &str) -> Option<String> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!("{}:{modified}", meta.len()))
+}
+
+fn cached_count(view: &str, path: &str, stamp: &str) -> Option<i64> {
+    let stored = crate::history::get_setting(&count_key(view, path)).ok()??;
+    let (stored_stamp, count) = stored.rsplit_once('|')?;
+    (stored_stamp == stamp).then(|| count.parse().ok())?
 }
 
 /// Format a duration for compact display: `184 ms` / `1.36 s`.
@@ -570,6 +623,36 @@ mod tests {
             })
             .unwrap();
             assert_eq!(n, 8);
+            crate::db::close().unwrap();
+            std::fs::remove_file(&path).ok();
+        });
+    }
+
+    #[test]
+    fn row_counts_are_reused_until_the_file_changes() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let path =
+                std::env::temp_dir().join(format!("ducklocal_count_{}.csv", std::process::id()));
+            std::fs::write(&path, "n\n1\n2\n3\n").unwrap();
+            let path = path.to_string_lossy().to_string();
+            crate::db::open_memory().unwrap();
+            attach_data_files(std::slice::from_ref(&path));
+            let count = || load_attached_files()[0].row_count;
+            assert_eq!(count(), Some(3));
+
+            // Unchanged file: the stored count is used, not a new scan. A
+            // doctored entry with the same stamp proves which one answered.
+            let registered = &crate::history::attached_files().unwrap()[0];
+            let stamp = file_stamp(&registered.path).unwrap();
+            let key = count_key(&registered.view_name, &registered.path);
+            crate::history::set_setting(&key, &format!("{stamp}|42")).unwrap();
+            assert_eq!(count(), Some(42));
+
+            // A changed file is counted again.
+            std::fs::write(&path, "n\n1\n2\n3\n4\n").unwrap();
+            assert_eq!(count(), Some(4));
+
             crate::db::close().unwrap();
             std::fs::remove_file(&path).ok();
         });

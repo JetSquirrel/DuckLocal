@@ -18,7 +18,7 @@ use gpui_kit::{AssetSource, Result, SharedString};
 
 icon_assets!(
     ExtraIcons,
-    [Save, AppWindow, WandSparkles, ListTree, Pencil, Download, Code]
+    [Save, AppWindow, WandSparkles, ListTree, Pencil, Download, Code, CircleStop]
 );
 
 /// The default component bundle, plus [`ExtraIcons`].

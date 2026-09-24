@@ -71,6 +71,7 @@ impl TitleBarView {
             Language::En => Language::Zh,
         };
         crate::i18n::set_language(next);
+        crate::ui::set_menus(cx);
         cx.refresh_windows();
     }
 
@@ -234,6 +235,11 @@ impl TitleBarView {
     }
 
     fn open_data_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_data(window, cx);
+    }
+
+    /// The "Open data…" dialog: the title bar's button, ⌘O and the File menu.
+    pub fn open_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("~/data/*.parquet"));
         self.db_path_input = Some(input.clone());
         let state = self.state.clone();

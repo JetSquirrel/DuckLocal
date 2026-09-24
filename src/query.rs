@@ -44,7 +44,7 @@ pub struct CliResult {
 pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResult> {
     let started = Instant::now();
     let mut stmt = conn.prepare(sql)?;
-    let mut rows = stmt.query([])?;
+    let mut rows = query_streaming(&mut stmt)?;
     let executed = rows
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Statement handle unavailable"))?;
@@ -427,6 +427,22 @@ impl QueryResult {
     }
 }
 
+/// Execute `stmt` and return its rows, fetched from DuckDB a chunk at a time.
+///
+/// `Statement::query` executes through `duckdb_execute_prepared`, which
+/// builds the *whole* result before the first row comes back: a `SELECT *`
+/// over a 10M-row file scans and holds all 10M rows even though the caller
+/// keeps the first 100k. Streaming execution produces rows as they are
+/// fetched, so stopping at the row budget stops the scan too.
+///
+/// duckdb-rs has no streaming `Rows` constructor, but `stream_arrow` runs
+/// the streaming execution and leaves the result on the statement, where
+/// `raw_query` reads it row by row (the Arrow iterator itself is unused).
+fn query_streaming<'stmt>(stmt: &'stmt mut duckdb::Statement<'_>) -> Result<duckdb::Rows<'stmt>> {
+    drop(stmt.stream_arrow([])?);
+    Ok(stmt.raw_query())
+}
+
 pub fn run(sql: &str) -> Result<QueryOutcome> {
     crate::db::with_connection(|conn| run_of(conn, sql))
 }
@@ -443,9 +459,9 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
         });
     }
 
-    // Column metadata is only available after execution, so always go
-    // through `query` (which executes the statement) and inspect afterwards.
-    let mut rows = stmt.query([])?;
+    // Column metadata is only available after execution, so execute first
+    // and inspect afterwards.
+    let mut rows = query_streaming(&mut stmt)?;
     let executed = rows
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Statement handle unavailable"))?;
@@ -935,6 +951,41 @@ mod tests {
         };
         assert_eq!(narrow.rows.len(), MAX_ROWS);
         assert!(narrow.truncated);
+    }
+
+    #[test]
+    fn row_budget_stops_the_scan_not_just_the_copy() {
+        // A billion rows: materialized before the cap applied, this held 8 GB
+        // and ran for minutes. Streamed, it stops once the budget is full.
+        let conn = mem();
+        let started = Instant::now();
+        let QueryOutcome::Rows(result) =
+            run_of(&conn, "SELECT i FROM range(1000000000) t(i)").unwrap()
+        else {
+            panic!("expected rows");
+        };
+        assert_eq!(result.rows.len(), MAX_ROWS);
+        assert!(result.truncated);
+        assert_eq!(result.rows[0], vec!["0".to_string()]);
+        assert!(started.elapsed().as_secs() < 30, "the scan ran to the end");
+
+        let cli = run_cli_of(&conn, "SELECT i FROM range(1000000000) t(i)", 10).unwrap();
+        assert_eq!(cli.rows.len(), 10);
+        assert!(cli.truncated);
+    }
+
+    #[test]
+    fn errors_while_fetching_still_surface() {
+        let conn = mem();
+        assert!(run_of(&conn, "SELECT error('boom') FROM range(3)").is_err());
+        assert!(run_cli_of(&conn, "SELECT error('boom') FROM range(3)", 10).is_err());
+        // A result shorter than one chunk is complete, not truncated.
+        let QueryOutcome::Rows(small) = run_of(&conn, "SELECT i FROM range(5) t(i)").unwrap()
+        else {
+            panic!("expected rows");
+        };
+        assert_eq!(small.rows.len(), 5);
+        assert!(!small.truncated);
     }
 
     #[test]

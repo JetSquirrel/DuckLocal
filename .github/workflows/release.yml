@@ -70,6 +70,10 @@ jobs:
           echo "NOTARY_KEY=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
           security find-identity -v -p codesigning "$KEYCHAIN"
 
+      # Lays out the dmg window; package-macos.sh calls it.
+      - name: Install dmgbuild
+        run: pipx install dmgbuild
+
       - name: Package, sign and notarize
         env:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}

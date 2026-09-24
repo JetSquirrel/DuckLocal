@@ -33,11 +33,12 @@ use crate::analysis::view::AnalysisHost;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
 use crate::spec::view::Dashboard;
-use crate::state::{AppState, ConnectionChanged, QueryStats};
+use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
 use crate::ui::{
-    pick_paths, PickerTarget, RunQuery, SaveSpec, RUN_QUERY_KEYSTROKE, WORKSPACE_KEY_CONTEXT,
+    pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, RUN_QUERY_KEYSTROKE,
+    WORKSPACE_KEY_CONTEXT,
 };
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
@@ -72,6 +73,10 @@ pub struct DashboardTab {
     pub title: SharedString,
     pub path: PathBuf,
     pub host: Entity<Dashboard>,
+    /// The catalog changed while this tab was in the background; it re-runs
+    /// when it is next shown rather than competing with the query that
+    /// changed it.
+    pub stale: bool,
 }
 
 pub enum WorkspaceTab {
@@ -280,13 +285,26 @@ impl Workspace {
                     // A dashboard queries the window's connection, so a switch
                     // of database re-runs it — the way an app follows the
                     // window to another database.
-                    for tab in &this.tabs {
+                    for tab in &mut this.tabs {
                         if let WorkspaceTab::Dashboard(tab) = tab {
+                            tab.stale = false;
                             tab.host.update(cx, |dashboard, cx| dashboard.reload(cx));
                         }
                     }
                     cx.notify()
-                })
+                }),
+                cx.subscribe(&state, |this, _, _: &CatalogChanged, cx| {
+                    // A table a dashboard reads may have changed: re-run the
+                    // one on screen, and the rest when they are next shown.
+                    // Re-running every open dashboard after each DDL would
+                    // compete with the user's next query.
+                    for tab in &mut this.tabs {
+                        if let WorkspaceTab::Dashboard(tab) = tab {
+                            tab.stale = true;
+                        }
+                    }
+                    this.refresh_stale_dashboard(cx);
+                }),
             ],
             runtime: None,
         };
@@ -419,6 +437,7 @@ impl Workspace {
             title: title.clone().into(),
             path: path.clone(),
             host,
+            stale: false,
         }));
         self.active = self.tabs.len() - 1;
         self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
@@ -563,11 +582,23 @@ impl Workspace {
             return;
         }
         self.active = index;
+        self.refresh_stale_dashboard(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
     }
 
-    fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Re-run the active tab's dashboard if the catalog changed since it last
+    /// ran (see `DashboardTab::stale`).
+    fn refresh_stale_dashboard(&mut self, cx: &mut Context<Self>) {
+        let active = self.active;
+        if let Some(WorkspaceTab::Dashboard(tab)) = self.tabs.get_mut(active) {
+            if std::mem::take(&mut tab.stale) {
+                tab.host.update(cx, |dashboard, cx| dashboard.reload(cx));
+            }
+        }
+    }
+
+    pub fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.new_tab_editor(window, cx);
         self.tabs.push(WorkspaceTab::Query(tab));
         self.active = self.tabs.len() - 1;
@@ -632,6 +663,14 @@ impl Workspace {
         .detach();
     }
 
+    /// ⌘W and the File menu: the tab in front, asking first if it holds
+    /// unsaved edits, the way the tab's own close button does.
+    pub fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.close_tab(tab.id(), window, cx);
+        }
+    }
+
     fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() <= 1 {
             return;
@@ -658,6 +697,7 @@ impl Workspace {
         };
         self.tabs.remove(ix);
         self.active = active_after_close(self.active, ix, self.tabs.len());
+        self.refresh_stale_dashboard(cx);
         self.remember_apps();
         self.remember_dashboards();
         cx.notify();
@@ -1058,6 +1098,7 @@ impl Workspace {
                                             .ghost()
                                             .xsmall()
                                             .icon(IconName::Close)
+                                            .tooltip(tr("menu.close_tab"))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.close_tab(tab_id, window, cx);
                                             })),
@@ -1147,6 +1188,19 @@ impl Workspace {
                         this.run_active(window, cx);
                     })),
             )
+            // An accidental cross join can run for minutes; this ends it
+            // rather than leaving the only way out to quit the app.
+            .when(self.running, |this| {
+                this.child(
+                    Button::new("stop-query")
+                        .outline()
+                        .small()
+                        .icon(AssetIcon::CircleStop)
+                        .label(tr("workspace.stop"))
+                        .tooltip_with_action(tr("workspace.stop.tooltip"), &StopQuery, None)
+                        .on_click(|_, _, _| crate::db::interrupt()),
+                )
+            })
             .child(
                 Button::new("format-sql")
                     .outline()
@@ -1301,7 +1355,11 @@ impl Workspace {
                     .small()
                     .icon(AssetIcon::Save)
                     .label(tr("dashboard.save"))
-                    .tooltip(tr("dashboard.save.tooltip"))
+                    .tooltip_with_action(
+                        tr("dashboard.save.tooltip"),
+                        &SaveSpec,
+                        Some(WORKSPACE_KEY_CONTEXT),
+                    )
                     .disabled(!dirty)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(tab_id) = this

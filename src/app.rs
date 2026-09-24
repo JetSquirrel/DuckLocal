@@ -15,7 +15,7 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
-use crate::ui::{apply_open_outcome, open_paths, ToggleSidebar};
+use crate::ui::{apply_open_outcome, open_paths, CloseTab, NewQuery, OpenData, ToggleSidebar};
 
 pub struct DuckLocalApp {
     state: Entity<AppState>,
@@ -154,6 +154,18 @@ impl Render for DuckLocalApp {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
             }))
+            .on_action(cx.listener(|this, _: &NewQuery, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.add_query_tab(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.close_active_tab(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &OpenData, window, cx| {
+                this.title_bar
+                    .update(cx, |title_bar, cx| title_bar.open_data(window, cx));
+            }))
             .child(self.title_bar.clone())
             .child(div().flex_1().min_h_0().map(|this| {
                 if self.state.read(cx).is_sidebar_collapsed() {
@@ -165,7 +177,18 @@ impl Render for DuckLocalApp {
                                 resizable_panel()
                                     .size(px(280.))
                                     .size_range(px(220.)..px(420.))
-                                    .child(self.sidebar.clone()),
+                                    // Cached: the sidebar re-renders when it
+                                    // is notified (its state events, hover,
+                                    // clicks) or the window refreshes (theme,
+                                    // language, size) — not with every frame
+                                    // of the editor's blinking cursor, which
+                                    // would rebuild the history list and the
+                                    // tree twice a second while idle.
+                                    .child(
+                                        self.sidebar
+                                            .clone()
+                                            .cached(StyleRefinement::default().size_full()),
+                                    ),
                             )
                             .child(resizable_panel().child(self.workspace.clone())),
                     )
