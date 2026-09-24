@@ -46,10 +46,13 @@ rust_xlsxwriter = "0.99"
 [patch.crates-io]
 rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
 
-# A self-contained binary, small over fast: the heavy lifting happens inside
-# DuckDB's own C++ build, so the Rust code optimizes for size.
+# Fast over small. The opt-level reaches DuckDB's C++ too: libduckdb-sys
+# builds it with the `cc` crate, which passes Cargo's level on to the
+# compiler, so "z" meant `-Oz` for every scan, filter and aggregate loop in
+# the engine, and for gpui's layout and text shaping. The binary is larger;
+# queries and frames are faster.
 [profile.release]
-opt-level = "z"          # Optimize for size
+opt-level = 3
 lto = true               # Link-time optimization
 strip = true             # Strip symbols
 panic = "abort"          # Smaller panic handling
