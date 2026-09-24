@@ -43,14 +43,24 @@ fn history_path() -> Result<PathBuf> {
     Ok(data_dir.join("history.duckdb"))
 }
 
-/// Open (and migrate) the history database. Called once at startup.
+/// Open (and migrate) the history database. Called at startup, before the
+/// first frame, and again from the window's open task; the second call finds
+/// the store already open and does nothing. Opening it twice would put two
+/// DuckDB instances on one file, each with its own thread pool, and the
+/// dropped one would checkpoint on the way out.
 pub fn init() -> Result<()> {
-    let path = history_path()?;
-    let conn = Connection::open(path)?;
-    prepare_schema(&conn)?;
     let mut guard = HISTORY_CONNECTION
         .lock()
         .map_err(|e| anyhow!("History lock poisoned: {e}"))?;
+    if guard.is_some() {
+        return Ok(());
+    }
+    let path = history_path()?;
+    // A few small tables: one thread and a small memory limit, not the
+    // defaults sized for analytical work on the main connection.
+    let config = duckdb::Config::default().threads(1)?.max_memory("64MB")?;
+    let conn = Connection::open_with_flags(path, config)?;
+    prepare_schema(&conn)?;
     *guard = Some(conn);
     Ok(())
 }
@@ -287,9 +297,9 @@ pub fn set_setting(key: &str, value: &str) -> Result<()> {
 }
 
 pub fn set_setting_of(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    // One statement, so one commit: this runs on every tab open and close.
     conn.execute(
-        "INSERT INTO settings(key, value) VALUES (?1, ?2)",
+        "INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)",
         duckdb::params![key, value],
     )?;
     Ok(())

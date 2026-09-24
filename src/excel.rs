@@ -81,24 +81,26 @@ fn import(
         ))?;
     }
 
-    let placeholders = (1..=names.len())
-        .map(|n| format!("?{n}"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    // The appender, not a prepared INSERT per row: a 300k-row sheet was
+    // 300k statement executions, each binding and running a plan. The
+    // appender takes the table by catalog and schema, not by search path, so
+    // name exactly where the CREATE above put it.
+    let (catalog, schema) = if temporary {
+        ("temp".to_string(), "main".to_string())
+    } else {
+        conn.query_row("SELECT current_database(), current_schema()", [], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+    };
     let tx = conn.unchecked_transaction()?;
     {
-        let mut stmt = tx.prepare(&format!(
-            "INSERT INTO {} VALUES ({placeholders})",
-            quote(table_name)
-        ))?;
+        let mut appender = tx.appender_to_catalog_and_db(table_name, &catalog, &schema)?;
         for row in range.rows().skip(1) {
-            let values = names
-                .iter()
-                .enumerate()
-                .map(|(ix, _)| cell_value(row.get(ix).unwrap_or(&Data::Empty), kinds[ix]))
-                .collect::<Vec<_>>();
-            stmt.execute(duckdb::params_from_iter(values))?;
+            let values = (0..names.len())
+                .map(|ix| cell_value(row.get(ix).unwrap_or(&Data::Empty), kinds[ix]));
+            appender.append_row(duckdb::appender_params_from_iter(values))?;
         }
+        appender.flush()?;
     }
     tx.commit()?;
     Ok(true)
