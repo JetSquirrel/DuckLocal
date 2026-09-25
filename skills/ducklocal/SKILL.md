@@ -5,11 +5,11 @@ description: Query and explore local CSV, TSV, JSON, Parquet, and Excel data wit
 
 # DuckLocal
 
-Use the real DuckLocal executable, not GUI automation or a replacement Python script. This skill requires a build with the `query` command; current supported binaries target macOS 12+ on Apple silicon.
+Use the real DuckLocal executable, not GUI automation or a replacement Python script. This skill requires a build with the `query` command; binaries ship for macOS 12+ on Apple silicon, Windows (x86_64) and Linux (x86_64).
 
 ## Workflow
 
-1. Check `ducklocal --help` and `ducklocal --version`. If not on PATH, check a user-provided binary or `/Applications/DuckLocal.app/Contents/MacOS/ducklocal`; a source checkout can use `./target/debug/ducklocal` after an authorized build. If absent or too old, report that clearly and ask the caller to provide/install a compatible binary. Never pretend a query ran.
+1. Check `ducklocal --help` and `ducklocal --version`. If not on PATH, check a user-provided binary or `/Applications/DuckLocal.app/Contents/MacOS/ducklocal`; a source checkout can use `./target/debug/ducklocal` after an authorized build. If DuckLocal is installed but the command is missing, the user can add it from the app: **Command line & AI… → Install command** (the robot button in the title bar, or the DuckLocal menu). If absent or too old, report that clearly and ask the caller to provide/install a compatible binary. Never pretend a query ran.
 2. Confirm input paths exist, then inspect schema with `ducklocal query --sql "DESCRIBE SELECT * FROM 'sales.csv'"`. Do not guess column names or types.
 3. Preview a bounded sample: `ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20`. When the answer involves presenting a column rather than only computing one — a chart, an axis, a formatted number, a time series — run `ducklocal profile 'sales.csv'` as well: `missing_days` says whether the series is continuous, `max_over_median` whether a linear scale works, and `decimals` how many digits the number really has. A sample shows none of these.
 4. Write one SQL statement using observed names. Compute complete aggregates in SQL, not by adding up sample rows. Read [the CLI reference](references/cli.md) for options, encodings, escaping, database access, and conversion examples.

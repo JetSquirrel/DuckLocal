@@ -2,20 +2,23 @@
 //! the shared `AppState` entity. Dialog, sheet and notification layers are
 //! mounted by the window's Root itself, not rendered here.
 
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
-use gpui_kit::component::{v_flex, ActiveTheme, WindowExt};
+use gpui_kit::component::{v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::analysis::apps;
-use crate::i18n::trf;
+use crate::i18n::{tr, trf};
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
-use crate::ui::{apply_open_outcome, open_paths, CloseTab, NewQuery, OpenData, ToggleSidebar};
+use crate::ui::{
+    apply_open_outcome, open_paths, CloseTab, NewQuery, OpenData, OpenSetup, ToggleSidebar,
+};
 
 pub struct DuckLocalApp {
     state: Entity<AppState>,
@@ -54,18 +57,27 @@ impl DuckLocalApp {
                 // history store open.
                 let remembered = apps::restore();
                 let remembered_dashboards = crate::spec::tabs::restore();
+                let offer_setup = crate::setup::offer_once();
                 Ok::<_, anyhow::Error>((
                     from_command_line,
                     dashboards,
                     remembered,
                     remembered_dashboards,
                     outcome,
+                    offer_setup,
                 ))
             })
             .await;
 
             this.update_in(cx, |this, window, cx| match result {
-                Ok((from_command_line, dashboards, remembered, remembered_dashboards, outcome)) => {
+                Ok((
+                    from_command_line,
+                    dashboards,
+                    remembered,
+                    remembered_dashboards,
+                    outcome,
+                    offer_setup,
+                )) => {
                     apply_open_outcome(open_state, outcome, window, cx);
                     this.workspace.update(cx, |ws, cx| {
                         let mut directories = from_command_line;
@@ -92,6 +104,25 @@ impl DuckLocalApp {
                         .chain(remembered_dashboards.problems)
                     {
                         window.push_notification(Notification::error(problem), cx);
+                    }
+                    // Installing the app does not put `ducklocal` on the PATH;
+                    // say once where that is done.
+                    if offer_setup {
+                        window.push_notification(
+                            Notification::info(tr("setup.offer"))
+                                .title(tr("setup.title"))
+                                .action(|_, _, cx| {
+                                    Button::new("offer-setup")
+                                        .primary()
+                                        .small()
+                                        .label(tr("setup.offer.action"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.dismiss(window, cx);
+                                            crate::ui::setup_dialog::open(window, cx);
+                                        }))
+                                }),
+                            cx,
+                        );
                     }
                 }
                 Err(e) => {
@@ -161,6 +192,9 @@ impl Render for DuckLocalApp {
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 this.workspace
                     .update(cx, |workspace, cx| workspace.close_active_tab(window, cx));
+            }))
+            .on_action(cx.listener(|_, _: &OpenSetup, window, cx| {
+                crate::ui::setup_dialog::open(window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenData, window, cx| {
                 this.title_bar

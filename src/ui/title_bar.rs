@@ -431,6 +431,16 @@ impl Render for TitleBarView {
                         .justify_end()
                         .gap_2()
                         .child(
+                            Button::new("setup")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Bot)
+                                .tooltip(tr("setup.title"))
+                                .on_click(|_, window, cx| {
+                                    crate::ui::setup_dialog::open(window, cx)
+                                }),
+                        )
+                        .child(
                             Button::new("toggle-language")
                                 .ghost()
                                 .xsmall()
