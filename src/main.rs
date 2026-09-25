@@ -14,6 +14,7 @@ mod query;
 mod recents;
 mod s3;
 mod schema;
+mod setup;
 mod sources;
 mod spec;
 mod state;

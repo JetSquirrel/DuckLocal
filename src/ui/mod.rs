@@ -4,6 +4,7 @@ pub mod chart;
 pub mod completion;
 pub mod results;
 pub mod scale;
+pub mod setup_dialog;
 pub mod sidebar;
 pub mod status_bar;
 pub mod title_bar;
@@ -30,6 +31,7 @@ gpui_kit::actions!(
         NewQuery,
         CloseTab,
         OpenData,
+        OpenSetup,
         Quit
     ]
 );
@@ -87,7 +89,11 @@ pub fn set_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu {
             name: "DuckLocal".into(),
-            items: vec![MenuItem::action(tr("menu.quit"), Quit)],
+            items: vec![
+                MenuItem::action(tr("setup.open"), OpenSetup),
+                MenuItem::Separator,
+                MenuItem::action(tr("menu.quit"), Quit),
+            ],
             disabled: false,
         },
         menu(
