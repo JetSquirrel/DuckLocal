@@ -2,6 +2,7 @@
 //!
 //! Blocking functions; call via `smol::unblock` from UI code.
 
+use std::ops::Range;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -517,6 +518,96 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
     }))
 }
 
+/// The UTF-8 byte range in `sql` that an error `message` points at, if it
+/// points at all.
+///
+/// Parser and binder errors render their position as a caret under the
+/// offending line:
+///
+/// ```text
+/// Catalog Error: Table with name t does not exist!
+///
+/// LINE 2: from t
+///              ^
+/// ```
+///
+/// The caret column counts *characters*, and the caret line is indented by
+/// the whole `LINE n: ` label, so the label width comes off before the column
+/// means anything. One caret marks where the token starts, so the range
+/// extends over the token; a run of carets already spans it. Errors without a
+/// position (runtime failures, a batch whose bind error carries none) return
+/// `None`, and a rendered line that does not match the SQL — a DuckDB that
+/// truncates long lines would produce one — yields `None` rather than a
+/// squiggle in the wrong place.
+pub fn error_byte_range(sql: &str, message: &str) -> Option<Range<usize>> {
+    let mut rendered = message.lines();
+    while let Some(header) = rendered.next() {
+        let Some(rest) = header.strip_prefix("LINE ") else {
+            continue;
+        };
+        let Some((digits, shown)) = rest.split_once(": ") else {
+            continue;
+        };
+        let Ok(number) = digits.parse::<usize>() else {
+            continue;
+        };
+        let caret = rendered.next().unwrap_or("");
+        let padding = caret.len() - caret.trim_start_matches(' ').len();
+        let label = "LINE ".len() + digits.len() + ": ".len();
+        let column = padding.checked_sub(label)?;
+        let carets = caret
+            .trim_start_matches(' ')
+            .chars()
+            .take_while(|&c| c == '^')
+            .count();
+
+        // The line the number refers to, in the SQL that was run.
+        let mut line_start = 0;
+        for _ in 1..number {
+            line_start = sql[line_start..].find('\n').map(|ix| line_start + ix + 1)?;
+        }
+        let line_end = sql[line_start..]
+            .find('\n')
+            .map(|ix| line_start + ix)
+            .unwrap_or(sql.len());
+        let line = &sql[line_start..line_end];
+        // Trust the position only while the rendered line is the SQL's own;
+        // otherwise the column maps to text the user never wrote.
+        if shown != line {
+            continue;
+        }
+
+        let byte_of_char = |index: usize| {
+            line.char_indices()
+                .nth(index)
+                .map(|(ix, _)| ix)
+                .unwrap_or(line.len())
+        };
+        let start = line_start + byte_of_char(column);
+        let end = if carets > 1 {
+            line_start + byte_of_char(column + carets)
+        } else {
+            // One caret marks where the token starts; underline the token.
+            let mut end = start;
+            for ch in sql[start..line_end].chars() {
+                if ch.is_whitespace() {
+                    break;
+                }
+                end += ch.len_utf8();
+            }
+            end
+        };
+        if start < end {
+            return Some(start..end);
+        }
+        // A caret at or past the line's end marks nothing on its own; fall
+        // back to the last character, which is where the caret was read.
+        let (ix, ch) = line.char_indices().next_back()?;
+        return Some(line_start + ix..line_start + ix + ch.len_utf8());
+    }
+    None
+}
+
 /// `EXPLAIN <sql>` rendered as plain text lines.
 pub fn explain_of(conn: &Connection, sql: &str) -> Result<(Vec<String>, u128)> {
     let started = Instant::now();
@@ -848,6 +939,79 @@ mod tests {
 
     fn mem() -> Connection {
         Connection::open_in_memory().unwrap()
+    }
+
+    /// The message shapes here are real DuckDB renderings; the assertions are
+    /// byte ranges into the SQL the editor holds.
+    #[test]
+    fn error_positions_map_to_sql_bytes() {
+        // A binder error names the column; one caret underlines the token.
+        assert_eq!(
+            error_byte_range(
+                "select frum t",
+                "Binder Error: Referenced column \"frum\" was not found\n\nLINE 1: select frum t\n               ^",
+            ),
+            Some(7..11)
+        );
+
+        // A later line, and a label wider than one digit.
+        assert_eq!(
+            error_byte_range(
+                "-- 1\n-- 2\n-- 3\n-- 4\n-- 5\n-- 6\n-- 7\n-- 8\n-- 9\nselect nope",
+                "Binder Error: Referenced column \"nope\" was not found\n\nLINE 10: select nope\n                ^",
+            ),
+            Some(52..56)
+        );
+
+        // The caret counts characters, not bytes: `é` is two bytes, so the
+        // byte range sits one past the character column.
+        assert_eq!(
+            error_byte_range(
+                "select 'aé' as x, nope",
+                "Binder Error: Referenced column \"nope\" was not found\n\nLINE 1: select 'aé' as x, nope\n                          ^",
+            ),
+            Some(19..23)
+        );
+
+        // A run of carets already spans the token, including its last byte.
+        assert_eq!(
+            error_byte_range(
+                "select 1\nfrom missing",
+                "Catalog Error: Table with name missing does not exist!\n\nLINE 2: from missing\n             ^^^^^^^",
+            ),
+            Some(14..21)
+        );
+
+        // A caret at the end of the line still marks the last character.
+        assert_eq!(
+            error_byte_range(
+                "select 'aé' +",
+                "Binder Error: No function matches ...\n\nLINE 1: select 'aé' +\n                    ^",
+            ),
+            Some(13..14)
+        );
+    }
+
+    #[test]
+    fn errors_without_a_position_mark_nothing() {
+        assert_eq!(
+            error_byte_range("select *", "Parser Error: syntax error at end of input"),
+            None
+        );
+        // A rendered line that is not the SQL's own — as a truncation of a
+        // long line would read — is refused rather than misplaced.
+        assert_eq!(
+            error_byte_range(
+                "select frum t",
+                "Parser Error: ...\n\nLINE 1: select …\n               ^",
+            ),
+            None
+        );
+        // The line number must exist in the SQL that was run.
+        assert_eq!(
+            error_byte_range("select 1", "Parser Error: ...\n\nLINE 9: select 1\n               ^"),
+            None
+        );
     }
 
     #[test]
@@ -1247,5 +1411,25 @@ mod tests {
             format_markdown(&cli_result(&[], vec![], false)),
             "_No columns were returned._\n"
         );
+    }
+
+    /// The crafted messages above pin the parsing; this pins the parsing
+    /// against the messages the bundled DuckDB actually renders.
+    #[test]
+    fn real_duckdb_errors_map_to_the_span_they_render() {
+        let conn = mem();
+        let sql = "select 1\nfrom missing";
+        let error = run_of(&conn, sql).unwrap_err().to_string();
+        assert_eq!(error_byte_range(sql, &error), Some(14..21), "{error}");
+
+        // Multibyte text before the caret: the column counts characters.
+        let sql = "select 'aé' as x, nope";
+        let error = run_of(&conn, sql).unwrap_err().to_string();
+        assert_eq!(error_byte_range(sql, &error), Some(19..23), "{error}");
+
+        // A runtime error renders no position, so nothing is marked.
+        let sql = "select error('boom')";
+        let error = run_of(&conn, sql).unwrap_err().to_string();
+        assert_eq!(error_byte_range(sql, &error), None, "{error}");
     }
 }

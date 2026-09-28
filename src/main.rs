@@ -20,7 +20,7 @@ mod spec;
 mod state;
 mod ui;
 
-use gpui_kit::component::{Root, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 
 use crate::app::DuckLocalApp;
@@ -68,18 +68,17 @@ fn main() {
             ui::scale::apply(cx);
 
             let window_bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-            cx.spawn(async move |cx| {
-                let options = WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                    window_min_size: Some(size(px(960.), px(600.))),
-                    ..TitleBar::window_options()
-                };
-                cx.open_window(options, |window, cx| {
-                    let view = cx.new(|cx| DuckLocalApp::new(paths, window, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
-                })
-                .expect("Failed to open window");
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+                window_min_size: Some(size(px(960.), px(600.))),
+                ..TitleBar::window_options()
+            };
+            // The helper wraps the view in the Root that hosts overlays and
+            // window chrome; the run closure already holds `&mut App`, so no
+            // spawn is needed to reach one.
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| DuckLocalApp::new(paths, window, cx))
             })
-            .detach();
+            .expect("Failed to open window");
         });
 }

@@ -12,14 +12,14 @@ categories = ["database", "gui"]
 
 [dependencies]
 # One dependency graph: the UI toolkit, the scriptable-shell runtime and the
-# component catalog all come from the same pinned revision. Mixing the
+# component catalog all come from the same release tag. Mixing the
 # crates.io release with the Git one would put two incompatible copies of
 # `gpui-base` in the build.
 # `tree-sitter-sql`: the SQL editor and the SQL in `.dash` heredocs are the only
 # code DuckLocal highlights, so it links that one grammar rather than the set.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da", features = ["tree-sitter-sql"] }
-gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
-gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.0", features = ["tree-sitter-sql"] }
+gpui-shell = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.0" }
+gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.0" }
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
 calamine = { version = "0.36", features = ["dates"] }
 smol = "2"
@@ -37,6 +37,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 hmac = "0.12"
 sha2 = "0.10"
 quick-xml = { version = "0.36", features = ["serialize"] }
+unicode-width = "0.2"
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"
@@ -44,7 +45,7 @@ rust_xlsxwriter = "0.99"
 # `gpui-shell` scripts run on the QuickJS fork the toolkit pins; the crates.io
 # `rquickjs` would be a second, incompatible copy of the same crate.
 [patch.crates-io]
-rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "13c716b687b47f96a677aaf46c8fa341fa7208da" }
+rquickjs = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.0" }
 
 # Fast over small. The opt-level reaches DuckDB's C++ too: libduckdb-sys
 # builds it with the `cc` crate, which passes Cargo's level on to the

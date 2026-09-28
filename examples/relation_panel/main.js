@@ -303,9 +303,9 @@ export default class RelationPanel extends View {
         .child(
           new Empty().child(
             new EmptyHeader()
-              .child(new EmptyMedia())
-              .child(new EmptyTitle().child("This connection has no relations"))
-              .child(
+              .media(new EmptyMedia())
+              .title(new EmptyTitle().child("This connection has no relations"))
+              .description(
                 new EmptyDescription().child(
                   "Open a data file or database in the main window first; this app queries that connection.",
                 ),

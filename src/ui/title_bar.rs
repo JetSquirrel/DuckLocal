@@ -6,6 +6,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, Theme, ThemeMode, TitleBar,
     WindowExt,
@@ -355,23 +356,19 @@ impl Render for TitleBarView {
         let dark = cx.theme().mode.is_dark();
 
         TitleBar::new().child(
-            h_flex()
+            // One toolbar across the whole bar: it owns roving arrow-key
+            // focus and the compact ghost look of every hosted button.
+            Toolbar::new("title-bar-toolbar")
                 .w_full()
-                .items_center()
-                .gap_2()
+                .xsmall()
                 .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .justify_start()
-                        .gap_2()
+                    ToolbarGroup::new("title-bar-sources")
+                        .gap_1()
                         // With the sidebar put away, the way back sits where
                         // the sidebar would begin.
                         .when(sidebar_collapsed, |this| {
                             this.child(
                                 Button::new("expand-sidebar")
-                                    .ghost()
-                                    .xsmall()
                                     .icon(IconName::PanelLeftOpen)
                                     .tooltip_with_action(
                                         tr("sidebar.expand"),
@@ -386,8 +383,6 @@ impl Render for TitleBarView {
                         })
                         .child(
                             Button::new("open-data")
-                                .ghost()
-                                .xsmall()
                                 .icon(IconName::FolderOpen)
                                 .label(tr("title_bar.open_data"))
                                 .loading(opening)
@@ -396,15 +391,14 @@ impl Render for TitleBarView {
                         )
                         .child(
                             Button::new("configure-s3")
-                                .ghost()
-                                .xsmall()
                                 .icon(IconName::Globe)
                                 .label("S3")
                                 .tooltip(tr("title_bar.configure_s3"))
                                 .on_click(cx.listener(Self::open_s3_dialog)),
                         ),
                 )
-                .child(
+                .content(div().flex_1())
+                .content(
                     h_flex()
                         .min_w_0()
                         .gap_2()
@@ -424,16 +418,12 @@ impl Render for TitleBarView {
                             )
                         }),
                 )
+                .content(div().flex_1())
                 .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .justify_end()
-                        .gap_2()
+                    ToolbarGroup::new("title-bar-window")
+                        .gap_1()
                         .child(
                             Button::new("setup")
-                                .ghost()
-                                .xsmall()
                                 .icon(IconName::Bot)
                                 .tooltip(tr("setup.title"))
                                 .on_click(|_, window, cx| {
@@ -442,8 +432,6 @@ impl Render for TitleBarView {
                         )
                         .child(
                             Button::new("toggle-language")
-                                .ghost()
-                                .xsmall()
                                 .label(match crate::i18n::current() {
                                     Language::Zh => "EN",
                                     Language::En => "中",
@@ -451,9 +439,13 @@ impl Render for TitleBarView {
                                 .tooltip(tr("title_bar.toggle_language"))
                                 .on_click(Self::toggle_language),
                         )
-                        .child(
+                        // `dropdown_menu` wraps the Button in a popover that is
+                        // not `Sizable`, so this trigger goes in as content and
+                        // carries the toolbar's ghost/compact look by hand.
+                        .content(
                             Button::new("ui-size")
                                 .ghost()
+                                .compact()
                                 .xsmall()
                                 .icon(IconName::ALargeSmall)
                                 .tooltip(tr("title_bar.ui_size"))
@@ -475,8 +467,6 @@ impl Render for TitleBarView {
                         )
                         .child(
                             Button::new("toggle-theme")
-                                .ghost()
-                                .xsmall()
                                 .icon(if dark { IconName::Sun } else { IconName::Moon })
                                 .tooltip(tr("title_bar.toggle_theme"))
                                 .on_click(Self::toggle_theme),

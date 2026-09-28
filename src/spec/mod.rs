@@ -11,6 +11,7 @@
 //! src/spec/model.rs    what the tree means, checked without a database
 //! src/spec/mod.rs      `ducklocal check`, the command half
 //! src/spec/prepare.rs  a plot's data, derived from its query's result once
+//! src/spec/plot.rs     the plots the catalog charts cannot draw honestly
 //! src/spec/highlight.rs  colours for the source editor, SQL heredocs included
 //! src/spec/view.rs     the view half: a `.dash` file as a workspace tab
 //! src/spec/tabs.rs     which specs are open, remembered between launches
@@ -30,6 +31,7 @@ pub mod complete;
 pub mod highlight;
 pub mod lsp;
 pub mod model;
+pub mod plot;
 pub mod prepare;
 pub mod syntax;
 pub mod tabs;
