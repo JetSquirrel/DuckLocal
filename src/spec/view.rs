@@ -57,6 +57,7 @@ use crate::spec::model::{self, Spec};
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::ui::chart::format_value;
 use crate::ui::completion::starts_with_ignore_case;
+use crate::ui::results::fit_column_width;
 
 /// The plot panels' default and drag bounds, in the spirit of the workspace's
 /// own results split.
@@ -927,7 +928,8 @@ impl SpecTableDelegate {
             .iter()
             .enumerate()
             .map(|(ix, column)| {
-                let mut spec = Column::new(format!("c{ix}"), column.name.clone());
+                let width = fit_column_width(&column.name, &result.rows, ix, 0.);
+                let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
                 if column.kind == ColumnKind::Numeric {
                     spec = spec.text_right();
                 }

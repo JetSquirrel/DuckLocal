@@ -13,7 +13,7 @@
 query "revenue_by_channel" {
   sql = <<SQL
     SELECT channel, sum(revenue) AS revenue
-    FROM 'examples/analysis_app/orders.csv'
+    FROM 'orders'
     GROUP BY channel
     ORDER BY revenue DESC
   SQL
@@ -22,7 +22,7 @@ query "revenue_by_channel" {
 query "daily_orders" {
   sql = <<SQL
     SELECT date, sum(orders) AS orders
-    FROM 'examples/analysis_app/orders.csv'
+    FROM 'orders'
     GROUP BY date
     ORDER BY date
   SQL

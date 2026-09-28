@@ -54,7 +54,7 @@ query "daily_cost" {
 }
 
 plot "daily_cost" {
-  type  = "line"
+  type  = "bar"
   query = query.daily_cost
   x     = day
   y     = cost

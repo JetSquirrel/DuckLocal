@@ -37,6 +37,7 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 hmac = "0.12"
 sha2 = "0.10"
 quick-xml = { version = "0.36", features = ["serialize"] }
+unicode-width = "0.2"
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"
