@@ -21,38 +21,46 @@ fail() {
     status=1
 }
 
-# 1. One revision in Cargo.toml, across dependencies and [patch] alike.
-manifest_revs=$(
-    grep -o "git = \"https://$REPO\", rev = \"[0-9a-f]*\"" Cargo.toml |
-        grep -o 'rev = "[0-9a-f]*"' | grep -o '[0-9a-f]\{7,\}' | sort -u
+# 1. One pin in Cargo.toml, across dependencies and [patch] alike. A pin is a
+#    rev, a tag or a branch; all four entries must use the same one.
+manifest_pins=$(
+    grep -oE "git = \"https://$REPO\", (rev|tag|branch) = \"[^\"]+\"" Cargo.toml |
+        sed -E 's/.*(rev|tag|branch) = "([^"]+)"/\1 = \2/' | sort -u
 )
-count=$(printf '%s\n' "$manifest_revs" | grep -c . || true)
+count=$(printf '%s\n' "$manifest_pins" | grep -c . || true)
 if [ "$count" -eq 0 ]; then
-    fail "Cargo.toml pins nothing from $REPO; a rev = \"...\" is how it is pinned."
+    fail "Cargo.toml pins nothing from $REPO; a rev/tag/branch = \"...\" is how it is pinned."
     echo "Dependency check failed." >&2
     exit 1
 fi
 if [ "$count" -ne 1 ]; then
-    # Everything below compares against "the" revision, so there is nothing
+    # Everything below compares against "the" pin, so there is nothing
     # sensible to say until there is exactly one.
     fail "Cargo.toml pins $REPO at more than one revision:"
-    printf '      %s\n' $manifest_revs >&2
+    printf '      %s\n' $manifest_pins >&2
     echo "Dependency check failed." >&2
     exit 1
 fi
-rev=$manifest_revs
+pin=$manifest_pins
+kind=${pin%% = *}
+value=${pin#* = }
 
-# 2. Cargo.lock agrees, and every rev resolved to the commit it asked for.
+# 2. Cargo.lock agrees: every crate from the repository was asked for the
+#    manifest's pin. A rev resolves to itself; a tag or branch resolves to the
+#    commit it names, which the same query string already pins down.
+seen=0
 while IFS= read -r source; do
-    asked=${source#*rev=}
-    asked=${asked%%#*}
-    resolved=${source#*#}
-    [ "$asked" = "$rev" ] || fail "Cargo.lock asks $REPO for $asked, Cargo.toml pins $rev."
-    # A branch or a tag can be pinned too, and then what was asked for and
-    # what the lock holds are different strings that both belong here.
-    [ "$resolved" = "$asked" ] ||
-        fail "Cargo.lock asked $REPO for $asked and got $resolved; the pin moved."
-done < <(grep -o "git+https://$REPO?rev=[0-9a-f]*#[0-9a-f]*" Cargo.lock | sort -u)
+    seen=1
+    query=${source#*\?}
+    query=${query%%#*}
+    resolved=${source##*#}
+    [ "$query" = "$kind=$value" ] ||
+        fail "Cargo.lock asks $REPO for $query, Cargo.toml pins $kind = $value."
+    if [ "$kind" = rev ] && [ "$resolved" != "$value" ]; then
+        fail "Cargo.lock asked $REPO for $value and got $resolved; the pin moved."
+    fi
+done < <(grep -oE "git\+https://$REPO\?(rev|tag|branch)=[^#\"]+#[0-9a-f]+" Cargo.lock | sort -u)
+[ "$seen" -eq 1 ] || fail "Cargo.lock holds nothing from $REPO."
 
 # 3. No crate is in the build twice, once from the repository and once from
 #    crates.io. This is what the [patch] on rquickjs exists to prevent, and it
@@ -77,4 +85,4 @@ if [ "$status" -ne 0 ]; then
     exit 1
 fi
 
-echo "Dependencies check out: $REPO pinned at $rev, one copy of each crate."
+echo "Dependencies check out: $REPO pinned at $pin, one copy of each crate."
