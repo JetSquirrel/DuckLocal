@@ -13,6 +13,7 @@ use gpui_kit::component::label::Label;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
 };
@@ -52,6 +53,9 @@ const LEADING_COLUMNS: usize = 1;
 /// Per-cell copy buttons build their ElementId as `row * MAX_ID_COLUMNS +
 /// col`, so a result set is assumed to never exceed this many columns.
 const MAX_ID_COLUMNS: usize = 10_000;
+/// Room the per-cell copy button takes beside the text; it is laid out even
+/// while hidden, so a fitted column must leave space for it.
+const COPY_BUTTON_WIDTH: f32 = 24.;
 
 /// Compact cell padding shared by header and body cells.
 fn cell_paddings() -> Edges<Pixels> {
@@ -61,6 +65,44 @@ fn cell_paddings() -> Edges<Pixels> {
         left: px(10.),
         right: px(10.),
     }
+}
+
+/// Advance of one narrow character in the table's monospace cell font; a
+/// wide (CJK, fullwidth) character takes two. An estimate made without the
+/// text system, so it errs a little wide rather than clip.
+const CELL_CHAR_WIDTH: f32 = 9.6;
+/// A fitted column is never narrower than this, so short values and
+/// one-letter headers still leave room to grab the resize handle.
+const MIN_FIT_WIDTH: f32 = 80.;
+/// Nor wider than this: one long cell must not push every other column off
+/// screen. The rest ellipsizes, and the column can still be dragged wider.
+const MAX_FIT_WIDTH: f32 = 360.;
+/// Rows sampled to fit a column. A result set can hold 100,000 rows; the
+/// first few hundred are what the user sees first.
+const FIT_SAMPLE_ROWS: usize = 200;
+
+/// Width for column `col` of `rows` that shows its header and sampled cells
+/// unclipped, within [`MIN_FIT_WIDTH`, `MAX_FIT_WIDTH`]. `extra` is room the
+/// cell spends on something besides its text, such as a copy button. Columns
+/// that together exceed the viewport scroll horizontally.
+pub(crate) fn fit_column_width(header: &str, rows: &[Vec<String>], col: usize, extra: f32) -> f32 {
+    let text_cols = rows
+        .iter()
+        .take(FIT_SAMPLE_ROWS)
+        .filter_map(|row| row.get(col))
+        .map(|cell| display_columns(cell))
+        .chain(std::iter::once(display_columns(header)))
+        .max()
+        .unwrap_or(0);
+    let paddings = cell_paddings();
+    let chrome = f32::from(paddings.left + paddings.right) + extra;
+    (text_cols as f32 * CELL_CHAR_WIDTH + chrome).clamp(MIN_FIT_WIDTH, MAX_FIT_WIDTH)
+}
+
+/// Monospace columns `text` occupies on its widest line.
+fn display_columns(text: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    text.lines().map(UnicodeWidthStr::width).max().unwrap_or(0)
 }
 
 /// Visible-row index map for `filter` over `rows`: the source index of every
@@ -148,7 +190,8 @@ impl ResultTableDelegate {
         let mut columns = Vec::with_capacity(result.columns.len() + LEADING_COLUMNS);
         columns.push(Self::index_column());
         columns.extend(result.columns.iter().enumerate().map(|(ix, column)| {
-            let mut spec = Column::new(format!("c{ix}"), column.name.clone());
+            let width = fit_column_width(&column.name, &result.rows, ix, COPY_BUTTON_WIDTH);
+            let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
             if column.kind == ColumnKind::Numeric {
                 spec = spec.text_right();
             }
@@ -619,29 +662,31 @@ impl ResultsPanel {
                 )
             })
             .child(
-                h_flex()
-                    .gap_2()
+                // A real toolbar, not an h_flex: roving arrow-key focus and
+                // the compact ghost treatment come with it.
+                Toolbar::new("results-export-toolbar")
+                    .xsmall()
                     .child(
-                        Button::new("export-csv")
-                            .outline()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::Download)
-                            .label(tr("results.export_csv"))
-                            .disabled(!has_rows)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_export_dialog(ExportFormat::Csv, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("export-parquet")
-                            .outline()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::Download)
-                            .label(tr("results.export_parquet"))
-                            .disabled(!has_rows)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_export_dialog(ExportFormat::Parquet, window, cx);
-                            })),
+                        ToolbarGroup::new("results-export-group")
+                            .gap_1()
+                            .child(
+                                Button::new("export-csv")
+                                    .icon(gpui_kit::assets::IconName::Download)
+                                    .label(tr("results.export_csv"))
+                                    .disabled(!has_rows)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_export_dialog(ExportFormat::Csv, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("export-parquet")
+                                    .icon(gpui_kit::assets::IconName::Download)
+                                    .label(tr("results.export_parquet"))
+                                    .disabled(!has_rows)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_export_dialog(ExportFormat::Parquet, window, cx);
+                                    })),
+                            ),
                     ),
             )
     }
@@ -894,7 +939,7 @@ fn format_thousands(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::filter_row_indices;
+    use super::{filter_row_indices, fit_column_width, MAX_FIT_WIDTH, MIN_FIT_WIDTH};
 
     fn rows() -> Vec<Vec<String>> {
         vec![
@@ -925,5 +970,25 @@ mod tests {
     fn preserves_source_order_and_indices() {
         let mapped = filter_row_indices(&rows(), "2026").unwrap();
         assert_eq!(mapped, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn fitted_width_grows_with_content_and_counts_wide_characters_double() {
+        let rows = rows();
+        let date = fit_column_width("date", &rows, 0, 0.);
+        let category = fit_column_width("category", &rows, 1, 0.);
+        // "2026-09-09" is 10 narrow columns; "数码配件" is 4 wide ones, 8 columns.
+        assert!(date > MIN_FIT_WIDTH, "{date}");
+        assert!(category < date, "{category} vs {date}");
+        assert_eq!(fit_column_width("a", &rows, 1, 30.), category + 30.);
+    }
+
+    #[test]
+    fn fitted_width_stays_within_bounds() {
+        let rows = vec![vec!["x".into(), "y".repeat(500)]];
+        assert_eq!(fit_column_width("n", &rows, 0, 0.), MIN_FIT_WIDTH);
+        assert_eq!(fit_column_width("n", &rows, 1, 0.), MAX_FIT_WIDTH);
+        // The header alone can widen a column of short values.
+        assert!(fit_column_width("a_rather_long_header", &rows, 0, 0.) > MIN_FIT_WIDTH);
     }
 }

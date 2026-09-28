@@ -11,10 +11,11 @@
 //! the app rule: a spec that no longer validates never replaces a working
 //! dashboard — the previous one stays up and the reason appears above it.
 //!
-//! One chart note: only `AreaChart` in the catalog takes more than one series,
-//! so a multi-series `line` reads as a faintly filled area and a multi-series
-//! `scatter` as unmarked lines, while a multi-series `bar` is one small chart
-//! per series, stacked and scrolled.
+//! One chart note: the catalog's `BarChart` and `LineChart` draw a single
+//! series and its one multi-series chart fills areas, so a pivoted `bar`, a
+//! pivoted `line` and every `scatter` are drawn by the plots in `plot.rs` —
+//! grouped bars, bare lines, unconnected dots — on the same primitives the
+//! catalog charts compose.
 //!
 //! The toolbar's source toggle swaps the whole body for the spec's text in an
 //! editor — not a read-only one: the source is where a dashboard is fixed.
@@ -54,9 +55,11 @@ use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::complete::{self, CompletionKind};
 use crate::spec::model::{self, Spec};
-use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
+use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
 use crate::ui::chart::format_value;
+use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::ui::completion::starts_with_ignore_case;
+use crate::ui::results::fit_column_width;
 
 /// The plot panels' default and drag bounds, in the spirit of the workspace's
 /// own results split.
@@ -755,7 +758,13 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         cx.theme().chart_5,
     ];
     let id = ("dashboard-chart", plot_ix);
-    let tick_margin = (plot.points.len() / 10).max(1);
+    // The hand-built plots key their hover state and path caches on the
+    // plot's name — unique after validation — which survives reordering the
+    // spec's blocks where the panel index would not.
+    let named_id = || (ElementId::from("dashboard-chart"), plot.name.clone());
+    // A label count the axis can fit, not a stride: wide labels (dates) get
+    // few ticks, and the first and last value are always among them.
+    let x_labels = x_label_count(&plot.points);
     let single = plot.series_names.len() <= 1;
     let name = plot
         .series_names
@@ -769,53 +778,14 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
             .value(|d: &Arc<PlotPoint>| d.values[0])
             .fill(move |d: &Arc<PlotPoint>, _, _, _| palette[d.ix % palette.len()])
             .label(|d: &Arc<PlotPoint>| d.label.clone())
+            .tooltip_value(|d: &Arc<PlotPoint>, _| d.label.clone())
+            .band_tick_count(x_labels)
             .id(id)
             .name(name)
             .into_any_element(),
-        // A band scale cannot group bars side by side, so each series draws
-        // its own chart, one under the next.
-        "bar" => {
-            let mut stack = v_flex()
-                .id(format!("dashboard-bars-{}", plot.name))
-                .size_full()
-                .overflow_y_scroll()
-                .gap_4()
-                .p_2();
-            for (s, series_name) in plot.series_names.iter().enumerate() {
-                let color = palette[s % palette.len()];
-                let data: Vec<Arc<PlotPoint>> = plot
-                    .points
-                    .iter()
-                    .filter(|d| d.present[s])
-                    .cloned()
-                    .collect();
-                stack = stack.child(
-                    v_flex()
-                        .flex_none()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(series_name.clone()),
-                        )
-                        .child(
-                            div().h(px(240.)).flex_none().child(
-                                BarChart::new(data)
-                                    .band(|d: &Arc<PlotPoint>| d.band.clone())
-                                    .value(move |d: &Arc<PlotPoint>| d.values[s])
-                                    .fill(move |_: &Arc<PlotPoint>, _, _, _| color)
-                                    .label(move |d: &Arc<PlotPoint>| {
-                                        SharedString::from(format_value(d.values[s]))
-                                    })
-                                    .id(format!("dashboard-chart-{}-{s}", plot.name))
-                                    .name(series_name.clone()),
-                            ),
-                        ),
-                );
-            }
-            stack.into_any_element()
-        }
+        // A band scale cannot group a single-series BarChart's bars, so a
+        // pivoted bar draws on the hand-built grouped chart instead.
+        "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
         "area" if single => {
             let color = palette[0];
             AreaChart::new(plot.points.clone())
@@ -829,53 +799,47 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
                     linear_color_stop(color.opacity(0.05), 0.),
                 ))
                 .name(name)
-                .tick_margin(tick_margin)
+                .x_tick_count(x_labels)
+                .tooltip_value(|_: &Arc<PlotPoint>, _: usize, v: f64| format_value(v).into())
                 .into_any_element()
         }
-        "scatter" if single => LineChart::new(plot.points.clone())
-            .x(|d: &Arc<PlotPoint>| d.band.clone())
-            .y(|d: &Arc<PlotPoint>| d.values[0])
-            .dot()
-            .stroke(palette[0])
-            .name(name)
-            .id(id)
-            .tick_margin(tick_margin)
-            .into_any_element(),
+        // A scatter's points are not connected, and its x is the band axis
+        // `prepare` built — the hand-built plot draws it that way, one series
+        // or many.
+        "scatter" => SeriesPlot::scatter(named_id(), plot).into_any_element(),
         _ if single => LineChart::new(plot.points.clone())
             .x(|d: &Arc<PlotPoint>| d.band.clone())
             .y(|d: &Arc<PlotPoint>| d.values[0])
             .stroke(palette[0])
             .name(name)
             .id(id)
-            .tick_margin(tick_margin)
+            .x_tick_count(x_labels)
+            .tooltip_value(|_: &Arc<PlotPoint>, v: f64| format_value(v).into())
             .into_any_element(),
-        // Pivoted line/area/scatter all draw on the catalog's one multi-series
-        // chart; how much fill distinguishes them.
-        _ => {
+        // The catalog's one multi-series chart fills; filling is what `area`
+        // asks for.
+        "area" => {
             let mut chart = AreaChart::new(plot.points.clone())
                 .x(|d: &Arc<PlotPoint>| d.band.clone())
                 .id(id)
-                .tick_margin(tick_margin);
+                .x_tick_count(x_labels)
+                .tooltip_value(|_: &Arc<PlotPoint>, _: usize, v: f64| format_value(v).into());
             for (s, series_name) in plot.series_names.iter().enumerate() {
                 let color = palette[s % palette.len()];
-                let (top, bottom) = match plot.kind.as_str() {
-                    "area" => (0.4, 0.05),
-                    "line" => (0.10, 0.02),
-                    // A scatter's fill would claim a density the points lack.
-                    _ => (0.0, 0.0),
-                };
                 chart = chart
                     .y(move |d: &Arc<PlotPoint>| d.values[s])
                     .stroke(color)
                     .fill(linear_gradient(
                         0.,
-                        linear_color_stop(color.opacity(top), 1.),
-                        linear_color_stop(color.opacity(bottom), 0.),
+                        linear_color_stop(color.opacity(0.4), 1.),
+                        linear_color_stop(color.opacity(0.05), 0.),
                     ))
                     .name(series_name.clone());
             }
             chart.into_any_element()
         }
+        // A pivoted line draws lines, no fill.
+        _ => SeriesPlot::lines(named_id(), plot).into_any_element(),
     }
 }
 
@@ -927,7 +891,8 @@ impl SpecTableDelegate {
             .iter()
             .enumerate()
             .map(|(ix, column)| {
-                let mut spec = Column::new(format!("c{ix}"), column.name.clone());
+                let width = fit_column_width(&column.name, &result.rows, ix, 0.);
+                let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
                 if column.kind == ColumnKind::Numeric {
                     spec = spec.text_right();
                 }
