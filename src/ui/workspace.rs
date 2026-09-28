@@ -15,7 +15,10 @@ use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, TabSize};
+use gpui_kit::component::input::{
+    Editor, EditorState, Input, InputEvent, InputState, RangeDecoration, RangeDecorationCollection,
+    RangeDecorationStyle, TabSize, TextDecoration, TextDecorationCollection,
+};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -54,6 +57,13 @@ pub struct QueryTab {
     pub id: u64,
     pub title: SharedString,
     pub editor: Entity<EditorState>,
+    /// Where the last failed run's error landed, underlined in the editor.
+    /// The collections live on the tab rather than inside the run so a new
+    /// run clears them before it starts, without the editor in scope; the
+    /// ranges themselves follow edits and never enter undo history.
+    pub error_squiggles: TextDecorationCollection,
+    /// The quiet fill behind the same span.
+    pub error_fill: RangeDecorationCollection,
     /// This tab's own results. One panel shared by every tab showed tab A's
     /// rows under tab B's editor — and exported them with A's SQL.
     pub results: Entity<ResultsPanel>,
@@ -249,6 +259,16 @@ impl WorkspaceTab {
     }
 }
 
+/// One run's delivery target: the SQL as run, where its outcome is shown,
+/// and the editor decorations an error is marked with. Captured before the
+/// run starts so a late answer still lands in the tab that asked.
+struct ActiveQuery {
+    sql: String,
+    squiggles: TextDecorationCollection,
+    fill: RangeDecorationCollection,
+    results: Entity<ResultsPanel>,
+}
+
 pub struct Workspace {
     state: Entity<AppState>,
     tabs: Vec<WorkspaceTab>,
@@ -332,9 +352,13 @@ impl Workspace {
                 })
         });
         let provider = completion::SqlCompletionProvider::new(self.state.clone());
-        editor.update(cx, |state, cx| {
+        let (error_squiggles, error_fill) = editor.update(cx, |state, cx| {
             state.lsp_mut().completion_provider = Some(provider);
             cx.notify();
+            (
+                state.create_decorations_collection(Vec::new(), cx),
+                state.create_range_decorations_collection(Vec::new(), cx),
+            )
         });
         // ⌘↵ reaches the editor as `secondary-enter`, which the Input key
         // context (deeper than the workspace's) binds to "insert newline".
@@ -358,6 +382,8 @@ impl Workspace {
             id,
             title: trf("workspace.tab.default_title", &[&id.to_string()]).into(),
             editor,
+            error_squiggles,
+            error_fill,
             results: cx.new(|cx| ResultsPanel::new(window, cx)),
         }
     }
@@ -811,16 +837,23 @@ impl Workspace {
         self.save_dashboard(tab_id, window, cx);
     }
 
-    /// The active query's SQL, with the results panel its outcome belongs to:
-    /// captured when the run starts, so a result that lands after the user
-    /// switched tabs still goes to the tab that asked.
-    fn active_sql(&self, cx: &App) -> Option<(String, Entity<ResultsPanel>)> {
+    /// The active query's SQL, with everything a run delivers into: the
+    /// results panel the outcome lands in, and the decoration collections an
+    /// error is marked with. All of it is captured when the run starts, so a
+    /// result that lands after the user switched tabs still goes to the tab
+    /// that asked.
+    fn active_sql(&self, cx: &App) -> Option<ActiveQuery> {
         let tab = self
             .tabs
             .get(self.active)
             .and_then(WorkspaceTab::as_query)?;
         let sql = tab.editor.read(cx).value().to_string();
-        (!sql.trim().is_empty()).then(|| (sql, tab.results.clone()))
+        (!sql.trim().is_empty()).then(|| ActiveQuery {
+            sql,
+            squiggles: tab.error_squiggles.clone(),
+            fill: tab.error_fill.clone(),
+            results: tab.results.clone(),
+        })
     }
 
     fn open_rename_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -901,16 +934,23 @@ impl Workspace {
         if self.running || self.explaining {
             return;
         }
-        let Some((sql, results)) = self.active_sql(cx) else {
+        let Some(query) = self.active_sql(cx) else {
             return;
         };
         // ⌘↵ on the first-run screen means "I want to write SQL": show the
         // editor the results belong to instead of running behind it.
         self.editor_shown = true;
         self.running = true;
-        results.update(cx, |results, cx| results.set_running(cx));
+        // The previous run's mark names a range in SQL that is about to be
+        // judged again; stale red is worse than none.
+        query.squiggles.clear(cx);
+        query.fill.clear(cx);
+        query
+            .results
+            .update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
+        let sql = query.sql.clone();
         let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let run_sql = sql.clone();
@@ -964,7 +1004,10 @@ impl Workspace {
                     }),
                     Err(_) => None,
                 };
-                results.update(cx, |results, cx| {
+                if let Err(error) = &outcome {
+                    Self::mark_sql_error(&query, error, cx);
+                }
+                query.results.update(cx, |results, cx| {
                     results.set_outcome(outcome, sql.clone(), window, cx);
                 });
                 state.update(cx, |s, cx| {
@@ -1004,26 +1047,64 @@ impl Workspace {
         });
     }
 
+    /// Underline the span a failed run's error named, if it named one: a wavy
+    /// underline on the token and a quiet fill behind it, both in the theme's
+    /// danger color. The collections follow edits and sit outside undo
+    /// history, so nothing here is replayed by ⌘Z.
+    fn mark_sql_error(query: &ActiveQuery, error: &anyhow::Error, cx: &mut App) {
+        let Some(range) = crate::query::error_byte_range(&query.sql, &error.to_string()) else {
+            return;
+        };
+        let danger = cx.theme().danger;
+        query.squiggles.set(
+            vec![TextDecoration::new(
+                range.clone(),
+                HighlightStyle {
+                    underline: Some(UnderlineStyle {
+                        color: Some(danger),
+                        thickness: px(1.),
+                        wavy: true,
+                    }),
+                    ..Default::default()
+                },
+            )],
+            cx,
+        );
+        query.fill.set(
+            vec![RangeDecoration::new(range)
+                .with_style(RangeDecorationStyle::Fill)
+                .with_color(danger.opacity(0.1))],
+            cx,
+        );
+    }
+
     fn explain_active(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.explaining || self.running {
             return;
         }
-        let Some((sql, results)) = self.active_sql(cx) else {
+        let Some(query) = self.active_sql(cx) else {
             return;
         };
         self.explaining = true;
-        results.update(cx, |results, cx| results.set_running(cx));
+        query.squiggles.clear(cx);
+        query.fill.clear(cx);
+        query
+            .results
+            .update(cx, |results, cx| results.set_running(cx));
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
-            let explain_sql = sql.clone();
+            let explain_sql = query.sql.clone();
             let result = smol::unblock(move || {
                 crate::db::with_connection(|conn| crate::query::explain_of(conn, &explain_sql))
             })
             .await;
             this.update_in(cx, move |this, window, cx| {
                 this.explaining = false;
-                results.update(cx, |results, cx| {
+                if let Err(error) = &result {
+                    Self::mark_sql_error(&query, error, cx);
+                }
+                query.results.update(cx, |results, cx| {
                     results.set_explain(result, window, cx);
                 });
                 cx.notify();
