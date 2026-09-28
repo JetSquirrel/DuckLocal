@@ -56,10 +56,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// that waits on it can see whether the mount worked.
 type MountSlot = Rc<RefCell<Option<Result<gpui_kit::Entity<gpui_shell::ScriptView>, String>>>>;
 
-/// The window's root: the app, when it mounted, and nothing when it did not.
+/// The window's content: the app, when it mounted, and nothing when it did not.
 ///
-/// A window needs a root view, and the root has to be one type whether the
-/// app loaded or not — so this holds either.
+/// `gpui_kit::open_window` wraps this in the `Root` every workspace window has,
+/// so a script component that raises a dialog or a notification finds the host
+/// it would find on screen instead of panicking on a root it cannot name. The
+/// content has to be one type whether the app loaded or not, so this holds
+/// either.
 struct AppHost(Option<gpui_kit::Entity<gpui_shell::ScriptView>>);
 
 impl Render for AppHost {
@@ -144,7 +147,11 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
             let slot = mounted.clone();
             let app = job.app.clone();
             let options = hidden_window(cx);
-            let window = match cx.open_window(options, move |window, cx| {
+            // The same entry point the main window uses. `runtime::create`
+            // above already ran the component initializer the helper asks for,
+            // so the Root it wraps around the host mounts the overlay layers a
+            // .dash app can ask for, exactly as on screen.
+            let window = match gpui_kit::open_window(options, cx, move |window, cx| {
                 // The app's folder answers `appDir()` for this call and for
                 // every host call `init` makes inside it.
                 let view = host::with_panel_directory(&app, || {
@@ -161,7 +168,7 @@ pub fn capture(job: Job, finish: impl FnOnce(Outcome) -> std::convert::Infallibl
                     }
                 }
             }) {
-                Ok(window) => window,
+                Ok((window, _)) => window,
                 Err(error) => stop!(Outcome::Failed(format!("{error:#}"))),
             };
             // Opening the window drew one frame, so an app that renders
