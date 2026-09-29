@@ -7,6 +7,11 @@
 //! and a half, bars truncated past two hundred — because a chart that wedges
 //! the renderer is worse than a chart that says it was merged.
 //!
+//! A `pie` is the same matrix with one series, never merged or truncated —
+//! its slices must add up to the whole — then folded into its largest
+//! slices. A `map` skips the matrix: it is the results chart's `GeoData`,
+//! over the columns the spec names.
+//!
 //! Everything here is pure and tested as such; the view (`view.rs`) only
 //! renders what this prepares.
 
@@ -18,7 +23,9 @@ use gpui_kit::SharedString;
 use super::model::Plot;
 use crate::i18n::trf;
 use crate::query::QueryResult;
-use crate::ui::chart::{format_value, parse_number};
+use crate::query::ColumnKind;
+use crate::ui::chart::{format_value, parse_number, pie_slices, PieSlice};
+use crate::ui::geo::{is_lat_name, is_lng_name, GeoData};
 
 /// A chart is at most a couple of thousand pixels wide; past this, points are
 /// bucket-averaged, as in the results chart.
@@ -55,6 +62,10 @@ pub struct PreparedPlot {
     pub label_name: String,
     pub series_names: Vec<String>,
     pub points: Vec<Arc<PlotPoint>>,
+    /// A `pie`'s slices, largest first.
+    pub pie: Vec<Arc<PieSlice>>,
+    /// A `map`'s points.
+    pub geo: Option<Arc<GeoData>>,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
@@ -75,6 +86,8 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
         label_name: plot.x.clone(),
         series_names: Vec::new(),
         points: Vec::new(),
+        pie: Vec::new(),
+        geo: None,
         notice: None,
         failure,
     };
@@ -95,6 +108,46 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case(name))
     };
+    if plot.kind == "map" {
+        // Named columns are taken at their word; a missing one is found by
+        // name among the numeric columns, as the results chart finds them.
+        let find = |named: &Option<String>, looks_like: fn(&str) -> bool, skip: Option<usize>| {
+            match named {
+                Some(name) => column(name).ok_or_else(|| missing_column(name, result)),
+                None => result
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .find(|(ix, c)| {
+                        Some(*ix) != skip && c.kind == ColumnKind::Numeric && looks_like(&c.name)
+                    })
+                    .map(|(ix, _)| ix)
+                    .ok_or_else(|| missing_coordinates(result)),
+            }
+        };
+        let lat_ix = match find(&plot.lat, is_lat_name, None) {
+            Ok(ix) => ix,
+            Err(message) => return base(Some(message)),
+        };
+        let lng_ix = match find(&plot.lng, is_lng_name, Some(lat_ix)) {
+            Ok(ix) => ix,
+            Err(message) => return base(Some(message)),
+        };
+        let color_ix = match plot.color.as_deref().map(|name| column(name).ok_or(name)) {
+            Some(Ok(ix)) => Some(ix),
+            Some(Err(name)) => return base(Some(missing_column(name, result))),
+            None => None,
+        };
+        let geo = GeoData::from_columns(result, lat_ix, lng_ix, color_ix);
+        return PreparedPlot {
+            label_name: format!(
+                "{} / {}",
+                result.columns[lat_ix].name, result.columns[lng_ix].name
+            ),
+            geo: Some(Arc::new(geo)),
+            ..base(None)
+        };
+    }
     let Some(x_ix) = column(&plot.x) else {
         return base(Some(missing_column(&plot.x, result)));
     };
@@ -214,7 +267,10 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
     }
 
     let source_points = points.len();
-    if plot.kind == "bar" {
+    if plot.kind == "pie" {
+        // Every band stays: the slices fold below, and a merged or dropped
+        // band would make the shares wrong.
+    } else if plot.kind == "bar" {
         if source_points > MAX_BARS {
             points.truncate(MAX_BARS);
             notices.push(trf(
@@ -276,6 +332,16 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
         point.label = SharedString::from(format_value(first));
     }
 
+    let points: Vec<Arc<PlotPoint>> = points.into_iter().map(Arc::new).collect();
+    let (pie, pie_skipped) = if plot.kind == "pie" {
+        pie_slices(&points)
+    } else {
+        (Vec::new(), 0)
+    };
+    if pie_skipped > 0 {
+        notices.push(trf("chart.pie.notice.skipped", &[&pie_skipped.to_string()]));
+    }
+
     PreparedPlot {
         name: plot.name.clone(),
         title: plot.title.clone().unwrap_or_else(|| plot.name.clone()),
@@ -283,10 +349,23 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
         query: plot.query.clone(),
         label_name: result.columns[x_ix].name.clone(),
         series_names,
-        points: points.into_iter().map(Arc::new).collect(),
+        points,
+        pie,
+        geo: None,
         notice: (!notices.is_empty()).then(|| notices.join(" · ")),
         failure: None,
     }
+}
+
+/// Why a `map` with no `lat` or `lng` has nothing to place.
+fn missing_coordinates(result: &QueryResult) -> String {
+    let available = result
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    trf("dashboard.map_no_coordinates", &[&available])
 }
 
 fn missing_column(name: &str, result: &QueryResult) -> String {
@@ -313,6 +392,9 @@ mod tests {
             y: y.map(str::to_string),
             series: series.map(str::to_string),
             title: None,
+            lat: None,
+            lng: None,
+            color: None,
             line: 1,
             col: 1,
             span: (0, 4),
@@ -461,5 +543,94 @@ mod tests {
         assert!(line.points.len() <= MAX_POINTS);
         assert!(line.points.iter().all(|p| p.values[0] == 1.0));
         assert!(line.notice.is_some());
+    }
+
+    fn map_plot(lat: Option<&str>, lng: Option<&str>, color: Option<&str>) -> Plot {
+        Plot {
+            kind: "map".into(),
+            x: String::new(),
+            y: None,
+            lat: lat.map(str::to_string),
+            lng: lng.map(str::to_string),
+            color: color.map(str::to_string),
+            ..plot("map", None, None)
+        }
+    }
+
+    fn stations() -> QueryResult {
+        QueryResult {
+            columns: vec![
+                column("name", ColumnKind::Text),
+                column("type", ColumnKind::Text),
+                column("geo_lat", ColumnKind::Numeric),
+                column("geo_lng", ColumnKind::Numeric),
+            ],
+            rows: [
+                ["Utrecht", "mega", "52.09", "5.11"],
+                ["Zwolle", "ic", "52.50", "6.09"],
+                ["Aalten", "stop", "NULL", "6.57"],
+            ]
+            .iter()
+            .map(|r| r.iter().map(|c| c.to_string()).collect())
+            .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_map_places_the_rows_its_columns_locate() {
+        let result = Ok(stations());
+        let named = prepare(
+            &map_plot(Some("geo_lat"), Some("geo_lng"), Some("type")),
+            Some(&result),
+        );
+        assert_eq!(named.failure, None);
+        let geo = named.geo.expect("a map carries its points");
+        assert_eq!(geo.point_count(), 2);
+        assert_eq!(geo.dropped, 1, "a NULL latitude places nothing");
+        assert_eq!(geo.category_name.as_deref(), Some("type"));
+
+        // Left out, the coordinates are found by name.
+        let guessed = prepare(&map_plot(None, None, None), Some(&result));
+        assert_eq!(guessed.geo.map(|g| g.point_count()), Some(2));
+        assert_eq!(guessed.label_name, "geo_lat / geo_lng");
+    }
+
+    #[test]
+    fn a_map_without_coordinates_says_so() {
+        let result = Ok(QueryResult {
+            columns: vec![column("name", ColumnKind::Text)],
+            rows: vec![vec!["x".into()]],
+            elapsed_ms: 0,
+            truncated: false,
+        });
+        let prepared = prepare(&map_plot(None, None, None), Some(&result));
+        assert!(prepared.geo.is_none());
+        assert!(prepared.failure.is_some());
+
+        let prepared = prepare(&map_plot(Some("nope"), Some("geo_lng"), None), Some(&Ok(stations())));
+        assert!(prepared.failure.unwrap().contains("nope"));
+    }
+
+    #[test]
+    fn a_pie_keeps_every_band_and_folds_the_small_ones() {
+        // More bands than a bar chart keeps: a pie must add up to the whole.
+        let rows: Vec<Vec<String>> = (1..=300)
+            .map(|ix| vec![format!("c{ix}"), ix.to_string()])
+            .chain([vec!["neg".to_string(), "-1".to_string()]])
+            .collect();
+        let result = Ok(QueryResult {
+            columns: vec![column("x", ColumnKind::Text), column("y", ColumnKind::Numeric)],
+            rows,
+            elapsed_ms: 0,
+            truncated: false,
+        });
+        let pie = prepare(&plot("pie", Some("y"), None), Some(&result));
+        assert_eq!(pie.points.len(), 301, "nothing truncated");
+        assert_eq!(pie.pie.len(), 8, "folded to the largest slices");
+        let total: f64 = pie.pie.iter().map(|s| s.value() as f64).sum();
+        assert_eq!(total, (1..=300).sum::<i64>() as f64);
+        assert!(pie.notice.unwrap().contains('1'), "the negative band is reported");
     }
 }

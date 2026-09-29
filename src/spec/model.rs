@@ -6,6 +6,10 @@
 //! * a `query` block holds one `sql` attribute — one statement, nothing else;
 //! * a `plot` block holds `type`, `query`, `x`, and (unless a table) `y`,
 //!   plus an optional `series` and `title`;
+//! * a `pie` takes `x` (the slices) and `y` (their sizes), and no `series`;
+//! * a `map` takes `lat` and `lng` instead of `x` and `y` — either may be left
+//!   out when a column's name says what it is (`geo_lat`, `longitude`) — and
+//!   an optional `color`;
 //! * `query = query.latency` names a query block that exists;
 //! * `x`, `y`, `series` name result columns — as bare identifiers when the
 //!   column allows it, as strings when it does not (`"Revenue (USD)"`).
@@ -19,8 +23,12 @@ use std::collections::HashSet;
 use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
-/// x/y for the continuous ones, anything tabular for `table`.
-pub(crate) const PLOT_TYPES: &[&str] = &["line", "bar", "area", "scatter", "table"];
+/// x/y for the continuous ones and `pie`, anything tabular for `table`,
+/// coordinates for `map`.
+pub(crate) const PLOT_TYPES: &[&str] = &["line", "bar", "area", "scatter", "pie", "map", "table"];
+
+/// The attributes only a `map` takes.
+const MAP_ATTRS: &[&str] = &["lat", "lng", "color"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct Spec {
@@ -55,6 +63,11 @@ pub(crate) struct Plot {
     pub y: Option<String>,
     pub series: Option<String>,
     pub title: Option<String>,
+    /// A `map`'s coordinate columns; `None` finds them by name.
+    pub lat: Option<String>,
+    pub lng: Option<String>,
+    /// The column a `map` colors its points by; `None` picks one.
+    pub color: Option<String>,
     /// Line and column of the block's kind keyword.
     pub line: usize,
     pub col: usize,
@@ -358,6 +371,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut y = None;
     let mut series = None;
     let mut title = None;
+    let mut lat = None;
+    let mut lng = None;
+    let mut color = None;
     let mut seen: HashSet<&str> = HashSet::new();
     for attr in &block.attrs {
         if !seen.insert(attr.name.as_str()) {
@@ -394,15 +410,40 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             "y" => y = column(attr, diagnostics),
             "series" => series = column(attr, diagnostics),
             "title" => title = string(attr, diagnostics),
+            "lat" => lat = column(attr, diagnostics),
+            "lng" => lng = column(attr, diagnostics),
+            "color" => color = column(attr, diagnostics),
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title; unknown attribute: {other}"
+                    "A plot block holds type, query, x, y, series, title, and for a map lat, lng, color; unknown attribute: {other}"
                 ),
             )),
         }
     }
-    for name in ["type", "query", "x"] {
+    let kind_name = kind.clone().unwrap_or_default();
+    let is_map = kind_name == "map";
+    // Attributes the type has no use for are mistakes, not no-ops: a map's
+    // `x` or a line's `lat` says the author expects something that will not
+    // happen.
+    for attr in &block.attrs {
+        let name = attr.name.as_str();
+        let misplaced = if is_map {
+            matches!(name, "x" | "y" | "series")
+                .then(|| format!("A map plot places points by lat and lng; it takes no {name}"))
+        } else if !kind_name.is_empty() && MAP_ATTRS.contains(&name) {
+            Some(format!("{name} is for map plots; this plot is a {kind_name}"))
+        } else if kind_name == "pie" && name == "series" {
+            Some("A pie draws one series; it takes no series".to_string())
+        } else {
+            None
+        };
+        if let Some(message) = misplaced {
+            diagnostics.push(Diagnostic::at_attr(attr, message));
+        }
+    }
+    let required: &[&str] = if is_map { &["type", "query"] } else { &["type", "query", "x"] };
+    for &name in required {
         if !seen.contains(name) {
             diagnostics.push(Diagnostic::at_block(
                 block,
@@ -414,7 +455,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     // is only for attributes never written. y is required once the type is
     // known to need one.
     let kind = kind.unwrap_or_default();
-    if !kind.is_empty() && kind != "table" && y.is_none() {
+    if !kind.is_empty() && kind != "table" && kind != "map" && y.is_none() {
         diagnostics.push(Diagnostic::at_block(
             block,
             format!("plot block {:?} requires y", block.name),
@@ -428,6 +469,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         y,
         series,
         title,
+        lat,
+        lng,
+        color,
         line: block.line,
         col: block.col,
         span: block.kind_span,
@@ -500,10 +544,47 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                 .iter()
                 .any(|(column, _)| column.eq_ignore_ascii_case(name))
         };
+        let returns = || {
+            available
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        // A map may leave its coordinates to the column names; if the names
+        // do not say, the plot has nothing to place.
+        let (mut lat, mut lng) = (plot.lat.clone(), plot.lng.clone());
+        if plot.kind == "map" && (lat.is_none() || lng.is_none()) {
+            let (guess_lat, guess_lng) = crate::ui::geo::guess_coordinate_columns(
+                available.iter().map(|(name, _)| name.as_str()),
+            );
+            let guessed = |ix: Option<usize>| ix.map(|ix| available[ix].0.clone());
+            lat = lat.or_else(|| guessed(guess_lat));
+            lng = lng.or_else(|| guessed(guess_lng));
+            for (name, found) in [("lat", &lat), ("lng", &lng)] {
+                if found.is_none() {
+                    diagnostics.push(Diagnostic {
+                        line: plot.line,
+                        col: plot.col,
+                        span: plot.span,
+                        message: format!(
+                            "map plot {:?} names no {name}, and no column of query {:?} looks like one; set {name} to one of: {}",
+                            plot.name,
+                            query.name,
+                            returns()
+                        ),
+                    });
+                }
+            }
+        }
+        let x = (plot.kind != "map").then_some(plot.x.as_str());
         for (name, column) in [
-            ("x", Some(plot.x.as_str())),
+            ("x", x),
             ("y", plot.y.as_deref()),
             ("series", plot.series.as_deref()),
+            ("lat", plot.lat.as_deref()),
+            ("lng", plot.lng.as_deref()),
+            ("color", plot.color.as_deref()),
         ]
         .into_iter()
         .filter_map(|(name, column)| column.map(|c| (name, c)))
@@ -524,6 +605,26 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                             .join(", ")
                     ),
                 });
+            }
+        }
+        // Coordinates that are not numbers place nothing.
+        for (name, column) in [("lat", &lat), ("lng", &lng)] {
+            let Some(column) = column else { continue };
+            if let Some((_, ty)) = available
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(column))
+            {
+                if !is_numeric(ty) {
+                    diagnostics.push(Diagnostic {
+                        line: plot.line,
+                        col: plot.col,
+                        span: plot.span,
+                        message: format!(
+                            "map plot {:?} places points by {name} = {column:?} ({ty}), which is not numeric",
+                            plot.name
+                        ),
+                    });
+                }
             }
         }
         // A plotted y that is not a number draws nothing worth looking at.
@@ -639,7 +740,7 @@ plot "raw" {
 query "a" { sql = "SELECT 1" }
 query "a" { sql = "SELECT 2" }
 plot "p" {
-  type  = "pie"
+  type  = "donut"
   query = query.missing
   x     = timestamp
 }
@@ -652,7 +753,7 @@ wat "huh" {}
         let diagnostics = validate_err(source);
         let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(messages.iter().any(|m| m.contains("Duplicate query")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("\"pie\"")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("\"donut\"")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("does not define")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("requires x")), "{messages:?}");
         assert!(messages.iter().any(|m| m.contains("requires y")), "{messages:?}");
@@ -669,7 +770,7 @@ wat "huh" {}
 
         let pie = diagnostics
             .iter()
-            .find(|d| d.message.contains("\"pie\""))
+            .find(|d| d.message.contains("\"donut\""))
             .unwrap();
         assert_eq!((pie.line, pie.col), (5, 3));
         assert_eq!(&source[pie.span.0..pie.span.1], "type");
@@ -819,5 +920,97 @@ plot "p" { type = "line" query = query.q x = "Order Date" y = revenue }
 "#,
         );
         assert_eq!(spec.plots[0].x, "Order Date");
+    }
+
+    #[test]
+    fn pies_and_maps_validate() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "share" { type = "pie" query = query.q x = channel y = total }
+plot "where" {
+  type  = "map"
+  query = query.q
+  lat   = geo_lat
+  lng   = geo_lng
+  color = type
+}
+plot "guessed" { type = "map" query = query.q }
+"#,
+        );
+        assert_eq!(spec.plots[0].kind, "pie");
+        let map = &spec.plots[1];
+        assert_eq!(map.lat.as_deref(), Some("geo_lat"));
+        assert_eq!(map.lng.as_deref(), Some("geo_lng"));
+        assert_eq!(map.color.as_deref(), Some("type"));
+        // A map needs neither x nor y, and may leave its coordinates to the
+        // column names.
+        assert_eq!(spec.plots[2].lat, None);
+    }
+
+    #[test]
+    fn attributes_a_type_has_no_use_for_are_mistakes() {
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "a" { type = "map" query = query.q x = lng y = lat }
+plot "b" { type = "line" query = query.q x = t y = v lat = geo_lat }
+plot "c" { type = "pie" query = query.q x = t y = v series = s }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(messages.iter().any(|m| m.contains("takes no x")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains("takes no y")), "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("lat is for map plots")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("takes no series")),
+            "{messages:?}"
+        );
+        // Each points at the attribute, on its own line.
+        let lat = diagnostics
+            .iter()
+            .find(|d| d.message.contains("lat is for map plots"))
+            .unwrap();
+        assert_eq!(lat.line, 4);
+    }
+
+    #[test]
+    fn a_map_checks_its_coordinates_against_the_query() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "named" { type = "map" query = query.q lat = geo_lat lng = code }
+plot "guessed" { type = "map" query = query.q }
+"#,
+        );
+        let stations = |_: &str| -> Result<Vec<(String, String)>, String> {
+            Ok(vec![
+                ("code".into(), "VARCHAR".into()),
+                ("geo_lat".into(), "DOUBLE".into()),
+                ("geo_lng".into(), "DOUBLE".into()),
+            ])
+        };
+        let diagnostics = check_columns(&spec, &stations);
+        // A text longitude places nothing; the guessed map finds both.
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("lng = \"code\""), "{diagnostics:?}");
+
+        let no_coordinates = |_: &str| -> Result<Vec<(String, String)>, String> {
+            Ok(vec![("code".into(), "VARCHAR".into())])
+        };
+        let diagnostics = check_columns(&spec, &no_coordinates);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("names no lat") && d.message.contains("guessed")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("\"geo_lat\"")),
+            "a named column the query lacks is reported: {diagnostics:?}"
+        );
     }
 }

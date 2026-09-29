@@ -12,6 +12,11 @@
 
 use super::model;
 
+/// Every attribute a plot block may hold, in the order completion offers
+/// them: the common ones first, a map's own after.
+pub(crate) const PLOT_ATTRS: [&str; 9] =
+    ["type", "query", "x", "y", "series", "title", "lat", "lng", "color"];
+
 /// One thing that could be inserted at the cursor.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Completion {
@@ -95,7 +100,7 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
     }
 
     match block_at(source, &lines, line, &before) {
-        Some(kind) if kind == "plot" => ["type", "query", "x", "y", "series", "title"]
+        Some(kind) if kind == "plot" => PLOT_ATTRS
             .into_iter()
             .map(|name| attribute(name, "plot"))
             .collect(),
@@ -322,7 +327,7 @@ mod tests {
         let candidates = complete("plot \"p\" {\n  \n}", 2, 3);
         assert_eq!(
             labels(&candidates),
-            ["type", "query", "x", "y", "series", "title"]
+            super::PLOT_ATTRS
         );
         assert!(candidates
             .iter()
@@ -337,7 +342,7 @@ mod tests {
     fn plot_types_after_type_equals() {
         // Inside an opened quote the insert text is the bare word.
         let candidates = complete("plot \"p\" {\n  type = \"li\n}", 2, 12);
-        assert_eq!(labels(&candidates), ["line", "bar", "area", "scatter", "table"]);
+        assert_eq!(labels(&candidates), model::PLOT_TYPES);
         assert!(candidates
             .iter()
             .all(|c| c.kind == CompletionKind::Value));
@@ -377,7 +382,7 @@ mod tests {
         let source = "query \"q1\" {\n  sql = \"SELECT 1\"\n\nplot \"p\" {\n  t\n";
         assert_eq!(
             labels(&complete(source, 5, 3)),
-            ["type", "query", "x", "y", "series", "title"]
+            super::PLOT_ATTRS
         );
     }
 

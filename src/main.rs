@@ -58,9 +58,16 @@ fn main() {
         .filter(|arg| !arg.starts_with("-psn_"))
         .collect();
 
-    gpui_kit::application()
-        .with_assets(assets::AppAssets)
-        .run(move |cx| {
+    let application = gpui_kit::application().with_assets(assets::AppAssets);
+    // Finder's "Open With" arrives here as file:// URLs — on launch and on
+    // every later open — and the callback gets no App context, so the paths
+    // are queued for the root view to drain (app.rs).
+    application.on_open_urls(|urls| {
+        for url in urls {
+            crate::app::queue_finder_open(&url);
+        }
+    });
+    application.run(move |cx| {
             gpui_kit::init(cx);
             ui::init(cx);
             Theme::change(ThemeMode::Light, None, cx);

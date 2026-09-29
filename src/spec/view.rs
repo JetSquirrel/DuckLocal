@@ -56,7 +56,8 @@ use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::complete::{self, CompletionKind};
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
-use crate::ui::chart::format_value;
+use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
+use crate::ui::geo::GeoPlot;
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::ui::completion::starts_with_ignore_case;
 use crate::ui::results::fit_column_width;
@@ -302,24 +303,47 @@ impl Dashboard {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (title, notice, failure, is_table, is_empty) = {
+        let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
+            let is_empty = match plot.kind.as_str() {
+                "map" => plot.geo.as_ref().is_none_or(|geo| geo.point_count() == 0),
+                "pie" => plot.pie.is_empty(),
+                _ => plot.points.is_empty(),
+            };
             (
                 plot.title.clone(),
                 plot.notice.clone(),
                 plot.failure.clone(),
                 plot.kind == "table",
-                plot.points.is_empty(),
+                is_empty,
             )
         };
         // The axis subtitle the results chart shows: which series, over which
-        // x column. Tables and failures have nothing to say.
-        let axes = (!is_table && failure.is_none() && !is_empty).then(|| {
+        // x column — for a pie, what the shares are of; for a map, which
+        // columns place the points. Tables and failures have nothing to say.
+        let drawn = !is_table && failure.is_none() && !is_empty;
+        let mut legend = Vec::new();
+        let axes = drawn.then(|| {
             let plot = &self.plots[ix];
-            trf(
-                "chart.title.by",
-                &[&plot.series_names.join(", "), &plot.label_name],
-            )
+            let series = plot.series_names.join(", ");
+            match plot.kind.as_str() {
+                "map" => {
+                    if let Some(geo) = &plot.geo {
+                        let (notes, key) = map_notes(geo, cx);
+                        notice = match (notice.take(), notes) {
+                            (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+                            (a, b) => a.or(b),
+                        };
+                        legend = key;
+                    }
+                    plot.label_name.clone()
+                }
+                "pie" => {
+                    legend = pie_parts(&plot.pie, series.clone().into(), "dashboard-pie-key", cx).1;
+                    trf("chart.pie.title", &[&series, &plot.label_name])
+                }
+                _ => trf("chart.title.by", &[&series, &plot.label_name]),
+            }
         });
 
         let body = if let Some(message) = failure {
@@ -380,7 +404,8 @@ impl Dashboard {
                                 .text_color(cx.theme().muted_foreground)
                                 .child(axes),
                         )
-                    }),
+                    })
+                    .when(!legend.is_empty(), |this| this.child(legend_row(legend, cx))),
             )
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
@@ -773,6 +798,11 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         .unwrap_or_else(|| plot.title.clone());
 
     match plot.kind.as_str() {
+        "pie" => pie_parts(&plot.pie, name.into(), named_id(), cx).0,
+        "map" => match &plot.geo {
+            Some(geo) => GeoPlot::new(named_id(), geo.clone()).into_any_element(),
+            None => empty_chart(cx),
+        },
         "bar" if single => BarChart::new(plot.points.clone())
             .band(|d: &Arc<PlotPoint>| d.band.clone())
             .value(|d: &Arc<PlotPoint>| d.values[0])

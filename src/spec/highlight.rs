@@ -29,7 +29,7 @@ use gpui_kit::{Context, HighlightStyle, SharedString, Window};
 pub const LANGUAGE: &str = "dash";
 
 /// The plot types, coloured as constants: they are the language's own words.
-const PLOT_TYPES: &[&str] = &["line", "bar", "area", "scatter", "table"];
+use super::model::PLOT_TYPES;
 
 /// What the scanner found: `.dash` tokens by highlight name, and the byte
 /// ranges of heredoc bodies, which are SQL.

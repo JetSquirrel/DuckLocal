@@ -54,11 +54,19 @@ impl ChartKind {
 }
 
 /// One pie slice: a band's first-series value, or the fold of the smallest.
+#[derive(Debug)]
 pub struct PieSlice {
     name: SharedString,
     value: f32,
     /// Palette slot; `None` for the folded "other" slice.
     slot: Option<usize>,
+}
+
+impl PieSlice {
+    #[cfg(test)]
+    pub(crate) fn value(&self) -> f32 {
+        self.value
+    }
 }
 
 /// A chart is at most a couple of thousand pixels wide, so plotting more
@@ -88,11 +96,11 @@ pub struct ChartData {
     is_time_series: bool,
     rows: Vec<Arc<PlotPoint>>,
     /// The first series as pie slices, largest first.
-    pie: Vec<Rc<PieSlice>>,
+    pie: Vec<Arc<PieSlice>>,
     /// Rows the pie leaves out: a zero, negative or missing value is no slice.
     pie_skipped: usize,
     /// Set when the result has a latitude and a longitude column.
-    geo: Option<Rc<GeoData>>,
+    geo: Option<Arc<GeoData>>,
     /// `name (type)` per column, for the "no numeric column" message. Only
     /// populated when there is nothing to plot.
     detected: Vec<String>,
@@ -104,7 +112,7 @@ pub struct ChartData {
 
 impl ChartData {
     pub fn prepare(result: &QueryResult) -> Self {
-        let geo = GeoData::detect(result).map(Rc::new);
+        let geo = GeoData::detect(result).map(Arc::new);
         let mut value_ixes: Vec<usize> = result
             .columns
             .iter()
@@ -269,7 +277,7 @@ impl ChartData {
 
 /// The first series as pie slices, largest first, the smallest folded into
 /// "other" past `MAX_SLICES`; plus how many rows had no positive value.
-fn pie_slices(rows: &[Arc<PlotPoint>]) -> (Vec<Rc<PieSlice>>, usize) {
+pub(crate) fn pie_slices(rows: &[Arc<PlotPoint>]) -> (Vec<Arc<PieSlice>>, usize) {
     let mut positive: Vec<(SharedString, f64)> = rows
         .iter()
         .filter(|r| r.values[0] > 0.)
@@ -284,12 +292,12 @@ fn pie_slices(rows: &[Arc<PlotPoint>]) -> (Vec<Rc<PieSlice>>, usize) {
         positive.len()
     };
     let rest: f64 = positive[kept..].iter().map(|(_, v)| v).sum();
-    let mut slices: Vec<Rc<PieSlice>> = positive
+    let mut slices: Vec<Arc<PieSlice>> = positive
         .into_iter()
         .take(kept)
         .enumerate()
         .map(|(slot, (name, value))| {
-            Rc::new(PieSlice {
+            Arc::new(PieSlice {
                 name,
                 value: value as f32,
                 slot: Some(slot),
@@ -297,7 +305,7 @@ fn pie_slices(rows: &[Arc<PlotPoint>]) -> (Vec<Rc<PieSlice>>, usize) {
         })
         .collect();
     if folded {
-        slices.push(Rc::new(PieSlice {
+        slices.push(Arc::new(PieSlice {
             name: tr("chart.map.other").into(),
             value: rest as f32,
             slot: None,
@@ -526,23 +534,15 @@ fn chart_frame(
                 .when_some(notice, |this, notice| {
                     this.child(div().text_xs().text_color(muted).child(notice))
                 })
-                .when(!legend.is_empty(), |this| {
-                    this.child(h_flex().flex_wrap().gap_x_3().gap_y_1().children(
-                        legend.into_iter().map(|(color, name)| {
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(div().size_2().rounded_full().bg(color))
-                                .child(div().text_xs().text_color(muted).child(name))
-                        }),
-                    ))
-                }),
+                .when(!legend.is_empty(), |this| this.child(legend_row(legend, cx))),
         )
         .child(div().flex_1().min_h_0().child(chart))
         .into_any_element()
 }
 
-fn render_map(geo: Rc<GeoData>, cx: &App) -> AnyElement {
+/// What a map says under its title: capping, dropped rows, the color
+/// column; and its legend. Shared with dashboards.
+pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, SharedString)>) {
     let mut notices = Vec::new();
     if let Some(total) = geo.capped_from {
         notices.push(trf(
@@ -562,20 +562,47 @@ fn render_map(geo: Rc<GeoData>, cx: &App) -> AnyElement {
         .enumerate()
         .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
         .collect();
+    ((!notices.is_empty()).then(|| notices.join(" · ")), legend)
+}
+
+fn render_map(geo: Arc<GeoData>, cx: &App) -> AnyElement {
+    let (notice, legend) = map_notes(&geo, cx);
     chart_frame(
         trf("chart.map.title", &[&geo.lat_name, &geo.lng_name]),
         trf("chart.title.point_count", &[&geo.point_count().to_string()]),
-        (!notices.is_empty()).then(|| notices.join(" · ")),
+        notice,
         legend,
         GeoPlot::new("results-chart-map", geo).into_any_element(),
         cx,
     )
 }
 
-fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
-    if data.pie.is_empty() {
-        return empty_chart_state(tr("chart.pie.no_positive"), &[], cx);
-    }
+/// A key of colored dots and names, wrapping as wide as it is given.
+pub(crate) fn legend_row(legend: Vec<(Hsla, SharedString)>, cx: &App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    h_flex()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_1()
+        .children(legend.into_iter().map(|(color, name)| {
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(div().size_2().rounded_full().bg(color))
+                .child(div().text_xs().text_color(muted).child(name))
+        }))
+        .into_any_element()
+}
+
+/// A pie over `slices` and its legend (each slice with its share), shared by
+/// the results panel and dashboards so both color and fold slices alike.
+/// Also returns the total the shares are of.
+pub(crate) fn pie_parts(
+    slices: &[Arc<PieSlice>],
+    series: SharedString,
+    id: impl Into<ElementId>,
+    cx: &App,
+) -> (AnyElement, Vec<(Hsla, SharedString)>, f64) {
     let palette = [
         cx.theme().chart_1,
         cx.theme().chart_2,
@@ -591,9 +618,8 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
         Some(slot) => palette[slot % palette.len()].opacity(0.55),
         None => muted.opacity(0.6),
     };
-    let total: f64 = data.pie.iter().map(|s| s.value as f64).sum();
-    let legend = data
-        .pie
+    let total: f64 = slices.iter().map(|s| s.value as f64).sum();
+    let legend = slices
         .iter()
         .map(|s| {
             let share = s.value as f64 / total * 100.;
@@ -603,15 +629,24 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
             )
         })
         .collect();
-    let series = data.series_names[0].clone();
-    let chart = PieChart::new(data.pie.clone())
-        .value(|s: &Rc<PieSlice>| s.value)
-        .color(move |s: &Rc<PieSlice>| color(s))
+    let chart = PieChart::new(slices.to_vec())
+        .value(|s: &Arc<PieSlice>| s.value)
+        .color(move |s: &Arc<PieSlice>| color(s))
         .pad_angle(0.01)
-        .tooltip_name(|s: &Rc<PieSlice>| s.name.clone())
-        .name(series.clone())
-        .id("results-chart-pie")
+        .tooltip_name(|s: &Arc<PieSlice>| s.name.clone())
+        .name(series)
+        .id(id)
         .into_any_element();
+    (chart, legend, total)
+}
+
+fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
+    if data.pie.is_empty() {
+        return empty_chart_state(tr("chart.pie.no_positive"), &[], cx);
+    }
+    let series = data.series_names[0].clone();
+    let (chart, legend, total) =
+        pie_parts(&data.pie, series.clone().into(), "results-chart-pie", cx);
     let notice = (data.pie_skipped > 0)
         .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
     let notice = match (data.notice.clone(), notice) {
