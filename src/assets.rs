@@ -18,7 +18,7 @@ use gpui_kit::{AssetSource, Result, SharedString};
 
 icon_assets!(
     ExtraIcons,
-    [Save, AppWindow, WandSparkles, ListTree, Pencil, Download, Code, CircleStop]
+    [Save, AppWindow, WandSparkles, ListTree, Download, Code, CircleStop, CircleDashed]
 );
 
 /// The default component bundle, plus [`ExtraIcons`].
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn every_icon_the_app_draws_is_served() {
         let names = icons_in_source();
-        for expected in ["Save", "Pencil", "SquareTerminal"] {
+        for expected in ["Save", "WandSparkles", "SquareTerminal"] {
             assert!(names.contains(&expected.to_string()), "{names:?}");
         }
         for name in names {

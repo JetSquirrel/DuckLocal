@@ -155,7 +155,9 @@ fn help_version_and_argument_errors_do_not_initialize_gui() {
         assert!(output.status.success());
         assert!(output.stderr.is_empty());
         let text = String::from_utf8(output.stdout).unwrap();
-        assert!(text.contains("DuckLocal") || text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(
+            text.to_lowercase().contains("ducklocal") || text.contains(env!("CARGO_PKG_VERSION"))
+        );
     }
     for args in [
         vec!["--wat"],

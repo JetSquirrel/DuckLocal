@@ -1,7 +1,9 @@
 //! Chart tab of the results panel: renders the current row set as a chart.
-//! First column temporal → multi-series area chart (time series, one series
-//! per numeric column); otherwise bar chart — first column as the band
-//! label, first numeric column as the value.
+//! The kind is picked by the user, or by `ChartKind::Auto`: a latitude and a
+//! longitude column → a map ([`crate::ui::geo`]); first column temporal →
+//! multi-series area chart (time series, one series per numeric column);
+//! otherwise bar chart — first column as the band label, numeric columns as
+//! the values. Line, scatter and pie are a click away.
 //!
 //! Deriving chart data walks every result row, so it happens once per result
 //! set (`ChartData::prepare`) and is cached by the results panel. The panel
@@ -9,8 +11,9 @@
 //! `Rc`s so a frame costs refcount bumps rather than a copy of the row set.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
-use gpui_kit::component::chart::{AreaChart, BarChart};
+use gpui_kit::component::chart::{AreaChart, BarChart, PieChart};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::{h_flex, v_flex, Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
@@ -18,13 +21,44 @@ use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
+use crate::spec::plot::{GroupedBars, SeriesPlot};
+use crate::spec::prepare::PlotPoint;
+use crate::ui::geo::{GeoData, GeoPlot, MAX_GEO_POINTS};
 
-pub struct ChartDatum {
-    band: SharedString,
-    /// Pre-rendered bar label; avoids formatting on every frame.
-    label: SharedString,
-    values: Vec<f64>,
-    ix: usize,
+/// What the chart tab draws. `Auto` resolves per result set, see
+/// [`ChartData::resolve`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChartKind {
+    #[default]
+    Auto,
+    Bar,
+    Line,
+    Area,
+    Scatter,
+    Pie,
+    Map,
+}
+
+impl ChartKind {
+    pub fn label(self) -> &'static str {
+        tr(match self {
+            ChartKind::Auto => "chart.kind.auto",
+            ChartKind::Bar => "chart.kind.bar",
+            ChartKind::Line => "chart.kind.line",
+            ChartKind::Area => "chart.kind.area",
+            ChartKind::Scatter => "chart.kind.scatter",
+            ChartKind::Pie => "chart.kind.pie",
+            ChartKind::Map => "chart.kind.map",
+        })
+    }
+}
+
+/// One pie slice: a band's first-series value, or the fold of the smallest.
+pub struct PieSlice {
+    name: SharedString,
+    value: f32,
+    /// Palette slot; `None` for the folded "other" slice.
+    slot: Option<usize>,
 }
 
 /// A chart is at most a couple of thousand pixels wide, so plotting more
@@ -44,13 +78,21 @@ const MAX_BARS: usize = 200;
 const MAX_LISTED_COLUMNS: usize = 5;
 /// How many series names go into the chart title before summarizing the rest.
 const MAX_TITLE_SERIES: usize = 3;
+/// Past this many slices a pie is unreadable; the smallest fold into "other".
+const MAX_SLICES: usize = 8;
 
 /// Everything the chart needs, derived from a result set once.
 pub struct ChartData {
     label_name: String,
     series_names: Vec<String>,
     is_time_series: bool,
-    rows: Vec<Rc<ChartDatum>>,
+    rows: Vec<Arc<PlotPoint>>,
+    /// The first series as pie slices, largest first.
+    pie: Vec<Rc<PieSlice>>,
+    /// Rows the pie leaves out: a zero, negative or missing value is no slice.
+    pie_skipped: usize,
+    /// Set when the result has a latitude and a longitude column.
+    geo: Option<Rc<GeoData>>,
     /// `name (type)` per column, for the "no numeric column" message. Only
     /// populated when there is nothing to plot.
     detected: Vec<String>,
@@ -62,6 +104,7 @@ pub struct ChartData {
 
 impl ChartData {
     pub fn prepare(result: &QueryResult) -> Self {
+        let geo = GeoData::detect(result).map(Rc::new);
         let mut value_ixes: Vec<usize> = result
             .columns
             .iter()
@@ -75,6 +118,9 @@ impl ChartData {
                 series_names: Vec::new(),
                 is_time_series: false,
                 rows: Vec::new(),
+                pie: Vec::new(),
+                pie_skipped: 0,
+                geo,
                 detected: result
                     .columns
                     .iter()
@@ -138,17 +184,19 @@ impl ChartData {
             bars
         };
 
-        let rows = plotted
+        let rows: Vec<Arc<PlotPoint>> = plotted
             .into_iter()
             .map(|(ix, band, values)| {
-                Rc::new(ChartDatum {
+                Arc::new(PlotPoint {
                     band,
                     label: format_value(values[0]).into(),
+                    present: vec![true; values.len()],
                     values,
                     ix,
                 })
             })
             .collect();
+        let (pie, pie_skipped) = pie_slices(&rows);
 
         Self {
             label_name: result.columns[0].name.clone(),
@@ -158,8 +206,52 @@ impl ChartData {
                 .collect(),
             is_time_series,
             rows,
+            pie,
+            pie_skipped,
+            geo,
             detected: Vec::new(),
             notice: (!notices.is_empty()).then(|| notices.join(" · ")),
+        }
+    }
+
+    /// Whether there is anything to chart at all; the kind picker is hidden
+    /// otherwise.
+    pub fn is_plottable(&self) -> bool {
+        !self.series_names.is_empty()
+    }
+
+    /// The kinds this result can be drawn as, `Auto` first.
+    pub fn available_kinds(&self) -> Vec<ChartKind> {
+        let mut kinds = Vec::from([
+            ChartKind::Auto,
+            ChartKind::Bar,
+            ChartKind::Line,
+            ChartKind::Area,
+            ChartKind::Scatter,
+        ]);
+        if !self.is_time_series {
+            kinds.push(ChartKind::Pie);
+        }
+        if self.geo.is_some() {
+            kinds.push(ChartKind::Map);
+        }
+        kinds
+    }
+
+    /// The concrete kind `kind` draws for this result: `Auto` picks the map
+    /// when there are coordinates, an area chart over time, bars otherwise;
+    /// a kind this result cannot draw (a map without coordinates, kept from a
+    /// previous result) falls back to `Auto`'s pick.
+    pub fn resolve(&self, kind: ChartKind) -> ChartKind {
+        if kind != ChartKind::Auto && self.available_kinds().contains(&kind) {
+            return kind;
+        }
+        if self.geo.is_some() {
+            ChartKind::Map
+        } else if self.is_time_series {
+            ChartKind::Area
+        } else {
+            ChartKind::Bar
         }
     }
 
@@ -170,9 +262,48 @@ impl ChartData {
 
     /// What `RenderOnce::render` hands to the chart each frame.
     #[cfg(test)]
-    pub fn clone_rows_for_probe(&self) -> Vec<Rc<ChartDatum>> {
+    pub fn clone_rows_for_probe(&self) -> Vec<Arc<PlotPoint>> {
         self.rows.clone()
     }
+}
+
+/// The first series as pie slices, largest first, the smallest folded into
+/// "other" past `MAX_SLICES`; plus how many rows had no positive value.
+fn pie_slices(rows: &[Arc<PlotPoint>]) -> (Vec<Rc<PieSlice>>, usize) {
+    let mut positive: Vec<(SharedString, f64)> = rows
+        .iter()
+        .filter(|r| r.values[0] > 0.)
+        .map(|r| (r.band.clone(), r.values[0]))
+        .collect();
+    let skipped = rows.len() - positive.len();
+    positive.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let folded = positive.len() > MAX_SLICES;
+    let kept = if folded {
+        MAX_SLICES - 1
+    } else {
+        positive.len()
+    };
+    let rest: f64 = positive[kept..].iter().map(|(_, v)| v).sum();
+    let mut slices: Vec<Rc<PieSlice>> = positive
+        .into_iter()
+        .take(kept)
+        .enumerate()
+        .map(|(slot, (name, value))| {
+            Rc::new(PieSlice {
+                name,
+                value: value as f32,
+                slot: Some(slot),
+            })
+        })
+        .collect();
+    if folded {
+        slices.push(Rc::new(PieSlice {
+            name: tr("chart.map.other").into(),
+            value: rest as f32,
+            slot: None,
+        }));
+    }
+    (slices, skipped)
 }
 
 /// Merge consecutive points into at most `max_points` buckets, averaging each
@@ -217,11 +348,13 @@ pub(crate) fn parse_number(cell: &str) -> Option<f64> {
 #[derive(IntoElement)]
 pub struct ChartPanel {
     data: Rc<ChartData>,
+    kind: ChartKind,
 }
 
 impl ChartPanel {
-    pub fn new(data: Rc<ChartData>) -> Self {
-        Self { data }
+    /// `kind` is what the user picked; the panel draws `data.resolve(kind)`.
+    pub fn new(data: Rc<ChartData>, kind: ChartKind) -> Self {
+        Self { data, kind }
     }
 }
 
@@ -251,8 +384,18 @@ impl RenderOnce for ChartPanel {
             );
         }
 
+        let kind = data.resolve(self.kind);
+        if kind == ChartKind::Map {
+            if let Some(geo) = data.geo.clone() {
+                return render_map(geo, cx);
+            }
+        }
+
         if data.rows.is_empty() {
             return empty_chart_state(tr("chart.empty.no_rows"), &[], cx);
+        }
+        if kind == ChartKind::Pie {
+            return render_pie(data, cx);
         }
 
         let palette = [
@@ -267,35 +410,45 @@ impl RenderOnce for ChartPanel {
         // row data.
         let rows = data.rows.clone();
 
-        let chart = if data.is_time_series {
-            // One area series per numeric column; ~10 x labels on dense data.
-            // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
-            let tick_margin = (row_count / 10).max(1);
-            let mut chart = AreaChart::new(rows)
-                .x(|d: &Rc<ChartDatum>| d.band.clone())
-                .id("results-chart");
-            for (series_ix, series_name) in data.series_names.iter().enumerate() {
-                let color = palette[series_ix % palette.len()];
-                chart = chart
-                    .y(move |d: &Rc<ChartDatum>| d.values[series_ix])
-                    .stroke(color)
-                    .fill(linear_gradient(
-                        0.,
-                        linear_color_stop(color.opacity(0.4), 1.),
-                        linear_color_stop(color.opacity(0.05), 0.),
-                    ))
-                    .name(series_name.clone());
+        let chart = match kind {
+            ChartKind::Line => SeriesPlot::lines_of("results-chart-line", rows, &data.series_names)
+                .into_any_element(),
+            ChartKind::Scatter => {
+                SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
+                    .into_any_element()
             }
-            chart.tick_margin(tick_margin).into_any_element()
-        } else {
-            BarChart::new(rows)
-                .band(|d: &Rc<ChartDatum>| d.band.clone())
-                .value(|d: &Rc<ChartDatum>| d.values[0])
-                .fill(move |d: &Rc<ChartDatum>, _, _, _| palette[d.ix % palette.len()])
-                .label(|d: &Rc<ChartDatum>| d.label.clone())
+            ChartKind::Bar if data.series_names.len() > 1 => {
+                GroupedBars::of("results-chart-bars", rows, &data.series_names).into_any_element()
+            }
+            ChartKind::Area => {
+                // One area series per numeric column; ~10 x labels on dense data.
+                // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
+                let tick_margin = (row_count / 10).max(1);
+                let mut chart = AreaChart::new(rows)
+                    .x(|d: &Arc<PlotPoint>| d.band.clone())
+                    .id("results-chart");
+                for (series_ix, series_name) in data.series_names.iter().enumerate() {
+                    let color = palette[series_ix % palette.len()];
+                    chart = chart
+                        .y(move |d: &Arc<PlotPoint>| d.values[series_ix])
+                        .stroke(color)
+                        .fill(linear_gradient(
+                            0.,
+                            linear_color_stop(color.opacity(0.4), 1.),
+                            linear_color_stop(color.opacity(0.05), 0.),
+                        ))
+                        .name(series_name.clone());
+                }
+                chart.tick_margin(tick_margin).into_any_element()
+            }
+            _ => BarChart::new(rows)
+                .band(|d: &Arc<PlotPoint>| d.band.clone())
+                .value(|d: &Arc<PlotPoint>| d.values[0])
+                .fill(move |d: &Arc<PlotPoint>, _, _, _| palette[d.ix % palette.len()])
+                .label(|d: &Arc<PlotPoint>| d.label.clone())
                 .id("results-chart")
                 .name(data.series_names[0].clone())
-                .into_any_element()
+                .into_any_element(),
         };
 
         let label_name = data.label_name.clone();
@@ -311,45 +464,168 @@ impl RenderOnce for ChartPanel {
         } else {
             data.series_names.join(", ")
         };
-        v_flex()
-            .size_full()
-            .p_4()
-            .gap_2()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_baseline()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(trf("chart.title.by", &[&series_title, &label_name])),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(trf(
-                                        "chart.title.point_count",
-                                        &[&row_count.to_string()],
-                                    )),
-                            ),
+        // Several series need a key; one series is named in the title.
+        let legend = (data.series_names.len() > 1
+            && matches!(
+                kind,
+                ChartKind::Line | ChartKind::Scatter | ChartKind::Area | ChartKind::Bar
+            ))
+        .then(|| {
+            data.series_names
+                .iter()
+                .enumerate()
+                .map(|(ix, name)| {
+                    (
+                        palette[ix % palette.len()],
+                        SharedString::from(name.clone()),
                     )
-                    .when_some(notice, |this, notice| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(notice),
-                        )
-                    }),
-            )
-            .child(div().flex_1().min_h_0().child(chart))
-            .into_any_element()
+                })
+                .collect::<Vec<_>>()
+        });
+        chart_frame(
+            trf("chart.title.by", &[&series_title, &label_name]),
+            trf("chart.title.point_count", &[&row_count.to_string()]),
+            notice,
+            legend.unwrap_or_default(),
+            chart,
+            cx,
+        )
     }
+}
+
+/// The layout every kind shares: a title with a muted count beside it, an
+/// optional notice and legend under it, and the chart filling the rest.
+fn chart_frame(
+    title: String,
+    count: String,
+    notice: Option<String>,
+    legend: Vec<(Hsla, SharedString)>,
+    chart: AnyElement,
+    cx: &App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .size_full()
+        .p_4()
+        .gap_2()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_baseline()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(div().text_sm().text_color(muted).child(count)),
+                )
+                .when_some(notice, |this, notice| {
+                    this.child(div().text_xs().text_color(muted).child(notice))
+                })
+                .when(!legend.is_empty(), |this| {
+                    this.child(h_flex().flex_wrap().gap_x_3().gap_y_1().children(
+                        legend.into_iter().map(|(color, name)| {
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(div().size_2().rounded_full().bg(color))
+                                .child(div().text_xs().text_color(muted).child(name))
+                        }),
+                    ))
+                }),
+        )
+        .child(div().flex_1().min_h_0().child(chart))
+        .into_any_element()
+}
+
+fn render_map(geo: Rc<GeoData>, cx: &App) -> AnyElement {
+    let mut notices = Vec::new();
+    if let Some(total) = geo.capped_from {
+        notices.push(trf(
+            "chart.map.notice.capped",
+            &[&MAX_GEO_POINTS.to_string(), &total.to_string()],
+        ));
+    }
+    if geo.dropped > 0 {
+        notices.push(trf("chart.map.notice.dropped", &[&geo.dropped.to_string()]));
+    }
+    if let Some(name) = &geo.category_name {
+        notices.push(trf("chart.map.colored_by", &[name]));
+    }
+    let legend = geo
+        .categories
+        .iter()
+        .enumerate()
+        .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
+        .collect();
+    chart_frame(
+        trf("chart.map.title", &[&geo.lat_name, &geo.lng_name]),
+        trf("chart.title.point_count", &[&geo.point_count().to_string()]),
+        (!notices.is_empty()).then(|| notices.join(" · ")),
+        legend,
+        GeoPlot::new("results-chart-map", geo).into_any_element(),
+        cx,
+    )
+}
+
+fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
+    if data.pie.is_empty() {
+        return empty_chart_state(tr("chart.pie.no_positive"), &[], cx);
+    }
+    let palette = [
+        cx.theme().chart_1,
+        cx.theme().chart_2,
+        cx.theme().chart_3,
+        cx.theme().chart_4,
+        cx.theme().chart_5,
+    ];
+    let muted = cx.theme().muted_foreground;
+    // Past the palette, slices reuse its colors at lower strength so
+    // neighbours still differ.
+    let color = move |slice: &PieSlice| match slice.slot {
+        Some(slot) if slot < palette.len() => palette[slot],
+        Some(slot) => palette[slot % palette.len()].opacity(0.55),
+        None => muted.opacity(0.6),
+    };
+    let total: f64 = data.pie.iter().map(|s| s.value as f64).sum();
+    let legend = data
+        .pie
+        .iter()
+        .map(|s| {
+            let share = s.value as f64 / total * 100.;
+            (
+                color(s),
+                SharedString::from(format!("{} · {share:.1}%", s.name)),
+            )
+        })
+        .collect();
+    let series = data.series_names[0].clone();
+    let chart = PieChart::new(data.pie.clone())
+        .value(|s: &Rc<PieSlice>| s.value)
+        .color(move |s: &Rc<PieSlice>| color(s))
+        .pad_angle(0.01)
+        .tooltip_name(|s: &Rc<PieSlice>| s.name.clone())
+        .name(series.clone())
+        .id("results-chart-pie")
+        .into_any_element();
+    let notice = (data.pie_skipped > 0)
+        .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
+    let notice = match (data.notice.clone(), notice) {
+        (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+        (a, b) => a.or(b),
+    };
+    chart_frame(
+        trf("chart.pie.title", &[&series, &data.label_name]),
+        trf("chart.pie.total", &[&format_value(total)]),
+        notice,
+        legend,
+        chart,
+        cx,
+    )
 }
 
 /// Shared empty-state layout: a medium-weight message over muted hints.
@@ -398,7 +674,7 @@ pub(crate) fn format_value(value: f64) -> String {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{parse_number, ChartData};
+    use super::{parse_number, ChartData, ChartKind, MAX_SLICES};
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
 
     fn column(name: &str, kind: ColumnKind) -> ColumnMeta {
@@ -595,5 +871,59 @@ mod tests {
         assert_eq!(data.rows.len(), 2);
         // `ix` stays the source row index, which the bar palette cycles on.
         assert_eq!(data.rows[1].ix, 2);
+    }
+
+    #[test]
+    fn auto_picks_a_map_when_there_are_coordinates() {
+        let data = ChartData::prepare(&result(
+            Vec::from([
+                column("name", ColumnKind::Text),
+                column("lat", ColumnKind::Numeric),
+                column("lng", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["Utrecht", "52.09", "5.11"])]),
+        ));
+        assert_eq!(data.resolve(ChartKind::Auto), ChartKind::Map);
+        assert!(data.available_kinds().contains(&ChartKind::Map));
+        // The other kinds still draw the coordinates as plain numbers.
+        assert_eq!(data.resolve(ChartKind::Bar), ChartKind::Bar);
+    }
+
+    #[test]
+    fn a_kind_the_result_cannot_draw_falls_back_to_auto() {
+        let data = ChartData::prepare(&result(
+            Vec::from([
+                column("d", ColumnKind::Temporal),
+                column("amount", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["2026-09-09", "1.5"])]),
+        ));
+        assert_eq!(data.resolve(ChartKind::Map), ChartKind::Area);
+        assert_eq!(data.resolve(ChartKind::Pie), ChartKind::Area);
+        assert_eq!(data.resolve(ChartKind::Line), ChartKind::Line);
+    }
+
+    #[test]
+    fn pie_slices_fold_the_smallest_into_other() {
+        let rows: Vec<Vec<String>> = (1..=20)
+            .map(|ix| Vec::from([format!("c{ix}"), format!("{ix}")]))
+            .chain([Vec::from(["neg".into(), "-5".into()])])
+            .collect();
+        let data = ChartData::prepare(&QueryResult {
+            columns: Vec::from([
+                column("city", ColumnKind::Text),
+                column("total", ColumnKind::Numeric),
+            ]),
+            rows,
+            elapsed_ms: 0,
+            truncated: false,
+        });
+        assert_eq!(data.pie.len(), MAX_SLICES);
+        // Largest first, and nothing is lost to the fold.
+        assert_eq!(data.pie[0].name, "c20");
+        assert!(data.pie.last().unwrap().slot.is_none());
+        let total: f32 = data.pie.iter().map(|s| s.value).sum();
+        assert_eq!(total, 210.);
+        assert_eq!(data.pie_skipped, 1);
     }
 }

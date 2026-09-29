@@ -279,7 +279,10 @@ pub struct Workspace {
     /// Set once the user asks for the editor on a connection with no data yet,
     /// which is otherwise the first-run screen's job to keep out of the way.
     editor_shown: bool,
-    rename_input: Option<Entity<InputState>>,
+    /// The tab whose title is being edited in place (double-click on it),
+    /// with the editor standing in for its label.
+    renaming: Option<(u64, Entity<InputState>)>,
+    _rename_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     /// Declared last on purpose: fields drop in declaration order, and every
     /// app tab's mounted script view holds QuickJS handles into this
@@ -299,7 +302,8 @@ impl Workspace {
             running: false,
             explaining: false,
             editor_shown: false,
-            rename_input: None,
+            renaming: None,
+            _rename_subscription: None,
             _subscriptions: vec![
                 cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
                     // A dashboard queries the window's connection, so a switch
@@ -329,11 +333,9 @@ impl Workspace {
             runtime: None,
         };
         let tab = this.new_tab_editor(window, cx);
-        let run_hint = Keystroke::parse(RUN_QUERY_KEYSTROKE)
-            .map(|k| Kbd::format(&k))
-            .unwrap_or_else(|_| "⌘↵".to_string());
+        // No "press ⌘↵" comment: the empty results panel under it says so.
         tab.editor.update(cx, |editor, cx| {
-            editor.set_value(trf("workspace.welcome_sql", &[&run_hint]), window, cx);
+            editor.set_value(tr("workspace.welcome_sql"), window, cx);
         });
         this.tabs.push(WorkspaceTab::Query(tab));
         this
@@ -856,58 +858,56 @@ impl Workspace {
         })
     }
 
-    fn open_rename_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get(self.active) else {
+    /// Put an editor over the title of the tab at `index`, as a double-click
+    /// on it does. Enter or clicking away keeps the new title; Escape keeps
+    /// the old one.
+    fn start_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(index) else {
             return;
         };
+        let tab_id = tab.id();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(tab.title().clone()));
-        self.rename_input = Some(input.clone());
-        let view = cx.entity().downgrade();
-
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title(tr("dialog.rename.title"))
-                .w(crate::ui::scale::design(360.))
-                .child(Input::new(&input))
-                .footer(
-                    DialogFooter::new()
-                        .gap_2()
-                        .child(
-                            Button::new("cancel")
-                                .outline()
-                                .label(tr("common.cancel"))
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("confirm-rename")
-                                .primary()
-                                .label(tr("dialog.rename.confirm"))
-                                .on_click({
-                                    let input = input.clone();
-                                    let view = view.clone();
-                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                                        let title = input.read(cx).value().trim().to_string();
-                                        window.close_dialog(cx);
-                                        if let Some(view) = view.upgrade() {
-                                            view.update(cx, |this, cx| {
-                                                this.rename_active_tab(&title, cx);
-                                            });
-                                        }
-                                    }
-                                }),
-                        ),
-                )
-        });
+        input.update(cx, |state, cx| state.select_all(window, cx));
+        input.read(cx).focus_handle(cx).focus(window, cx);
+        self._rename_subscription = Some(cx.subscribe_in(
+            &input,
+            window,
+            move |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_rename(cx),
+                _ => {}
+            },
+        ));
+        self.renaming = Some((tab_id, input));
+        cx.notify();
     }
 
-    /// Rename the active tab; an empty title falls back to the tab's own name.
-    fn rename_active_tab(&mut self, title: &str, cx: &mut Context<Self>) {
-        let default_title = self.tabs.get(self.active).map(|tab| match tab {
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some((tab_id, input)) = self.renaming.take() else {
+            return;
+        };
+        self._rename_subscription = None;
+        let title = input.read(cx).value().trim().to_string();
+        if let Some(index) = self.tabs.iter().position(|tab| tab.id() == tab_id) {
+            self.rename_tab(index, &title, cx);
+        }
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.renaming = None;
+        self._rename_subscription = None;
+        cx.notify();
+    }
+
+    /// Rename the tab at `index`; an empty title falls back to the tab's own
+    /// name.
+    fn rename_tab(&mut self, index: usize, title: &str, cx: &mut Context<Self>) {
+        let default_title = self.tabs.get(index).map(|tab| match tab {
             WorkspaceTab::Query(tab) => trf("workspace.tab.default_title", &[&tab.id.to_string()]),
             WorkspaceTab::App(tab) => apps::title_for(&tab.directory),
             WorkspaceTab::Dashboard(tab) => crate::spec::tabs::title_for(&tab.path),
         });
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.tabs.get_mut(index) else {
             return;
         };
         let fallback = default_title.unwrap_or_default();
@@ -954,19 +954,29 @@ impl Workspace {
         let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let run_sql = sql.clone();
-            let (outcome, history, catalog) = smol::unblock(move || {
+            let (script, history, catalog) = smol::unblock(move || {
                 // Decided before `run_sql` is handed to the history entry.
                 let reload_catalog = crate::query::may_change_catalog(&run_sql);
-                let outcome = crate::query::run(&run_sql);
-                let (duration_ms, row_count, ok, error) = match &outcome {
-                    Ok(QueryOutcome::Rows(result)) => (
-                        result.elapsed_ms as i64,
-                        Some(result.row_count() as i64),
-                        true,
-                        None,
-                    ),
-                    Ok(QueryOutcome::Affected { count, elapsed_ms }) => {
-                        (*elapsed_ms as i64, Some(*count as i64), true, None)
+                let script = crate::script::run(&run_sql);
+                // A script is one history entry: its total time, the row
+                // count of the result it shows, and its first error.
+                let (duration_ms, row_count, ok, error) = match &script {
+                    Ok(script) => {
+                        let mut duration_ms = 0i64;
+                        let mut error = None;
+                        for step in &script.steps {
+                            match &step.outcome {
+                                Some(Ok(outcome)) => duration_ms += outcome_elapsed(outcome) as i64,
+                                Some(Err(e)) => error = Some(e.to_string()),
+                                None => {}
+                            }
+                        }
+                        let row_count = script
+                            .primary()
+                            .and_then(|ix| script.steps[ix].outcome.as_ref())
+                            .and_then(|outcome| outcome.as_ref().ok())
+                            .map(outcome_count);
+                        (duration_ms, row_count, error.is_none(), error)
                     }
                     Err(e) => (0, None, false, Some(e.to_string())),
                 };
@@ -985,35 +995,57 @@ impl Workspace {
                 // instead of paying for it on the way back from every query.
                 let catalog =
                     reload_catalog.then(|| crate::schema::load_catalog().unwrap_or_default());
-                (outcome, history, catalog)
+                (script, history, catalog)
             })
             .await;
 
             this.update_in(cx, move |this, window, cx| {
                 this.running = false;
-                let stats = match &outcome {
-                    Ok(QueryOutcome::Rows(result)) => Some(QueryStats {
+                let script = script.unwrap_or_else(|e| crate::script::ScriptOutcome {
+                    // The connection itself was unavailable: one failure for
+                    // the whole script, as a single statement's would be.
+                    steps: Vec::from([crate::script::Step {
+                        piece: crate::script::Piece {
+                            kind: crate::script::PieceKind::Sql,
+                            range: 0..sql.len(),
+                        },
+                        outcome: Some(Err(e)),
+                    }]),
+                    search_path: None,
+                });
+                let primary = script
+                    .primary()
+                    .and_then(|ix| Some((ix, script.steps[ix].outcome.as_ref()?)));
+                let stats = match primary {
+                    Some((_, Ok(QueryOutcome::Rows(result)))) => Some(QueryStats {
                         elapsed_ms: result.elapsed_ms,
                         rows: result.row_count(),
                         cols: result.columns.len(),
                     }),
-                    Ok(QueryOutcome::Affected { elapsed_ms, count }) => Some(QueryStats {
-                        elapsed_ms: *elapsed_ms,
-                        rows: *count as usize,
-                        cols: 0,
-                    }),
-                    Err(_) => None,
+                    Some((_, Ok(QueryOutcome::Affected { elapsed_ms, count }))) => {
+                        Some(QueryStats {
+                            elapsed_ms: *elapsed_ms,
+                            rows: *count as usize,
+                            cols: 0,
+                        })
+                    }
+                    Some((_, Err(_))) | None => None,
                 };
-                if let Err(error) = &outcome {
-                    Self::mark_sql_error(&query, error, cx);
+                if let Some((ix, Err(error))) = primary {
+                    let range = script.steps[ix].piece.range.clone();
+                    Self::mark_sql_error(&query, range, error, cx);
                 }
+                let search_path = script.search_path;
                 query.results.update(cx, |results, cx| {
-                    results.set_outcome(outcome, sql.clone(), window, cx);
+                    results.set_script(script.steps, sql.clone(), window, cx);
                 });
                 state.update(cx, |s, cx| {
                     s.set_history(history, cx);
                     if let Some(catalog) = catalog {
                         s.set_catalog(catalog, cx);
+                    }
+                    if search_path.is_some() {
+                        s.set_search_path(search_path, cx);
                     }
                     if let Some(stats) = stats {
                         s.set_last_query(stats, sql.clone(), cx);
@@ -1051,10 +1083,21 @@ impl Workspace {
     /// underline on the token and a quiet fill behind it, both in the theme's
     /// danger color. The collections follow edits and sit outside undo
     /// history, so nothing here is replayed by ⌘Z.
-    fn mark_sql_error(query: &ActiveQuery, error: &anyhow::Error, cx: &mut App) {
-        let Some(range) = crate::query::error_byte_range(&query.sql, &error.to_string()) else {
+    /// `piece` is the byte range of the statement that failed: DuckDB's
+    /// position is relative to that statement, not to the whole script.
+    fn mark_sql_error(
+        query: &ActiveQuery,
+        piece: std::ops::Range<usize>,
+        error: &anyhow::Error,
+        cx: &mut App,
+    ) {
+        let Some(sql) = query.sql.get(piece.clone()) else {
             return;
         };
+        let Some(range) = crate::query::error_byte_range(sql, &error.to_string()) else {
+            return;
+        };
+        let range = piece.start + range.start..piece.start + range.end;
         let danger = cx.theme().danger;
         query.squiggles.set(
             vec![TextDecoration::new(
@@ -1102,7 +1145,7 @@ impl Workspace {
             this.update_in(cx, move |this, window, cx| {
                 this.explaining = false;
                 if let Err(error) = &result {
-                    Self::mark_sql_error(&query, error, cx);
+                    Self::mark_sql_error(&query, 0..query.sql.len(), error, cx);
                 }
                 query.results.update(cx, |results, cx| {
                     results.set_explain(result, window, cx);
@@ -1116,6 +1159,7 @@ impl Workspace {
 
     fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let closable = self.tabs.len() > 1;
+        let renaming = self.renaming.clone();
         let duplicates = duplicate_titles(self.tabs.iter().map(|tab| tab.title().as_ref()));
         TabBar::new("query-tabs")
             .small()
@@ -1123,9 +1167,13 @@ impl Workspace {
             .on_click(cx.listener(|this, ix, window, cx| {
                 this.activate(*ix, window, cx);
             }))
-            .children(self.tabs.iter().map(|tab| {
+            .children(self.tabs.iter().enumerate().map(|(index, tab)| {
                 let tab_id = tab.id();
                 let title = tab.title().clone();
+                let editor = renaming
+                    .as_ref()
+                    .filter(|(id, _)| *id == tab_id)
+                    .map(|(_, input)| input.clone());
                 // Same-titled tabs say which folder they came from, muted,
                 // so the label still reads as the title first.
                 let hint = duplicates
@@ -1149,7 +1197,41 @@ impl Workspace {
                             .gap_1p5()
                             .items_center()
                             .child(Icon::new(glyph).small())
-                            .child(title)
+                            .map(|this| match editor {
+                                // The editor takes the label's place, sized
+                                // like it, so the strip does not jump.
+                                Some(input) => this.child(
+                                    div()
+                                        .w(crate::ui::scale::design(rename_width(&input, cx)))
+                                        .border_b_1()
+                                        .border_color(cx.theme().primary)
+                                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                            if event.keystroke.key == "escape" {
+                                                cx.stop_propagation();
+                                                this.cancel_rename(cx);
+                                            }
+                                        }))
+                                        .child(Input::new(&input).xsmall().appearance(false)),
+                                ),
+                                None => this.child(
+                                    div()
+                                        .id(("tab-title", tab_id as usize))
+                                        .child(title)
+                                        .tooltip(|window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(tr(
+                                                "workspace.rename.tooltip",
+                                            ))
+                                            .build(window, cx)
+                                        })
+                                        .on_click(cx.listener(
+                                            move |this, event: &ClickEvent, window, cx| {
+                                                if event.click_count() == 2 {
+                                                    this.start_rename(index, window, cx);
+                                                }
+                                            },
+                                        )),
+                                ),
+                            })
                             .when_some(hint, |this, hint| {
                                 this.child(
                                     div()
@@ -1301,20 +1383,6 @@ impl Workspace {
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
             )
-            .child(div().flex_1())
-            .child(Self::rename_button("rename-tab", cx))
-    }
-
-    /// Every toolbar ends with the same Rename: bordered, with its glyph,
-    /// like the buttons beside it.
-    fn rename_button(id: &'static str, cx: &mut Context<Self>) -> Button {
-        Button::new(id)
-            .outline()
-            .small()
-            .icon(AssetIcon::Pencil)
-            .label(tr("workspace.rename"))
-            .tooltip(tr("workspace.rename.tooltip"))
-            .on_click(cx.listener(Self::open_rename_dialog))
     }
 
     /// What an app tab's toolbar says instead of Run/Format/EXPLAIN: where the
@@ -1390,7 +1458,6 @@ impl Workspace {
                         }))
                     }),
             )
-            .child(Self::rename_button("app-rename", cx))
     }
 
     /// What a dashboard tab's toolbar says instead: which spec this is, a
@@ -1488,7 +1555,6 @@ impl Workspace {
                         }))
                     }),
             )
-            .child(Self::rename_button("dashboard-rename", cx))
     }
 }
 
@@ -1656,6 +1722,29 @@ impl Workspace {
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("workspace.empty.cli_hint")),
             )
+    }
+}
+
+/// The in-place title editor's width: the title's, give or take, so the tab
+/// barely changes size when it turns editable.
+fn rename_width(input: &Entity<InputState>, cx: &App) -> f32 {
+    let chars = input.read(cx).value().chars().count() as f32;
+    (chars * 8. + 24.).clamp(64., 240.)
+}
+
+/// How long a statement took.
+fn outcome_elapsed(outcome: &QueryOutcome) -> u128 {
+    match outcome {
+        QueryOutcome::Rows(result) => result.elapsed_ms,
+        QueryOutcome::Affected { elapsed_ms, .. } => *elapsed_ms,
+    }
+}
+
+/// The rows a statement returned, or the rows it changed.
+fn outcome_count(outcome: &QueryOutcome) -> i64 {
+    match outcome {
+        QueryOutcome::Rows(result) => result.row_count() as i64,
+        QueryOutcome::Affected { count, .. } => *count as i64,
     }
 }
 

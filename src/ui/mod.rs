@@ -2,6 +2,7 @@
 
 pub mod chart;
 pub mod completion;
+pub mod geo;
 pub mod results;
 pub mod scale;
 pub mod setup_dialog;
@@ -244,12 +245,17 @@ pub fn apply_open_outcome(
 ) {
     let (connected, attach) = match outcome {
         OpenOutcome::Connected(connected) => (
-            Some((connected.target, connected.server, connected.database_error)),
+            Some((
+                connected.target,
+                connected.server,
+                connected.database_error,
+                connected.search_path,
+            )),
             connected.attach,
         ),
         OpenOutcome::Attached(attach) => (None, attach),
     };
-    let database_error = connected.as_ref().and_then(|(_, _, error)| error.clone());
+    let database_error = connected.as_ref().and_then(|(_, _, error, _)| error.clone());
     let AttachOutcome {
         report,
         catalog,
@@ -258,8 +264,9 @@ pub fn apply_open_outcome(
     } = attach;
 
     state.update(cx, |state, cx| match connected {
-        Some((target, server, _)) => {
+        Some((target, server, _, search_path)) => {
             state.set_connection(target, server, catalog, cx);
+            state.set_search_path(search_path, cx);
             state.set_history(history, cx);
             state.set_attached_files(attached, cx);
         }

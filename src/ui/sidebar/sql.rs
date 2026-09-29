@@ -3,36 +3,37 @@
 //! functions, tested as such.
 
 use super::model::{ColumnRef, TableRef};
-use crate::ui::completion::identifier_insert;
+use crate::script::SearchPath;
+use crate::ui::completion::{identifier_insert, relative_table_name};
 
-/// Fully-qualified, quoted table path for generated SQL.
-fn qualified_table_name(table: &TableRef) -> String {
+/// Quoted table path for generated SQL, as short as `path` allows: after
+/// `USE nl_railway`, a preview reads `FROM stations`.
+fn qualified_table_name(table: &TableRef, path: Option<&SearchPath>) -> String {
+    relative_table_name(path, &table.database, &table.schema, &table.name)
+}
+
+pub(super) fn select_star_sql(table: &TableRef, path: Option<&SearchPath>) -> String {
     format!(
-        "{}.{}.{}",
-        identifier_insert(&table.database),
-        identifier_insert(&table.schema),
-        identifier_insert(&table.name)
+        "SELECT *\nFROM {}\nLIMIT 100;",
+        qualified_table_name(table, path)
     )
 }
 
-pub(super) fn select_star_sql(table: &TableRef) -> String {
-    format!("SELECT *\nFROM {}\nLIMIT 100;", qualified_table_name(table))
-}
-
-pub(super) fn select_column_sql(column: &ColumnRef) -> String {
+pub(super) fn select_column_sql(column: &ColumnRef, path: Option<&SearchPath>) -> String {
     format!(
         "SELECT {}\nFROM {}\nLIMIT 100;",
         identifier_insert(&column.name),
-        qualified_table_name(&column.table)
+        qualified_table_name(&column.table, path)
     )
 }
 
 /// `new_type` stays raw: types with parameters (`DECIMAL(10,2)`) are valid
-/// input, and the database owner is the one typing it.
+/// input, and the database owner is the one typing it. Always fully
+/// qualified: it runs right away, not in the user's session context.
 pub(super) fn alter_column_type_sql(column: &ColumnRef, new_type: &str) -> String {
     format!(
         "ALTER TABLE {} ALTER COLUMN {} SET DATA TYPE {new_type}",
-        qualified_table_name(&column.table),
+        qualified_table_name(&column.table, None),
         identifier_insert(&column.name)
     )
 }
@@ -49,6 +50,7 @@ mod tests {
     use super::{
         alter_column_type_sql, select_column_sql, select_s3_file_sql, select_star_sql,
     };
+    use crate::script::SearchPath;
     use crate::ui::sidebar::model::{ColumnRef, TableRef};
 
     fn table_ref(name: &str, is_view: bool) -> TableRef {
@@ -75,12 +77,12 @@ mod tests {
     #[test]
     fn generated_selects_qualify_and_quote() {
         assert_eq!(
-            select_star_sql(&table_ref("orders", false)),
+            select_star_sql(&table_ref("orders", false), None),
             "SELECT *\nFROM memory.main.orders\nLIMIT 100;"
         );
         // Names that are not plain identifiers get double-quoted.
         assert_eq!(
-            select_star_sql(&table_ref("order items", false)),
+            select_star_sql(&table_ref("order items", false), None),
             "SELECT *\nFROM memory.main.\"order items\"\nLIMIT 100;"
         );
 
@@ -90,8 +92,29 @@ mod tests {
             data_type: "DOUBLE".to_string(),
         };
         assert_eq!(
-            select_column_sql(&column),
+            select_column_sql(&column, None),
             "SELECT \"total amount\"\nFROM memory.main.orders\nLIMIT 100;"
+        );
+    }
+
+    #[test]
+    fn after_use_previews_drop_what_the_search_path_supplies() {
+        let path = |database: &str, schema: &str| SearchPath {
+            database: database.into(),
+            schema: schema.into(),
+        };
+        let orders = table_ref("orders", false);
+        assert_eq!(
+            select_star_sql(&orders, Some(&path("memory", "main"))),
+            "SELECT *\nFROM orders\nLIMIT 100;"
+        );
+        assert_eq!(
+            select_star_sql(&orders, Some(&path("memory", "staging"))),
+            "SELECT *\nFROM main.orders\nLIMIT 100;"
+        );
+        assert_eq!(
+            select_star_sql(&orders, Some(&path("nl_railway", "main"))),
+            "SELECT *\nFROM memory.main.orders\nLIMIT 100;"
         );
     }
 
@@ -111,7 +134,7 @@ mod tests {
     #[test]
     fn quotes_escape_embedded_double_quotes() {
         assert_eq!(
-            select_star_sql(&table_ref("we\"ird", false)),
+            select_star_sql(&table_ref("we\"ird", false), None),
             "SELECT *\nFROM memory.main.\"we\"\"ird\"\nLIMIT 100;"
         );
     }

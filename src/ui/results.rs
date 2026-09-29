@@ -15,15 +15,17 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
 use gpui_kit::component::{
-    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt,
+    WindowExt,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, ExportFormat, QueryOutcome, QueryResult};
-use crate::ui::chart::{ChartData, ChartPanel};
+use crate::ui::chart::{ChartData, ChartKind, ChartPanel};
 use crate::ui::RUN_QUERY_KEYSTROKE;
+use gpui_kit::assets::IconName as AssetIconName;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResultsTab {
@@ -45,6 +47,25 @@ enum ResultView {
         elapsed_ms: u128,
     },
 }
+
+/// What one statement of a run script left to show.
+enum Shown {
+    Rows(Rc<QueryResult>),
+    Affected { count: u64, elapsed_ms: u128 },
+    Failed(String),
+}
+
+/// One statement of the last run script, as the step strip shows it.
+struct ScriptEntry {
+    label: SharedString,
+    /// The statement's own text: exports re-run it, not the whole script.
+    sql: String,
+    /// `None` for a statement an earlier failure kept from running.
+    shown: Option<Shown>,
+}
+
+/// How long the step strip's labels get before they are shortened.
+const STEP_LABEL_CHARS: usize = 36;
 
 /// Row-number column header.
 const INDEX_COLUMN_HEADER: &str = "#";
@@ -361,6 +382,14 @@ pub struct ResultsPanel {
     /// Chart rows derived from the current result. Built on first use of the
     /// chart tab and reused across frames; `None` means not yet derived.
     chart_data: Option<Rc<ChartData>>,
+    /// The chart kind the user picked. Kept across result sets, so re-running
+    /// a query does not throw the pick away; a kind the new result cannot
+    /// draw falls back to `Auto`'s pick without forgetting it.
+    chart_kind: ChartKind,
+    /// The statements of the last Run, when it ran more than one; empty for a
+    /// single statement, which needs no strip.
+    script: Vec<ScriptEntry>,
+    script_selected: usize,
     export_input: Option<Entity<InputState>>,
     /// An export is in flight; the dialog's confirm button shows loading and
     /// duplicate submissions are ignored until it finishes.
@@ -393,6 +422,9 @@ impl ResultsPanel {
             table,
             rows_sql: None,
             chart_data: None,
+            chart_kind: ChartKind::default(),
+            script: Vec::new(),
+            script_selected: 0,
             export_input: None,
             exporting: false,
             filter_input,
@@ -412,6 +444,7 @@ impl ResultsPanel {
 
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
         self.view = ResultView::Running;
+        self.script.clear();
         cx.notify();
     }
 
@@ -422,9 +455,64 @@ impl ResultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match outcome {
-            Ok(QueryOutcome::Rows(result)) => {
-                let result = Rc::new(result);
+        self.script.clear();
+        self.show(&shown_of(outcome), &sql, window, cx);
+    }
+
+    /// Show what a Run's script produced. One statement shows as it always
+    /// has; several get a strip of steps above the result, opened on the
+    /// first failure or else the last result set, as a shell would leave
+    /// the screen.
+    pub fn set_script(
+        &mut self,
+        steps: Vec<crate::script::Step>,
+        sql: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = crate::script::primary_step(&steps);
+        if steps.len() <= 1 {
+            let outcome = steps
+                .into_iter()
+                .next()
+                .and_then(|step| step.outcome)
+                .unwrap_or(Ok(QueryOutcome::Affected {
+                    count: 0,
+                    elapsed_ms: 0,
+                }));
+            self.set_outcome(outcome, sql, window, cx);
+            return;
+        }
+        self.script = steps
+            .into_iter()
+            .map(|step| {
+                let text = sql.get(step.piece.range.clone()).unwrap_or_default();
+                ScriptEntry {
+                    label: crate::script::summary(text, STEP_LABEL_CHARS).into(),
+                    sql: text.to_string(),
+                    shown: step.outcome.map(shown_of),
+                }
+            })
+            .collect();
+        self.select_step(selected.unwrap_or(0), window, cx);
+    }
+
+    fn select_step(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.script.get(ix) else {
+            return;
+        };
+        let Some(shown) = &entry.shown else {
+            return;
+        };
+        let (shown, sql) = (shown_clone(shown), entry.sql.clone());
+        self.script_selected = ix;
+        self.show(&shown, &sql, window, cx);
+    }
+
+    fn show(&mut self, shown: &Shown, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.chart_data = None;
+        match shown {
+            Shown::Rows(result) => {
                 self.table.update(cx, |table, cx| {
                     table.delegate_mut().set_result(result.clone());
                     table.refresh(cx);
@@ -432,20 +520,80 @@ impl ResultsPanel {
                 self.filter_input.update(cx, |input, cx| {
                     input.set_value("", window, cx);
                 });
-                self.rows_sql = Some(sql);
-                self.chart_data = None;
-                self.view = ResultView::Rows(result);
+                self.rows_sql = Some(sql.to_string());
+                self.view = ResultView::Rows(result.clone());
             }
-            Ok(QueryOutcome::Affected { count, elapsed_ms }) => {
-                self.chart_data = None;
-                self.view = ResultView::Affected { count, elapsed_ms };
+            Shown::Affected { count, elapsed_ms } => {
+                self.view = ResultView::Affected {
+                    count: *count,
+                    elapsed_ms: *elapsed_ms,
+                };
             }
-            Err(e) => {
-                self.chart_data = None;
-                self.view = ResultView::Failed(e.to_string());
+            Shown::Failed(message) => {
+                self.view = ResultView::Failed(message.clone());
             }
         }
         cx.notify();
+    }
+
+    /// The strip of a script's statements: one chip each, marked done,
+    /// failed or not run, the shown one selected.
+    fn render_script_steps(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.script.is_empty() {
+            return None;
+        }
+        let chips = self.script.iter().enumerate().map(|(ix, entry)| {
+            let (icon, status) = match &entry.shown {
+                Some(Shown::Rows(result)) => (
+                    AssetIconName::CircleCheck,
+                    trf("results.script.rows", &[&result.row_count().to_string()]),
+                ),
+                Some(Shown::Affected { .. }) => {
+                    (AssetIconName::CircleCheck, tr("results.script.done").to_string())
+                }
+                Some(Shown::Failed(_)) => {
+                    (AssetIconName::CircleX, tr("results.script.failed").to_string())
+                }
+                None => (
+                    AssetIconName::CircleDashed,
+                    tr("results.script.skipped").to_string(),
+                ),
+            };
+            Button::new(("script-step", ix))
+                .ghost()
+                .xsmall()
+                .icon(icon)
+                .label(format!("{}. {} · {status}", ix + 1, entry.label))
+                .tooltip(entry.sql.clone())
+                .selected(ix == self.script_selected)
+                .disabled(entry.shown.is_none())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_step(ix, window, cx);
+                }))
+        });
+        Some(
+            h_flex()
+                .id("script-steps")
+                .w_full()
+                .px_3()
+                .py_1()
+                .gap_1()
+                .overflow_x_scroll()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(trf(
+                            "results.script.count",
+                            &[&self.script.len().to_string()],
+                        )),
+                )
+                .children(chips)
+                .into_any_element(),
+        )
     }
 
     pub fn set_explain(
@@ -666,6 +814,10 @@ impl ResultsPanel {
                 // the compact ghost treatment come with it.
                 Toolbar::new("results-export-toolbar")
                     .xsmall()
+                    // Hidden, not greyed, without rows to export: two dead
+                    // buttons over an empty panel only add noise. Hidden
+                    // rather than removed, so the header keeps its height.
+                    .when(!has_rows, |this| this.invisible())
                     .child(
                         ToolbarGroup::new("results-export-group")
                             .gap_1()
@@ -797,7 +949,39 @@ impl ResultsPanel {
                         data
                     }
                 };
-                ChartPanel::new(data).into_any_element()
+                if !data.is_plottable() {
+                    return ChartPanel::new(data, self.chart_kind).into_any_element();
+                }
+                let kinds = data.available_kinds();
+                let selected = kinds
+                    .iter()
+                    .position(|k| *k == self.chart_kind)
+                    .unwrap_or(0);
+                let picker_kinds = kinds.clone();
+                v_flex()
+                    .size_full()
+                    .child(
+                        h_flex().px_4().pt_3().child(
+                            TabBar::new("chart-kinds")
+                                .segmented()
+                                .xsmall()
+                                .selected_index(selected)
+                                .on_click(cx.listener(move |this, ix: &usize, _, cx| {
+                                    if let Some(kind) = picker_kinds.get(*ix) {
+                                        this.chart_kind = *kind;
+                                        cx.notify();
+                                    }
+                                }))
+                                .children(kinds.iter().map(|kind| Tab::new().label(kind.label()))),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(ChartPanel::new(data, self.chart_kind)),
+                    )
+                    .into_any_element()
             }
             ResultView::Running => running_state(cx),
             _ => empty_state(
@@ -854,10 +1038,31 @@ impl Render for ResultsPanel {
             .border_t_1()
             .border_color(cx.theme().border)
             .child(self.render_header(cx))
+            .children(self.render_script_steps(cx))
             .child(div().flex_1().min_h_0().child(match self.tab {
                 ResultsTab::Table => self.render_table_content(cx),
                 ResultsTab::Chart => self.render_chart_content(cx),
             }))
+    }
+}
+
+fn shown_of(outcome: anyhow::Result<QueryOutcome>) -> Shown {
+    match outcome {
+        Ok(QueryOutcome::Rows(result)) => Shown::Rows(Rc::new(result)),
+        Ok(QueryOutcome::Affected { count, elapsed_ms }) => Shown::Affected { count, elapsed_ms },
+        Err(e) => Shown::Failed(e.to_string()),
+    }
+}
+
+/// A cheap copy: result sets are shared, not duplicated.
+fn shown_clone(shown: &Shown) -> Shown {
+    match shown {
+        Shown::Rows(result) => Shown::Rows(result.clone()),
+        Shown::Affected { count, elapsed_ms } => Shown::Affected {
+            count: *count,
+            elapsed_ms: *elapsed_ms,
+        },
+        Shown::Failed(message) => Shown::Failed(message.clone()),
     }
 }
 
