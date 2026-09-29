@@ -352,6 +352,28 @@ pub(crate) fn starts_with_ignore_case(name: &str, prefix_lower: &str) -> bool {
     }
 }
 
+/// The shortest quoted name that reaches `database.schema.name` from where
+/// unqualified names resolve: the bare name inside the current schema, the
+/// schema-qualified one elsewhere in the current database, the full path
+/// beyond it — or with the search path unknown.
+pub(crate) fn relative_table_name(
+    path: Option<&crate::script::SearchPath>,
+    database: &str,
+    schema: &str,
+    name: &str,
+) -> String {
+    let name = identifier_insert(name);
+    match path {
+        Some(p) if p.database == database && p.schema == schema => name,
+        Some(p) if p.database == database => format!("{}.{name}", identifier_insert(schema)),
+        _ => format!(
+            "{}.{}.{name}",
+            identifier_insert(database),
+            identifier_insert(schema)
+        ),
+    }
+}
+
 /// Insert form for a catalog identifier: bare when it's a plain identifier,
 /// double-quoted otherwise (DuckDB does not accept backticks).
 pub(crate) fn identifier_insert(name: &str) -> String {
@@ -400,7 +422,9 @@ impl CompletionProvider for SqlCompletionProvider {
         // Candidates are matched by name before anything is built for them:
         // this runs on every keystroke, and a wide catalog offers far more
         // names than the menu will ever show.
-        let names = collect_candidates(&self.state.read(cx).catalog, &prefix_lower);
+        let state = self.state.read(cx);
+        let names = collect_candidates(&state.catalog, &prefix_lower);
+        let search_path = state.search_path.clone();
 
         let start_pos = text.offset_to_position(start);
         let end_pos = text.offset_to_position(offset);
@@ -413,11 +437,23 @@ impl CompletionProvider for SqlCompletionProvider {
             .into_iter()
             .map(|candidate| {
                 let (kind, detail, group, insert) = match &candidate.source {
+                    // A table outside the current schema is inserted with
+                    // the qualifier it needs, or the bare name would not
+                    // resolve; with the search path unknown (no Run yet),
+                    // the bare name is the old, usual behaviour.
                     CandidateSource::Table { schema, database } => (
                         CompletionItemKind::STRUCT,
                         Some(format!("{schema} · {database}")),
                         1,
-                        identifier_insert(&candidate.name),
+                        match &search_path {
+                            Some(_) => relative_table_name(
+                                search_path.as_ref(),
+                                database,
+                                schema,
+                                &candidate.name,
+                            ),
+                            None => identifier_insert(&candidate.name),
+                        },
                     ),
                     CandidateSource::Column { data_type, table } => (
                         CompletionItemKind::FIELD,

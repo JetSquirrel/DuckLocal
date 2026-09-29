@@ -336,17 +336,22 @@ impl Sidebar {
                                         this.text_sm()
                                     }
                                 })
+                                // The name keeps most of the row; the muted
+                                // hint that tells same-named rows apart gives
+                                // way first.
                                 .child(
                                     div()
                                         .min_w_0()
+                                        .flex_shrink_0()
+                                        .max_w(relative(if hint.is_some() { 0.7 } else { 1. }))
                                         .truncate()
                                         .child(item.label.clone()),
                                 )
                                 .when_some(hint, |this, hint| {
                                     this.child(
                                         div()
-                                            .flex_shrink_0()
-                                            .max_w_1_2()
+                                            .min_w_0()
+                                            .flex_shrink(1.)
                                             .truncate()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
@@ -360,15 +365,17 @@ impl Sidebar {
                                 })
                                 .when_some(column, |this, column| {
                                     let workspace = workspace.clone();
+                                    let state = state.clone();
                                     this.cursor_pointer()
                                         .hover(|this| this.text_color(cx.theme().primary))
                                         .active(|this| {
                                             this.text_color(cx.theme().primary.opacity(0.7))
                                         })
                                         .on_click(move |_, window, cx| {
+                                            let path = state.read(cx).search_path.clone();
                                             workspace.update(cx, |ws, cx| {
                                                 ws.fill_active_editor(
-                                                    select_column_sql(&column),
+                                                    select_column_sql(&column, path.as_ref()),
                                                     window,
                                                     cx,
                                                 );
@@ -460,6 +467,7 @@ impl Sidebar {
                                 })
                                 .when_some(table, |this, table| {
                                     let workspace = workspace.clone();
+                                    let state = state.clone();
                                     this.child(
                                         Button::new(("generate-query", ix))
                                             .ghost()
@@ -467,9 +475,10 @@ impl Sidebar {
                                             .icon(IconName::Play)
                                             .tooltip(tr("sidebar.table.generate_select"))
                                             .on_click(move |_, window, cx| {
+                                                let path = state.read(cx).search_path.clone();
                                                 workspace.update(cx, |ws, cx| {
                                                     ws.fill_active_editor(
-                                                        select_star_sql(&table),
+                                                        select_star_sql(&table, path.as_ref()),
                                                         window,
                                                         cx,
                                                     );
@@ -567,19 +576,23 @@ impl RowMenu {
         let Some(meta) = self.meta.get(id) else {
             return menu;
         };
-        let sql = match (&meta.column, &meta.table) {
-            (Some(column), _) => Some(select_column_sql(column)),
-            (None, Some(table)) => Some(select_star_sql(table)),
-            _ => None,
-        };
-        if let Some(sql) = sql {
+        if meta.column.is_some() || meta.table.is_some() {
             let workspace = self.workspace.clone();
+            let state = self.state.clone();
+            let (column, table) = (meta.column.clone(), meta.table.clone());
             menu = menu.item(
                 PopupMenuItem::new(tr("sidebar.table.generate_select"))
                     .icon(IconName::Play)
                     .on_click(move |_, window, cx| {
-                        workspace
-                            .update(cx, |ws, cx| ws.fill_active_editor(sql.clone(), window, cx));
+                        // Read at click time: a Run since the menu opened
+                        // may have moved the search path.
+                        let path = state.read(cx).search_path.clone();
+                        let sql = match (&column, &table) {
+                            (Some(column), _) => select_column_sql(column, path.as_ref()),
+                            (None, Some(table)) => select_star_sql(table, path.as_ref()),
+                            (None, None) => return,
+                        };
+                        workspace.update(cx, |ws, cx| ws.fill_active_editor(sql, window, cx));
                     }),
             );
         }

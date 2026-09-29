@@ -76,7 +76,9 @@ impl TitleBarView {
         cx.refresh_windows();
     }
 
-    fn open_s3_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+    /// The S3 dialog: reached from the Open menu and from the Open data
+    /// dialog, since an S3 bucket is one more place data opens from.
+    pub fn open_s3(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let inputs = S3Inputs {
             endpoint: cx.new(|cx| InputState::new(window, cx).default_value("s3.amazonaws.com")),
             region: cx.new(|cx| InputState::new(window, cx).default_value("us-east-1")),
@@ -235,19 +237,17 @@ impl TitleBarView {
         .detach();
     }
 
-    fn open_data_dialog(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_data(window, cx);
-    }
-
     /// The "Open data…" dialog: the title bar's button, ⌘O and the File menu.
     pub fn open_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("~/data/*.parquet"));
         self.db_path_input = Some(input.clone());
         let state = self.state.clone();
+        let view = cx.entity().downgrade();
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let memory_state = state.clone();
             let open_state = state.clone();
+            let s3_view = view.clone();
             dialog
                 .title(tr("dialog.open_source.title"))
                 .w(crate::ui::scale::design(DIALOG_WIDTH))
@@ -302,6 +302,22 @@ impl TitleBarView {
                 .footer(
                     DialogFooter::new()
                         .gap_2()
+                        // Other sources sit apart from the dialog's own
+                        // actions, on the left.
+                        .child(
+                            Button::new("open-s3")
+                                .ghost()
+                                .icon(IconName::Globe)
+                                .label(tr("dialog.open_source.s3"))
+                                .tooltip(tr("title_bar.configure_s3"))
+                                .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                    window.close_dialog(cx);
+                                    if let Some(view) = s3_view.upgrade() {
+                                        view.update(cx, |this, cx| this.open_s3(window, cx));
+                                    }
+                                }),
+                        )
+                        .child(div().flex_1())
                         .child(
                             Button::new("cancel")
                                 .outline()
@@ -343,6 +359,79 @@ impl TitleBarView {
     }
 }
 
+impl TitleBarView {
+    fn render_open_menu(&self, opening: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        let state = self.state.clone();
+        Button::new("open-data")
+            .ghost()
+            .compact()
+            .xsmall()
+            .icon(IconName::FolderOpen)
+            .label(tr("title_bar.open"))
+            .dropdown_caret(true)
+            .loading(opening)
+            .disabled(opening)
+            .dropdown_menu(move |menu, _, _| {
+                let (files_state, folder_state, memory_state) =
+                    (state.clone(), state.clone(), state.clone());
+                let (path_view, s3_view) = (view.clone(), view.clone());
+                menu.item(
+                    PopupMenuItem::new(tr("title_bar.open.files"))
+                        .icon(IconName::File)
+                        .on_click(move |_, window, cx| {
+                            crate::ui::pick_paths(
+                                files_state.clone(),
+                                crate::ui::PickerTarget::Files,
+                                tr("workspace.empty.files_prompt"),
+                                window,
+                                cx,
+                            );
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(tr("title_bar.open.folder"))
+                        .icon(IconName::Folder)
+                        .on_click(move |_, window, cx| {
+                            crate::ui::pick_paths(
+                                folder_state.clone(),
+                                crate::ui::PickerTarget::Folder,
+                                tr("workspace.empty.folder_prompt"),
+                                window,
+                                cx,
+                            );
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(tr("title_bar.open.path"))
+                        .icon(IconName::Search)
+                        .on_click(move |_, window, cx| {
+                            if let Some(view) = path_view.upgrade() {
+                                view.update(cx, |this, cx| this.open_data(window, cx));
+                            }
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(tr("title_bar.open.s3"))
+                        .icon(IconName::Globe)
+                        .on_click(move |_, window, cx| {
+                            if let Some(view) = s3_view.upgrade() {
+                                view.update(cx, |this, cx| this.open_s3(window, cx));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(tr("title_bar.open.memory"))
+                        .icon(IconName::HardDrive)
+                        .on_click(move |_, window, cx| {
+                            crate::ui::open_memory(memory_state.clone(), window, cx);
+                        }),
+                )
+            })
+    }
+}
+
 impl Render for TitleBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (target_label, opening, sidebar_collapsed) = {
@@ -381,21 +470,13 @@ impl Render for TitleBarView {
                                     })),
                             )
                         })
-                        .child(
-                            Button::new("open-data")
-                                .icon(IconName::FolderOpen)
-                                .label(tr("title_bar.open_data"))
-                                .loading(opening)
-                                .disabled(opening)
-                                .on_click(cx.listener(Self::open_data_dialog)),
-                        )
-                        .child(
-                            Button::new("configure-s3")
-                                .icon(IconName::Globe)
-                                .label("S3")
-                                .tooltip(tr("title_bar.configure_s3"))
-                                .on_click(cx.listener(Self::open_s3_dialog)),
-                        ),
+                        // Every way data comes in, behind one short label: a
+                        // long "Open data…" read as cut off in the compact
+                        // bar, and S3 is a source like the others.
+                        // `dropdown_menu` wraps the Button in a popover that
+                        // is not `Sizable`, so this trigger goes in as content
+                        // and carries the toolbar's ghost/compact look by hand.
+                        .content(self.render_open_menu(opening, cx)),
                 )
                 .content(div().flex_1())
                 .content(

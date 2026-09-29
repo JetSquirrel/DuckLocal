@@ -31,7 +31,7 @@ impl StatusBarView {
 
 impl Render for StatusBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (connected, target_label, version, last, opening) = {
+        let (connected, target_label, version, last, opening, search_path) = {
             let state = self.state.read(cx);
             (
                 state.target.is_some(),
@@ -39,6 +39,7 @@ impl Render for StatusBarView {
                 state.server.as_ref().map(|s| s.version.clone()),
                 state.last_query.clone(),
                 state.is_opening(),
+                state.search_path.clone(),
             )
         };
 
@@ -76,6 +77,19 @@ impl Render for StatusBarView {
                     .into_any_element()
             });
 
+        // Where an unqualified `stations` resolves: what `USE` changed.
+        if let Some(path) = search_path {
+            bar = bar.right(Separator::vertical()).right(
+                div()
+                    .id("search-path")
+                    .font_family(mono.clone())
+                    .child(format!("{}.{}", path.database, path.schema))
+                    .tooltip(|window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tr("status_bar.search_path"))
+                            .build(window, cx)
+                    }),
+            );
+        }
         if let Some(stats) = last {
             bar = bar
                 .right(Separator::vertical())

@@ -72,6 +72,10 @@ pub struct AppState {
     pub last_query: Option<QueryStats>,
     /// Last executed query text, for export actions in the results panel.
     pub last_sql: Option<String>,
+    /// Where unqualified names resolve, as the last Run left it (a `USE` in
+    /// it moves it). `None` until a Run reports it, and after a reconnect,
+    /// which starts a fresh session: generated SQL qualifies fully then.
+    pub search_path: Option<crate::script::SearchPath>,
     pub attached_files: Vec<AttachedFileView>,
     /// Session-scoped S3 credentials, if configured. Memory only.
     pub s3_config: Option<crate::s3::S3Config>,
@@ -106,6 +110,7 @@ impl AppState {
             history: Rc::new(Vec::new()),
             last_query: None,
             last_sql: None,
+            search_path: None,
             attached_files: Vec::new(),
             s3_config: None,
             open_requests: 0,
@@ -181,6 +186,7 @@ impl AppState {
         self.target = Some(target);
         self.server = Some(server);
         self.catalog = catalog;
+        self.search_path = None;
         // Session-scoped S3 secrets live in the connection, so a new
         // connection starts unconfigured.
         self.s3_config = None;
@@ -219,6 +225,20 @@ impl AppState {
         self.history = Rc::new(history);
         cx.emit(HistoryChanged);
         cx.notify();
+    }
+
+    /// Record where unqualified names now resolve. The status bar shows it,
+    /// and it rides on the stats event it is always set beside.
+    pub fn set_search_path(
+        &mut self,
+        search_path: Option<crate::script::SearchPath>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.search_path != search_path {
+            self.search_path = search_path;
+            cx.emit(QueryStatsChanged);
+            cx.notify();
+        }
     }
 
     pub fn set_last_query(&mut self, stats: QueryStats, sql: String, cx: &mut Context<Self>) {
@@ -385,6 +405,8 @@ pub struct ConnectOutcome {
     /// Set when the named database could not be opened and the request fell
     /// back to the in-memory connection.
     pub database_error: Option<String>,
+    /// Where unqualified names resolve in the new session.
+    pub search_path: Option<crate::script::SearchPath>,
     pub attach: AttachOutcome,
 }
 
@@ -441,10 +463,13 @@ fn open_sources(
     let server = crate::db::server_info()?;
     let mut attach = attach_outcome(&sources);
     attach.report.problems.extend(problems);
+    let search_path =
+        crate::db::with_connection(|conn| Ok(crate::script::search_path_of(conn))).unwrap_or(None);
     Ok(OpenOutcome::Connected(ConnectOutcome {
         target,
         server,
         database_error,
+        search_path,
         attach,
     }))
 }

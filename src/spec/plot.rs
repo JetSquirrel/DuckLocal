@@ -146,15 +146,21 @@ pub(crate) struct GroupedBars {
 
 impl GroupedBars {
     pub(crate) fn new(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
+        Self::of(id, plot.points.clone(), &plot.series_names)
+    }
+
+    /// Bars over `points` directly, for a caller that holds no `PreparedPlot`
+    /// — the results panel's chart tab.
+    pub(crate) fn of(
+        id: impl Into<ElementId>,
+        points: Vec<Arc<PlotPoint>>,
+        series_names: &[String],
+    ) -> Self {
         Self {
             id: id.into(),
-            points: plot.points.clone(),
-            series: plot
-                .series_names
-                .iter()
-                .map(SharedString::from)
-                .collect(),
-            label_count: x_label_count(&plot.points),
+            label_count: x_label_count(&points),
+            points,
+            series: series_names.iter().map(SharedString::from).collect(),
         }
     }
 
@@ -341,26 +347,46 @@ pub(crate) struct SeriesPlot {
 }
 
 impl SeriesPlot {
-    fn new(id: impl Into<ElementId>, plot: &PreparedPlot, connect: SeriesConnect) -> Self {
+    fn new(
+        id: impl Into<ElementId>,
+        points: Vec<Arc<PlotPoint>>,
+        series_names: &[String],
+        connect: SeriesConnect,
+    ) -> Self {
         Self {
             id: id.into(),
             connect,
-            points: plot.points.clone(),
-            series: plot
-                .series_names
-                .iter()
-                .map(SharedString::from)
-                .collect(),
-            label_count: x_label_count(&plot.points),
+            label_count: x_label_count(&points),
+            points,
+            series: series_names.iter().map(SharedString::from).collect(),
         }
     }
 
     pub(crate) fn lines(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::new(id, plot, SeriesConnect::Line)
+        Self::lines_of(id, plot.points.clone(), &plot.series_names)
     }
 
     pub(crate) fn scatter(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::new(id, plot, SeriesConnect::Scatter)
+        Self::scatter_of(id, plot.points.clone(), &plot.series_names)
+    }
+
+    /// Lines over `points` directly, for a caller that holds no
+    /// `PreparedPlot` — the results panel's chart tab.
+    pub(crate) fn lines_of(
+        id: impl Into<ElementId>,
+        points: Vec<Arc<PlotPoint>>,
+        series_names: &[String],
+    ) -> Self {
+        Self::new(id, points, series_names, SeriesConnect::Line)
+    }
+
+    /// Dots over `points` directly; see [`Self::lines_of`].
+    pub(crate) fn scatter_of(
+        id: impl Into<ElementId>,
+        points: Vec<Arc<PlotPoint>>,
+        series_names: &[String],
+    ) -> Self {
+        Self::new(id, points, series_names, SeriesConnect::Scatter)
     }
 
     /// The point (x) and value (y) scales for `bounds`, shared by `paint` and

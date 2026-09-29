@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::cli::{parse_args, Arg, CliError, FlagSpec, HELP};
+use crate::cli::{parse_args, Arg, CliError, FlagSpec, EXPORT_HELP};
 
 struct Request {
     /// The path as given; resolved to an app folder before anything runs.
@@ -43,7 +43,7 @@ struct Request {
 pub fn dispatch(args: &[OsString]) -> Result<String, CliError> {
     // Help is help, wherever the subcommand's own flags begin.
     if args.len() == 1 && args[0] == "--help" {
-        return Ok(HELP.to_string());
+        return Ok(EXPORT_HELP.to_string());
     }
     export(args)?;
     Err(CliError::failure(
