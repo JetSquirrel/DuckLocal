@@ -8,6 +8,54 @@ use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{v_flex, ActiveTheme, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+/// Documents Finder asks the app to open — "Open With", a double-clicked
+/// `.dash`, a drop on the Dock icon — while it runs or as it launches. The
+/// platform's openURLs callback gets no App context, so it queues the paths
+/// here and the root view drains them once a frame is up.
+static FINDER_OPENS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Queue one URL from the platform's openURLs callback. Only `file://` URLs
+/// are documents; anything else was not meant for us.
+pub(crate) fn queue_finder_open(url: &str) {
+    if let Some(path) = file_url_path(url) {
+        FINDER_OPENS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(path);
+    }
+}
+
+/// The path a `file://` URL points at. Percent-escapes are UTF-8; the
+/// authority is empty or `localhost` for a local file.
+fn file_url_path(url: &str) -> Option<String> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let authority_and_path = url.strip_prefix("file://")?;
+    let path_start = authority_and_path.find('/')?;
+    let encoded = &authority_and_path[path_start..];
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut bytes = encoded.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hi = hex(bytes.next()?)?;
+            let lo = hex(bytes.next()?)?;
+            decoded.push(hi << 4 | lo);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
 
 use crate::analysis::apps;
 use crate::i18n::{tr, trf};
@@ -134,6 +182,31 @@ impl DuckLocalApp {
         })
         .detach();
 
+        // Finder opens queue from the moment the platform callback is
+        // registered — possibly before this view exists — so drain on a slow
+        // poll and open them like a drop on the window. The task ends with
+        // the window: `update_in` fails once the view is gone.
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                smol::Timer::after(Duration::from_millis(200)).await;
+                let paths: Vec<String> = std::mem::take(
+                    &mut *FINDER_OPENS
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                );
+                if paths.is_empty() {
+                    continue;
+                }
+                if this
+                    .update_in(cx, |this, window, cx| this.open_external(paths, window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         Self {
             state,
             title_bar,
@@ -143,15 +216,11 @@ impl DuckLocalApp {
         }
     }
 
-    /// Paths dropped on the window: an app directory opens an app tab, a
-    /// `.dash` file a dashboard tab, and everything else is the same request
-    /// the command line and the pickers make.
-    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        let requested: Vec<String> = paths
-            .paths()
-            .iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect();
+    /// Paths from outside the app — a drop on the window, or a document
+    /// Finder opens with it: an app directory opens an app tab, a `.dash`
+    /// file a dashboard tab, and everything else is the same request the
+    /// command line and the pickers make.
+    fn open_external(&mut self, requested: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (directories, rest) = apps::split_paths(&requested);
         for directory in directories {
             self.workspace
@@ -165,6 +234,15 @@ impl DuckLocalApp {
         if !data.is_empty() {
             open_paths(self.state.clone(), data, window, cx);
         }
+    }
+
+    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let requested: Vec<String> = paths
+            .paths()
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        self.open_external(requested, window, cx);
     }
 }
 
@@ -229,5 +307,36 @@ impl Render for DuckLocalApp {
                 }
             }))
             .child(self.status_bar.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
+    // `test` macro shadows the built-in `#[test]`.
+    use super::file_url_path;
+
+    #[test]
+    fn file_urls_decode_to_paths() {
+        assert_eq!(
+            file_url_path("file:///Users/admin/aiops2_overview.dash"),
+            Some("/Users/admin/aiops2_overview.dash".to_string())
+        );
+        // Spaces and CJK arrive percent-encoded.
+        assert_eq!(
+            file_url_path("file:///Users/admin/My%20Reports/%E6%97%A5%E6%8A%A5.dash"),
+            Some("/Users/admin/My Reports/日报.dash".to_string())
+        );
+        assert_eq!(
+            file_url_path("file://localhost/Users/admin/x.dash"),
+            Some("/Users/admin/x.dash".to_string())
+        );
+    }
+
+    #[test]
+    fn non_file_urls_are_not_documents() {
+        assert_eq!(file_url_path("https://example.com/x.dash"), None);
+        assert_eq!(file_url_path("file://"), None);
+        assert_eq!(file_url_path("file:///bad%zz"), None);
     }
 }
