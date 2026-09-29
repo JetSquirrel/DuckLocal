@@ -740,6 +740,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "The query result has no column {}. Available columns: {}",
     ),
     (
+        "dashboard.map_no_coordinates",
+        "地图需要经纬度列：请用 lat 和 lng 指定。查询返回的列：{}",
+        "A map needs coordinate columns: name them with lat and lng. The query returns: {}",
+    ),
+    (
         "dashboard.empty",
         "这个 spec 没有声明任何 plot 块。",
         "This spec declares no plot blocks.",

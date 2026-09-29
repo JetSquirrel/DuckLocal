@@ -330,7 +330,7 @@ fn completion_inside_a_plot_offers_its_attributes() {
         .collect();
     assert_eq!(
         labels,
-        ["type", "query", "x", "y", "series", "title"],
+        ["type", "query", "x", "y", "series", "title", "lat", "lng", "color"],
         "{response}"
     );
     assert_eq!(items[0]["kind"], 10, "property: {response}");

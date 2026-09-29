@@ -901,6 +901,47 @@ plot "b" { type = "line" query = query.revenue x = channel y = channel }
     assert!(message.contains("bad.dash:5"), "{message}");
     assert!(message.contains("bad.dash:6"), "{message}");
 
+    // A pie and a map check against the same database: the map's
+    // coordinates are found by name, and a text latitude is a mistake.
+    s.success(&[
+        "query",
+        "--database",
+        "data.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE stations AS SELECT * FROM (VALUES
+             ('Utrecht', 'NL', 52.09, 5.11), ('Aachen', 'D', 50.77, 6.09)
+         ) t(name, country, geo_lat, geo_lng)",
+    ]);
+    std::fs::write(
+        s.0.join("geo.dash"),
+        r#"
+query "stations" { sql = "SELECT * FROM stations" }
+query "share" {
+  sql = "SELECT channel, sum(amount) AS total FROM usage GROUP BY channel"
+}
+plot "where" { type = "map" query = query.stations color = country }
+plot "share" { type = "pie" query = query.share x = channel y = total }
+"#,
+    )
+    .unwrap();
+    let out = s.object(&["check", "geo.dash", "--database", "data.duckdb"]);
+    assert_eq!(out["plots"][0]["type"], "map");
+    assert_eq!(out["plots"][0]["color"], "country");
+    assert_eq!(out["plots"][1]["type"], "pie");
+    std::fs::write(
+        s.0.join("badgeo.dash"),
+        r#"
+query "stations" { sql = "SELECT * FROM stations" }
+plot "where" { type = "map" query = query.stations lat = name }
+"#,
+    )
+    .unwrap();
+    let error = s.error(&["check", "badgeo.dash", "--database", "data.duckdb"], 2, "spec");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("lat = \"name\""), "{message}");
+    assert!(message.contains("not numeric"), "{message}");
+
     // Everything wrong before a database opens is said without opening one:
     // syntax, unknown blocks, dangling references, multi-statement SQL.
     s.error(&["check"], 2, "argument");

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_4;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::component::plot::label::{Text, TEXT_SIZE};
 use gpui_kit::component::plot::tooltip::{Dot, Tooltip, TooltipState};
@@ -53,6 +53,7 @@ const EDGE_PAD: f32 = 8.;
 /// leave a wide plot with three meridians across it.
 const LINE_SPACING: f64 = 90.;
 
+#[derive(Debug)]
 pub(crate) struct GeoPoint {
     lat: f64,
     lng: f64,
@@ -65,6 +66,7 @@ pub(crate) struct GeoPoint {
 }
 
 /// Everything the map needs, derived from a result set once.
+#[derive(Debug)]
 pub struct GeoData {
     pub lat_name: String,
     pub lng_name: String,
@@ -74,7 +76,7 @@ pub struct GeoData {
     /// one is "other", drawn in the muted color.
     pub categories: Vec<SharedString>,
     pub folded_other: bool,
-    points: Rc<Vec<GeoPoint>>,
+    points: Arc<Vec<GeoPoint>>,
     /// Projected extent: `(min_x, max_x, min_y, max_y)`.
     extent: (f64, f64, f64, f64),
     /// Rows whose coordinates were missing or out of range.
@@ -95,27 +97,44 @@ impl GeoData {
         let lng_ix = (0..result.columns.len())
             .filter(numeric)
             .find(|&ix| ix != lat_ix && is_lng_name(&result.columns[ix].name))?;
-
-        let valid: Vec<(usize, f64, f64)> = result
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, row)| {
-                let lat = parse_number(row.get(lat_ix)?)?;
-                let lng = parse_number(row.get(lng_ix)?)?;
-                ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng))
-                    .then_some((ix, lat, lng))
-            })
-            .collect();
+        let valid = valid_coordinates(result, lat_ix, lng_ix);
         if valid.is_empty() || valid.len() * 2 < result.rows.len() {
             return None;
         }
+        Some(Self::build(result, lat_ix, lng_ix, valid, None))
+    }
+
+    /// The map a dashboard's `map` plot names outright: its latitude and
+    /// longitude columns, and optionally the column to color by (`None` picks
+    /// one as `detect` does). Rows without valid coordinates are dropped and
+    /// counted; nothing is second-guessed, so an empty map says the columns
+    /// held no coordinates rather than falling back to something else.
+    pub fn from_columns(
+        result: &QueryResult,
+        lat_ix: usize,
+        lng_ix: usize,
+        color_ix: Option<usize>,
+    ) -> Self {
+        let valid = valid_coordinates(result, lat_ix, lng_ix);
+        Self::build(result, lat_ix, lng_ix, valid, color_ix)
+    }
+
+    fn build(
+        result: &QueryResult,
+        lat_ix: usize,
+        lng_ix: usize,
+        valid: Vec<(usize, f64, f64)>,
+        color_ix: Option<usize>,
+    ) -> Self {
         let dropped = result.rows.len() - valid.len();
         let valid_count = valid.len();
         let capped_from = (valid_count > MAX_GEO_POINTS).then_some(valid_count);
 
         let label_ix = label_column(result, &[lat_ix, lng_ix]);
-        let category = category_column(result, &valid, label_ix);
+        let category = match color_ix {
+            Some(column) => category_of(result, &valid, column),
+            None => category_column(result, &valid, label_ix),
+        };
 
         let points: Vec<GeoPoint> = valid
             .into_iter()
@@ -159,18 +178,18 @@ impl GeoData {
             None => (None, Vec::new(), false),
         };
 
-        Some(Self {
+        Self {
             lat_name: result.columns[lat_ix].name.clone(),
             lng_name: result.columns[lng_ix].name.clone(),
             label_name: label_ix.map(|ix| result.columns[ix].name.clone()),
             category_name,
             categories,
             folded_other,
-            points: Rc::new(points),
+            points: Arc::new(points),
             extent,
             dropped,
             capped_from,
-        })
+        }
     }
 
     pub fn point_count(&self) -> usize {
@@ -186,6 +205,36 @@ impl GeoData {
             cx,
         )
     }
+}
+
+/// `(row index, latitude, longitude)` for every row whose two cells parse as
+/// coordinates in range.
+fn valid_coordinates(result: &QueryResult, lat_ix: usize, lng_ix: usize) -> Vec<(usize, f64, f64)> {
+    result
+        .rows
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, row)| {
+            let lat = parse_number(row.get(lat_ix)?)?;
+            let lng = parse_number(row.get(lng_ix)?)?;
+            ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng))
+                .then_some((ix, lat, lng))
+        })
+        .collect()
+}
+
+/// The latitude and longitude columns names alone suggest, as `detect` finds
+/// them but without the values to check: what `ducklocal check` can say about
+/// a `map` plot that leaves `lat` or `lng` out.
+pub(crate) fn guess_coordinate_columns<'a>(
+    names: impl Iterator<Item = &'a str> + Clone,
+) -> (Option<usize>, Option<usize>) {
+    let lat = names.clone().position(is_lat_name);
+    let lng = names
+        .enumerate()
+        .find(|(ix, name)| Some(*ix) != lat && is_lng_name(name))
+        .map(|(ix, _)| ix);
+    (lat, lng)
 }
 
 fn category_color(slot: usize, is_other: bool, cx: &App) -> Hsla {
@@ -330,6 +379,32 @@ fn category_column(
     }
 
     let (column, sorted) = best?;
+    Some(fold_category(column, sorted))
+}
+
+/// Color by `column`, as a `color` attribute asks: every value it holds, the
+/// most common first, the rest folded into "other" past the palette.
+fn category_of(result: &QueryResult, valid: &[(usize, f64, f64)], column: usize) -> Option<Category> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for &(row_ix, _, _) in valid {
+        if let Some(value) = result.rows[row_ix].get(column) {
+            *counts.entry(value.as_str()).or_default() += 1;
+        }
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Some(fold_category(column, sorted))
+}
+
+/// Legend slots for `sorted` values (most common first): one each up to the
+/// palette's size, or all but the last slot plus "other" past it.
+fn fold_category(column: usize, sorted: Vec<(String, usize)>) -> Category {
     let folded = sorted.len() > MAX_CATEGORIES;
     let kept = if folded {
         MAX_CATEGORIES - 1
@@ -350,12 +425,12 @@ fn category_column(
     if folded {
         legend.push(tr("chart.map.other").into());
     }
-    Some(Category {
+    Category {
         column,
         slots,
         legend,
         folded,
-    })
+    }
 }
 
 fn mercator_y(lat: f64) -> f64 {
@@ -459,14 +534,14 @@ impl Viewport {
 }
 
 /// The map element. Rebuilt every frame from the cached `GeoData`; holding the
-/// points behind an `Rc` keeps that a refcount bump.
+/// points behind an `Arc` keeps that a refcount bump.
 pub(crate) struct GeoPlot {
     id: ElementId,
-    data: Rc<GeoData>,
+    data: Arc<GeoData>,
 }
 
 impl GeoPlot {
-    pub(crate) fn new(id: impl Into<ElementId>, data: Rc<GeoData>) -> Self {
+    pub(crate) fn new(id: impl Into<ElementId>, data: Arc<GeoData>) -> Self {
         Self {
             id: id.into(),
             data,
