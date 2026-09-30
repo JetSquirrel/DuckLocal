@@ -1,12 +1,11 @@
 //! Map mode of the chart tab: a result with a latitude and a longitude column
 //! plots each row as a point on a Web Mercator projection, fitted to the
-//! points' extent, over OpenStreetMap tiles and a graticule labelled in
-//! degrees.
+//! points' extent, over a graticule labelled in degrees — and OpenStreetMap
+//! tiles, once someone turns them on (`tiles`).
 //!
-//! The base map comes from the network (`tiles`); an embedded coastline would
-//! say nothing at the city scale most station, store or sensor tables live
-//! at. Offline, or with tiles turned off, the points draw the shape on their
-//! own over the graticule. When a low
+//! Without tiles the points draw the shape on their own; an embedded
+//! coastline would say nothing at the city scale most station, store or
+//! sensor tables live at. When a low
 //! cardinality text column is present (a `type`, a `country`), points are
 //! colored by it, so the map says something beyond "where".
 //!
