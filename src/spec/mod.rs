@@ -36,6 +36,7 @@ pub mod prepare;
 pub mod syntax;
 pub mod tabs;
 pub mod view;
+mod wheel;
 
 use std::ffi::OsString;
 use std::path::PathBuf;

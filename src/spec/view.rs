@@ -43,6 +43,8 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
 use gpui_kit::prelude::FluentBuilder;
+
+use super::wheel::WheelLatch;
 use gpui_kit::*;
 
 use lsp_types::{
@@ -109,6 +111,9 @@ pub struct Dashboard {
     /// Polls the spec file for external changes. Dropping it ends the
     /// watcher, which is how closing the tab stops watching.
     watcher: Option<Task<()>>,
+    /// Which scroller the wheel gesture in progress moves: a table plot, or
+    /// the stack it sits in (see `wheel`).
+    wheel: WheelLatch,
 }
 
 impl Dashboard {
@@ -131,6 +136,7 @@ impl Dashboard {
             known_stamp,
             conflict: false,
             watcher: None,
+            wheel: WheelLatch::default(),
         };
         this.watch(cx);
         this.reload(cx);
@@ -430,6 +436,8 @@ impl Dashboard {
         let table = self.tables[ix].clone().expect("built just above");
         let truncated = result.truncated;
         let row_count = result.rows.len();
+        let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
+        let wheel = self.wheel.clone();
         v_flex()
             .size_full()
             .when(truncated, |this| {
@@ -443,12 +451,22 @@ impl Dashboard {
                 )
             })
             .child(
-                div().flex_1().min_h_0().child(
-                    DataTable::new(&table)
-                        .small()
-                        .stripe(true)
-                        .scrollbar_visible(true, true),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    // Runs after the table's own scrolling and before the
+                    // stack's, so it decides whether the stack moves too.
+                    .on_scroll_wheel(move |event, window, cx| {
+                        if wheel.table_scrolled(ix, &rows, event, window) {
+                            cx.stop_propagation();
+                        }
+                    })
+                    .child(
+                        DataTable::new(&table)
+                            .small()
+                            .stripe(true)
+                            .scrollbar_visible(true, true),
+                    ),
             )
             .into_any_element()
     }
@@ -666,9 +684,11 @@ impl Render for Dashboard {
             // out of reach. Dragging a divider still trades height between
             // neighbours; a tab taller than the stack is filled, as before.
             let stack = px(PLOT_DEFAULT * self.plots.len() as f32);
+            let wheel = self.wheel.clone();
             div()
                 .id(format!("dashboard-scroll-{}", self.id))
                 .size_full()
+                .on_scroll_wheel(move |_, _, _| wheel.stack_scrolled())
                 .overflow_y_scrollbar()
                 .child(
                     div()
