@@ -9,7 +9,8 @@
 //! * a `pie` takes `x` (the slices) and `y` (their sizes), and no `series`;
 //! * a `map` takes `lat` and `lng` instead of `x` and `y` — either may be left
 //!   out when a column's name says what it is (`geo_lat`, `longitude`) — and
-//!   an optional `color`;
+//!   optionally `color`, `size` (with `size_scale`, `"sqrt"` or `"log"`) and
+//!   `tooltip`, a list of the columns its tooltip shows;
 //! * `query = query.latency` names a query block that exists;
 //! * `x`, `y`, `series` name result columns — as bare identifiers when the
 //!   column allows it, as strings when it does not (`"Revenue (USD)"`).
@@ -28,7 +29,10 @@ use super::syntax::{self, Attr, Block, File, RefSite, Value};
 pub(crate) const PLOT_TYPES: &[&str] = &["line", "bar", "area", "scatter", "pie", "map", "table"];
 
 /// The attributes only a `map` takes.
-const MAP_ATTRS: &[&str] = &["lat", "lng", "color"];
+const MAP_ATTRS: &[&str] = &["lat", "lng", "color", "size", "size_scale", "tooltip"];
+
+/// How a map's `size` may scale its points.
+pub(crate) const SIZE_SCALES: &[&str] = &["sqrt", "log"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct Spec {
@@ -68,6 +72,12 @@ pub(crate) struct Plot {
     pub lng: Option<String>,
     /// The column a `map` colors its points by; `None` picks one.
     pub color: Option<String>,
+    /// The numeric column a `map` sizes its points by, and the scale:
+    /// `"sqrt"` (the default, area follows value) or `"log"`.
+    pub size: Option<String>,
+    pub size_scale: Option<String>,
+    /// The columns a `map`'s tooltip lists; `None` picks the numbers.
+    pub tooltip: Option<Vec<String>>,
     /// Line and column of the block's kind keyword.
     pub line: usize,
     pub col: usize,
@@ -374,6 +384,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut lat = None;
     let mut lng = None;
     let mut color = None;
+    let mut size = None;
+    let mut size_scale = None;
+    let mut tooltip = None;
     let mut seen: HashSet<&str> = HashSet::new();
     for attr in &block.attrs {
         if !seen.insert(attr.name.as_str()) {
@@ -413,10 +426,23 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             "lat" => lat = column(attr, diagnostics),
             "lng" => lng = column(attr, diagnostics),
             "color" => color = column(attr, diagnostics),
+            "size" => size = column(attr, diagnostics),
+            "size_scale" => match string(attr, diagnostics) {
+                Some(text) if SIZE_SCALES.contains(&text.as_str()) => size_scale = Some(text),
+                Some(text) => diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    format!(
+                        "Unknown size_scale: {text:?}; one of {}",
+                        SIZE_SCALES.join(", ")
+                    ),
+                )),
+                None => {}
+            },
+            "tooltip" => tooltip = columns(attr, diagnostics),
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, and for a map lat, lng, color; unknown attribute: {other}"
+                    "A plot block holds type, query, x, y, series, title, and for a map lat, lng, color, size, size_scale, tooltip; unknown attribute: {other}"
                 ),
             )),
         }
@@ -440,6 +466,12 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         };
         if let Some(message) = misplaced {
             diagnostics.push(Diagnostic::at_attr(attr, message));
+        }
+        if name == "size_scale" && size.is_none() && is_map {
+            diagnostics.push(Diagnostic::at_attr(
+                attr,
+                "size_scale says how size scales the points; set size to a numeric column too",
+            ));
         }
     }
     let required: &[&str] = if is_map { &["type", "query"] } else { &["type", "query", "x"] };
@@ -472,11 +504,47 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         lat,
         lng,
         color,
+        size,
+        size_scale,
+        tooltip,
         line: block.line,
         col: block.col,
         span: block.kind_span,
         name_span: block.name_span,
     })
+}
+
+/// A list of column names: `[place, requests, "Unique IPs"]`, not empty.
+fn columns(attr: &Attr, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<String>> {
+    let Value::List(items) = &attr.value else {
+        diagnostics.push(Diagnostic::at_attr(
+            attr,
+            format!("{} is a list of columns: [a, b, \"C d\"]", attr.name),
+        ));
+        return None;
+    };
+    let mut names = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::Ref(segments) if segments.len() == 1 => names.push(segments[0].clone()),
+            Value::Str(text) => names.push(text.clone()),
+            _ => {
+                diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    format!("{} lists columns: identifiers or strings", attr.name),
+                ));
+                return None;
+            }
+        }
+    }
+    if names.is_empty() {
+        diagnostics.push(Diagnostic::at_attr(
+            attr,
+            format!("{} lists at least one column; leave it out for the default", attr.name),
+        ));
+        return None;
+    }
+    Some(names)
 }
 
 /// A column name, written as a bare identifier or — for the names SQL quoting
@@ -585,8 +653,15 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
             ("lat", plot.lat.as_deref()),
             ("lng", plot.lng.as_deref()),
             ("color", plot.color.as_deref()),
+            ("size", plot.size.as_deref()),
         ]
         .into_iter()
+        .chain(
+            plot.tooltip
+                .iter()
+                .flatten()
+                .map(|column| ("tooltip", Some(column.as_str()))),
+        )
         .filter_map(|(name, column)| column.map(|c| (name, c)))
         {
             if !has(column) {
@@ -607,8 +682,9 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                 });
             }
         }
-        // Coordinates that are not numbers place nothing.
-        for (name, column) in [("lat", &lat), ("lng", &lng)] {
+        // Coordinates that are not numbers place nothing, and a size that is
+        // not one sizes nothing.
+        for (name, column) in [("lat", &lat), ("lng", &lng), ("size", &plot.size)] {
             let Some(column) = column else { continue };
             if let Some((_, ty)) = available
                 .iter()
@@ -620,7 +696,7 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                         col: plot.col,
                         span: plot.span,
                         message: format!(
-                            "map plot {:?} places points by {name} = {column:?} ({ty}), which is not numeric",
+                            "map plot {:?} uses {name} = {column:?} ({ty}), which is not numeric",
                             plot.name
                         ),
                     });
@@ -1011,6 +1087,84 @@ plot "guessed" { type = "map" query = query.q }
         assert!(
             diagnostics.iter().any(|d| d.message.contains("\"geo_lat\"")),
             "a named column the query lacks is reported: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn a_map_takes_a_size_its_scale_and_tooltip_columns() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "m" {
+  type = "map"
+  query = query.q
+  size = requests
+  size_scale = "log"
+  tooltip = [place, requests, "Unique IPs"]
+}
+"#,
+        );
+        let map = &spec.plots[0];
+        assert_eq!(map.size.as_deref(), Some("requests"));
+        assert_eq!(map.size_scale.as_deref(), Some("log"));
+        assert_eq!(
+            map.tooltip.as_deref(),
+            Some(&["place".to_string(), "requests".into(), "Unique IPs".into()][..])
+        );
+    }
+
+    #[test]
+    fn size_tooltip_and_their_scale_are_checked() {
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "a" { type = "map" query = query.q size = n size_scale = "cubic" }
+plot "b" { type = "map" query = query.q size_scale = "log" }
+plot "c" { type = "map" query = query.q tooltip = [] }
+plot "d" { type = "map" query = query.q tooltip = place }
+plot "e" { type = "bar" query = query.q x = t y = v size = n }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
+        assert!(has("Unknown size_scale: \"cubic\""), "{messages:?}");
+        assert!(has("set size to a numeric column too"), "{messages:?}");
+        assert!(has("lists at least one column"), "{messages:?}");
+        assert!(has("tooltip is a list of columns"), "{messages:?}");
+        assert!(has("size is for map plots"), "{messages:?}");
+    }
+
+    #[test]
+    fn size_and_tooltip_columns_must_exist_and_size_must_be_a_number() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "m" {
+  type = "map"
+  query = query.q
+  lat = lat
+  lng = lng
+  size = place
+  tooltip = [place, nope]
+}
+"#,
+        );
+        let columns = |_: &str| {
+            Ok(vec![
+                ("lat".to_string(), "DOUBLE".to_string()),
+                ("lng".to_string(), "DOUBLE".to_string()),
+                ("place".to_string(), "VARCHAR".to_string()),
+            ])
+        };
+        let diagnostics = check_columns(&spec, &columns);
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("size = \"place\" (VARCHAR), which is not numeric")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("tooltip = \"nope\"")),
+            "{messages:?}"
         );
     }
 }

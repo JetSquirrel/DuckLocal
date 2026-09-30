@@ -484,6 +484,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/geo.rs ───────────────────────────────────────────────────
     ("chart.map.title", "地图（{} / {}）", "Map of {} / {}"),
     ("chart.map.colored_by", "按 {} 着色", "Colored by {}"),
+    ("chart.map.sized_by", "按 {} 定大小", "Sized by {}"),
+    (
+        "chart.map.notice.unsized",
+        "{} 个点没有可用的大小值，按最小绘制",
+        "{} points have no usable size value; drawn smallest",
+    ),
     ("chart.map.other", "其他", "Other"),
     ("chart.map.row", "第 {} 行", "Row {}"),
     ("chart.map.no_label", "（结果中没有名称列）", "(no name column in the result)"),

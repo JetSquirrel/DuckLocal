@@ -14,8 +14,20 @@ use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
 /// them: the common ones first, a map's own after.
-pub(crate) const PLOT_ATTRS: [&str; 9] =
-    ["type", "query", "x", "y", "series", "title", "lat", "lng", "color"];
+pub(crate) const PLOT_ATTRS: [&str; 12] = [
+    "type",
+    "query",
+    "x",
+    "y",
+    "series",
+    "title",
+    "lat",
+    "lng",
+    "color",
+    "size",
+    "size_scale",
+    "tooltip",
+];
 
 /// One thing that could be inserted at the cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,13 +93,23 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .collect();
     }
 
-    if let Some(quoted) = after_type_equals(&before) {
-        return model::PLOT_TYPES
+    // The two attributes whose value is one of a fixed set of strings.
+    let choices = [
+        ("type", model::PLOT_TYPES, "plot type"),
+        ("size_scale", model::SIZE_SCALES, "size scale"),
+    ];
+    if let Some((quoted, values, detail)) = choices
+        .iter()
+        .find_map(|(attr, values, detail)| {
+            after_attr_equals(&before, attr).map(|quoted| (quoted, *values, *detail))
+        })
+    {
+        return values
             .iter()
             .map(|ty| Completion {
                 label: ty.to_string(),
                 kind: CompletionKind::Value,
-                detail: Some("plot type".to_string()),
+                detail: Some(detail.to_string()),
                 // Inside an open quote the bare word; outside one, bring the
                 // quotes — the value is a string either way.
                 insert_text: if quoted {
@@ -176,7 +198,7 @@ fn after_query_dot(before: &str) -> bool {
 
 /// The cursor follows `type =`, optionally inside an opened quote. The answer
 /// is whether the quote is there, so the insert text knows to bring its own.
-fn after_type_equals(before: &str) -> Option<bool> {
+fn after_attr_equals(before: &str, attr: &str) -> Option<bool> {
     let before = before.trim_end();
     let ident_len = trailing_ident_len(before);
     let head = &before[..before.len() - ident_len];
@@ -185,7 +207,7 @@ fn after_type_equals(before: &str) -> Option<bool> {
         None => (head, false),
     };
     let head = head.trim_end().strip_suffix('=')?;
-    (head.trim() == "type").then_some(quoted)
+    (head.trim() == attr).then_some(quoted)
 }
 
 /// Length of the ASCII identifier a line ends in — the partial word being
@@ -336,6 +358,15 @@ mod tests {
 
         let candidates = complete("query \"q\" {\n  s\n}", 2, 3);
         assert_eq!(labels(&candidates), ["sql"]);
+    }
+
+    #[test]
+    fn size_scales_after_size_scale_equals() {
+        let candidates = complete("plot \"p\" {\n  size_scale = \n}", 2, 16);
+        assert_eq!(labels(&candidates), model::SIZE_SCALES);
+        // Outside a quote the value comes quoted: it is a string.
+        assert_eq!(candidates[1].insert_text, "\"log\"");
+        assert_eq!(candidates[0].detail.as_deref(), Some("size scale"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::i18n::trf;
 use crate::query::QueryResult;
 use crate::query::ColumnKind;
 use crate::ui::chart::{format_value, parse_number, pie_slices, PieSlice};
-use crate::ui::geo::{is_lat_name, is_lng_name, GeoData};
+use crate::ui::geo::{is_lat_name, is_lng_name, GeoData, MapStyle, SizeScale};
 
 /// A chart is at most a couple of thousand pixels wide; past this, points are
 /// bucket-averaged, as in the results chart.
@@ -138,7 +138,35 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
             Some(Err(name)) => return base(Some(missing_column(name, result))),
             None => None,
         };
-        let geo = GeoData::from_columns(result, lat_ix, lng_ix, color_ix);
+        let size_ix = match plot.size.as_deref().map(|name| column(name).ok_or(name)) {
+            Some(Ok(ix)) => Some(ix),
+            Some(Err(name)) => return base(Some(missing_column(name, result))),
+            None => None,
+        };
+        let tooltip = match &plot.tooltip {
+            Some(names) => {
+                let mut ixs = Vec::with_capacity(names.len());
+                for name in names {
+                    match column(name) {
+                        Some(ix) => ixs.push(ix),
+                        None => return base(Some(missing_column(name, result))),
+                    }
+                }
+                Some(ixs)
+            }
+            None => None,
+        };
+        let scale = plot
+            .size_scale
+            .as_deref()
+            .and_then(SizeScale::parse)
+            .unwrap_or_default();
+        let style = MapStyle {
+            color: color_ix,
+            size: size_ix.map(|ix| (ix, scale)),
+            tooltip,
+        };
+        let geo = GeoData::from_columns(result, lat_ix, lng_ix, &style);
         return PreparedPlot {
             label_name: format!(
                 "{} / {}",
@@ -395,6 +423,9 @@ mod tests {
             lat: None,
             lng: None,
             color: None,
+            size: None,
+            size_scale: None,
+            tooltip: None,
             line: 1,
             col: 1,
             span: (0, 4),
