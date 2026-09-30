@@ -556,6 +556,12 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
     if let Some(name) = &geo.category_name {
         notices.push(trf("chart.map.colored_by", &[name]));
     }
+    if let Some(name) = &geo.size_name {
+        notices.push(trf("chart.map.sized_by", &[name]));
+    }
+    if geo.size_missing > 0 {
+        notices.push(trf("chart.map.notice.unsized", &[&geo.size_missing.to_string()]));
+    }
     let legend = geo
         .categories
         .iter()

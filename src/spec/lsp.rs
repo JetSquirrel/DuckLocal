@@ -407,7 +407,7 @@ fn hover_at(source: &str, position: Position) -> Option<Hover> {
         Hit::Attr { name, .. } => attr_doc(&name)?.to_string(),
         Hit::Block { kind, name, .. } => match kind.as_str() {
             "query" => format!("**query \"{name}\"**\n\nA named query: one `sql` attribute holding one statement, as a heredoc or a string."),
-            "plot" => format!("**plot \"{name}\"**\n\nA named plot: `type`, `query`, `x` and `y`, plus optional `series` and `title`; a `map` takes `lat`, `lng` and `color` instead of `x`, `y` and `series`."),
+            "plot" => format!("**plot \"{name}\"**\n\nA named plot: `type`, `query`, `x` and `y`, plus optional `series` and `title`; a `map` takes `lat`, `lng` and optional `color`, `size`, `size_scale` and `tooltip` instead of `x`, `y` and `series`."),
             _ => return None,
         },
         Hit::Ref { segments, .. } => {
@@ -470,6 +470,9 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "lat" => "**lat**\n\nA `map`'s latitude column, in degrees. Optional when a column's name says it (`lat`, `geo_lat`, `latitude`).",
         "lng" => "**lng**\n\nA `map`'s longitude column, in degrees. Optional when a column's name says it (`lng`, `lon`, `longitude`).",
         "color" => "**color**\n\nOptional, for a `map`: the column its points are colored by; the five most common values get a color, the rest share one.",
+        "size" => "**size**\n\nOptional, for a `map`: a numeric column its points are sized by — the area follows the value, so twice the value is twice the ink. A key in the corner reads sizes back.",
+        "size_scale" => "**size_scale**\n\nOptional, with `size`: `\"sqrt\"` (the default, area follows value) or `\"log\"`, for values spanning orders of magnitude.",
+        "tooltip" => "**tooltip**\n\nOptional, for a `map`: the columns its tooltip lists, in order — `tooltip = [place, requests, ips]`. Left out, it lists the size column and the other numbers, then the coordinates.",
         "title" => "**title**\n\nOptional: the plot's title.",
         _ => return None,
     })
