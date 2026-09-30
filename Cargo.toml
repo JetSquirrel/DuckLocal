@@ -38,6 +38,9 @@ hmac = "0.12"
 sha2 = "0.10"
 quick-xml = { version = "0.36", features = ["serialize"] }
 unicode-width = "0.2"
+# Map tiles: the same `image` GPUI decodes with, only the formats tile
+# servers send.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"

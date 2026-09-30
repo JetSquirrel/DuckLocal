@@ -19,7 +19,7 @@ ducklocal warehouse.duckdb    # or an existing DuckDB database
 
 Each CSV, TSV, Parquet, JSON, or Excel file becomes queryable as the window opens. You can also drag files or folders onto the window, or pick them from the file dialog — and they stay registered, so the next launch starts with the same workspace. One open request attaches at most 256 files.
 
-Your data stays on your machine: nothing is uploaded, and there is no account.
+Your data stays on your machine: nothing is uploaded, and there is no account. The one thing the app fetches on its own is the OpenStreetMap base map under a map chart — the tile requests reveal the area being viewed, never your rows.
 
 ## Features
 
