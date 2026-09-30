@@ -404,6 +404,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("menu.zoom_in", "放大界面", "Larger interface"),
     ("menu.zoom_out", "缩小界面", "Smaller interface"),
     ("menu.zoom_reset", "默认大小", "Default size"),
+    (
+        "menu.base_map",
+        "在线底图（OpenStreetMap）",
+        "Online base map (OpenStreetMap)",
+    ),
     ("workspace.stop.tooltip", "中断正在运行的查询", "Interrupt the running query"),
     ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
@@ -484,6 +489,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/geo.rs ───────────────────────────────────────────────────
     ("chart.map.title", "地图（{} / {}）", "Map of {} / {}"),
     ("chart.map.colored_by", "按 {} 着色", "Colored by {}"),
+    ("chart.map.sized_by", "按 {} 定大小", "Sized by {}"),
+    (
+        "chart.map.notice.unsized",
+        "{} 个点没有可用的大小值，按最小绘制",
+        "{} points have no usable size value; drawn smallest",
+    ),
     ("chart.map.other", "其他", "Other"),
     ("chart.map.row", "第 {} 行", "Row {}"),
     ("chart.map.no_label", "（结果中没有名称列）", "(no name column in the result)"),
@@ -745,6 +756,16 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "A map needs coordinate columns: name them with lat and lng. The query returns: {}",
     ),
     (
+        "dashboard.card.first_row",
+        "显示的是 {} 行中的第一行",
+        "Showing the first of {} rows",
+    ),
+    (
+        "dashboard.card.no_rows",
+        "查询没有返回行",
+        "The query returned no rows",
+    ),
+    (
         "dashboard.empty",
         "这个 spec 没有声明任何 plot 块。",
         "This spec declares no plot blocks.",
@@ -778,6 +799,14 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "dashboard.conflict",
         "文件在磁盘上已被修改",
         "The file changed on disk",
+    ),
+    ("dashboard.filter.label", "筛选", "Filtered by"),
+    ("dashboard.filter.clear", "清除此筛选", "Clear this filter"),
+    ("dashboard.filter.clear_all", "全部清除", "Clear all"),
+    (
+        "dashboard.filter.hint",
+        "点击可筛选其他图表",
+        "Click to filter the other plots",
     ),
     (
         "dashboard.conflict.hint",

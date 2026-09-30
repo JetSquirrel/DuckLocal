@@ -1,5 +1,5 @@
 // The analysis_app panel's data as a dashboard spec: same orders.csv,
-// declared rather than scripted. Check it from the repository root:
+// declared rather than scripted. Check it from anywhere:
 //
 //   ducklocal check examples/analysis_app/dashboard.dash
 //
@@ -7,13 +7,26 @@
 //
 //   ducklocal examples/analysis_app/dashboard.dash
 //
-// Paths in SQL are relative to the working directory, like every other
-// ducklocal command.
+// The source's path is relative to this file, so the spec and its data move
+// together; the queries read it by name.
+
+source "orders" {
+  path = "orders.csv"
+}
+
+query "totals" {
+  sql = <<SQL
+    SELECT sum(revenue) AS revenue, sum(orders) AS orders,
+           count(DISTINCT channel) AS channels
+    FROM orders
+    WHERE $channel
+  SQL
+}
 
 query "revenue_by_channel" {
   sql = <<SQL
     SELECT channel, sum(revenue) AS revenue
-    FROM 'examples/analysis_app/orders.csv'
+    FROM orders
     GROUP BY channel
     ORDER BY revenue DESC
   SQL
@@ -22,10 +35,32 @@ query "revenue_by_channel" {
 query "daily_orders" {
   sql = <<SQL
     SELECT date, sum(orders) AS orders
-    FROM 'examples/analysis_app/orders.csv'
+    FROM orders
+    WHERE $channel
     GROUP BY date
     ORDER BY date
   SQL
+}
+
+plot "revenue_total" {
+  type  = "card"
+  query = query.totals
+  value = revenue
+  title = "Revenue"
+}
+
+plot "orders_total" {
+  type  = "card"
+  query = query.totals
+  value = orders
+  title = "Orders"
+}
+
+plot "channels" {
+  type  = "card"
+  query = query.totals
+  value = channels
+  title = "Channels"
 }
 
 plot "revenue" {
@@ -34,6 +69,7 @@ plot "revenue" {
   x     = channel
   y     = revenue
   title = "Revenue by channel"
+  width = 6
 }
 
 plot "orders" {
@@ -42,4 +78,12 @@ plot "orders" {
   x     = date
   y     = orders
   title = "Orders per day"
+  width = 6
+}
+
+// A click on a revenue bar narrows the cards and the daily orders to that
+// channel; the bar chart itself stays whole, so another bar can be picked.
+// Nothing picked, `$channel` is TRUE.
+filter "channel" {
+  plot = plot.revenue
 }

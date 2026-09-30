@@ -601,6 +601,42 @@ impl Workspace {
         }
     }
 
+    /// Every tab as `ducklocal open --state` reports it, and which is in front.
+    pub fn snapshot(&self, cx: &App) -> serde_json::Value {
+        use serde_json::json;
+        let tabs = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(ix, tab)| {
+                let mut entry = json!({
+                    "title": tab.title().to_string(),
+                    "active": ix == self.active,
+                });
+                match tab {
+                    WorkspaceTab::Query(tab) => {
+                        entry["kind"] = json!("query");
+                        entry["sql"] = json!(tab.editor.read(cx).value().to_string());
+                        entry["result"] = tab.results.read(cx).summary();
+                    }
+                    WorkspaceTab::Dashboard(tab) => {
+                        let host = tab.host.read(cx);
+                        entry["kind"] = json!("dashboard");
+                        entry["path"] = json!(tab.path.display().to_string());
+                        entry["unsaved"] = json!(host.is_dirty(cx));
+                        entry["dashboard"] = host.summary();
+                    }
+                    WorkspaceTab::App(tab) => {
+                        entry["kind"] = json!("app");
+                        entry["directory"] = json!(tab.directory.display().to_string());
+                    }
+                }
+                entry
+            })
+            .collect::<Vec<_>>();
+        json!({"active_tab": self.active, "tabs": tabs})
+    }
+
     fn active_tab(&self) -> Option<&WorkspaceTab> {
         self.tabs.get(self.active)
     }
@@ -628,6 +664,29 @@ impl Workspace {
 
     pub fn add_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.new_tab_editor(window, cx);
+        self.tabs.push(WorkspaceTab::Query(tab));
+        self.active = self.tabs.len() - 1;
+        self.editor_shown = true;
+        cx.notify();
+        self.focus_active_editor(window, cx);
+    }
+
+    /// A new query tab holding `sql`, in front — what `ducklocal open --sql`
+    /// asks for. The SQL is the tab's own, not a history refill, so it never
+    /// overwrites a tab someone is writing in.
+    pub fn open_query_tab(
+        &mut self,
+        sql: String,
+        title: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut tab = self.new_tab_editor(window, cx);
+        if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+            tab.title = title.into();
+        }
+        tab.editor
+            .update(cx, |editor, cx| editor.set_value(sql, window, cx));
         self.tabs.push(WorkspaceTab::Query(tab));
         self.active = self.tabs.len() - 1;
         self.editor_shown = true;
@@ -930,7 +989,7 @@ impl Workspace {
         self.run_active(window, cx);
     }
 
-    fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running || self.explaining {
             return;
         }

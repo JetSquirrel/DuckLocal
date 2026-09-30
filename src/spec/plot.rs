@@ -142,7 +142,13 @@ pub(crate) struct GroupedBars {
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
     label_count: usize,
+    /// The band a filter has picked: it keeps its colour and the rest fade,
+    /// so the plot says what the dashboard is narrowed to.
+    selected: Option<SharedString>,
 }
+
+/// How much of its opacity a bar outside the picked band keeps.
+const UNPICKED_OPACITY: f32 = 0.3;
 
 impl GroupedBars {
     pub(crate) fn new(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
@@ -161,7 +167,30 @@ impl GroupedBars {
             label_count: x_label_count(&points),
             points,
             series: series_names.iter().map(SharedString::from).collect(),
+            selected: None,
         }
+    }
+
+    pub(crate) fn selected(mut self, band: Option<SharedString>) -> Self {
+        self.selected = band;
+        self
+    }
+
+    /// The band under `position` — relative to the plot's origin, as the
+    /// tooltip's is — for a click to pick. The axis labels below the baseline
+    /// are not a band.
+    pub(crate) fn band_at(
+        &self,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+    ) -> Option<SharedString> {
+        let baseline = bounds.size.height.as_f32() - axis_gap();
+        if position.y.as_f32() > baseline || position.y.as_f32() < 0. {
+            return None;
+        }
+        let (band_scale, _) = self.scales(bounds);
+        let index = band_scale.nearest_index(position.x.as_f32());
+        self.points.get(index).map(|d| d.band.clone())
     }
 
     /// The band and value scales for `bounds`, shared by `paint` and the
@@ -207,6 +236,7 @@ impl Plot for GroupedBars {
         let zero = value_scale.tick(&0.).unwrap_or(baseline);
         let palette = palette(cx);
         let n = self.series.len();
+        let selected = self.selected.clone();
 
         // The axis line sits at zero, which is mid-plot when the data crosses
         // it; the band labels stay at the bottom, clear of any bar.
@@ -263,7 +293,13 @@ impl Plot for GroupedBars {
             })
             .base(move |_| zero)
             .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-            .fill(move |d: &(Arc<PlotPoint>, usize), _, _| palette[d.1 % palette.len()])
+            .fill(move |d: &(Arc<PlotPoint>, usize), _, _| {
+                let color = palette[d.1 % palette.len()];
+                match &selected {
+                    Some(band) if *band != d.0.band => color.opacity(UNPICKED_OPACITY),
+                    _ => color,
+                }
+            })
             .paint(&bounds, window, cx);
     }
 
@@ -592,10 +628,38 @@ impl Plot for SeriesPlot {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{GROUP_GAP, group_slot, labeled, point_label_align, value_ticks, x_label_count};
+    use super::{
+        GROUP_GAP, GroupedBars, group_slot, labeled, point_label_align, value_ticks,
+        x_label_count,
+    };
     use crate::spec::prepare::PlotPoint;
-    use gpui_kit::{SharedString, TextAlign};
+    use gpui_kit::{Bounds, SharedString, TextAlign, point, px, size};
     use std::sync::Arc;
+
+    #[test]
+    fn a_click_finds_the_band_under_it() {
+        let points: Vec<Arc<PlotPoint>> = ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(ix, band)| {
+                Arc::new(PlotPoint {
+                    band: SharedString::from(*band),
+                    label: SharedString::new(""),
+                    values: vec![1.0],
+                    present: vec![true],
+                    ix,
+                })
+            })
+            .collect();
+        let bars = GroupedBars::of("t", points, &["y".to_string()]);
+        let bounds = Bounds::new(point(px(100.), px(50.)), size(px(300.), px(200.)));
+        let at = |x: f32, y: f32| bars.band_at(point(px(x), px(y)), bounds);
+        assert_eq!(at(10., 100.).as_deref(), Some("a"));
+        assert_eq!(at(150., 100.).as_deref(), Some("b"));
+        assert_eq!(at(290., 100.).as_deref(), Some("c"));
+        // The axis labels under the baseline are not a bar.
+        assert_eq!(at(150., 199.), None);
+    }
 
     #[test]
     fn a_group_tiles_its_band() {

@@ -12,10 +12,10 @@ DuckLocal — local data workspace and headless SQL
 Usage:
   ducklocal [PATH ...]          Open the GUI on files, folders or globs
   ducklocal query [OPTIONS]     Run one SQL statement, print JSON
-  ducklocal profile TARGET      Per-column statistics, JSON
-  ducklocal export --html APP   Export an analysis app as standalone HTML
+  ducklocal schema [PATH ...]   Relations and columns; --stats per column
+  ducklocal open [OPTIONS]      Show work in the running window; --state reads it
   ducklocal check FILE          Validate a .dash dashboard spec
-  ducklocal lsp                 Language server for .dash files (stdio)
+  ducklocal export --html APP   Export an analysis app as standalone HTML
   ducklocal --version
 
 Run `ducklocal <command> --help` for its options.
@@ -42,6 +42,8 @@ arguments, 1 for SQL or I/O. Read-only is not a sandbox: COPY can write files.
 
 pub(crate) const PROFILE_HELP: &str = "\
 Usage: ducklocal profile TARGET [--database PATH]
+
+Deprecated: the same as `ducklocal schema TARGET --stats`.
 
 Exact per-column statistics as JSON: type, nulls, distinct, min and max, plus
 median and decimals for numbers and day coverage for dates.
@@ -72,6 +74,9 @@ each query with DuckDB's parser. Nothing runs unless --database is given; then
 every query runs read-only and plot columns are checked against the results.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.
+
+For editors, `ducklocal lsp [--database PATH]` serves the same diagnostics,
+with completion, hover and go-to-definition, over stdio.
 ";
 
 pub(crate) const LSP_HELP: &str = "\
@@ -87,6 +92,11 @@ pub(crate) struct CliError {
     pub(crate) kind: &'static str,
     pub(crate) message: String,
     pub(crate) code: i32,
+    /// What to do about it, when that is known: the next command to run or
+    /// the flag to add. An agent reading the error acts on this line rather
+    /// than guessing from DuckDB's message; `dispatch` fills it in from
+    /// [`hint_for`] when the error site did not.
+    pub(crate) hint: Option<String>,
 }
 
 impl CliError {
@@ -107,6 +117,7 @@ impl CliError {
             kind: "argument",
             message: message.into(),
             code: 2,
+            hint: None,
         }
     }
 
@@ -115,8 +126,86 @@ impl CliError {
             kind,
             message: error.to_string(),
             code: 1,
+            hint: None,
         }
     }
+
+    pub(crate) fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+}
+
+/// The next step for an error whose site gave none, read off its message.
+///
+/// DuckDB's messages say what went wrong; these say what to run next, in this
+/// CLI's own terms — which flag, which command. Only the mistakes an agent
+/// actually makes are here, and each hint is a thing to do, never a restating
+/// of the message.
+pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
+    let has = |needle: &str| message.contains(needle);
+    if kind == "sql" || kind == "database" {
+        if has("read-only mode") || has("read-only database") {
+            return Some("File databases open read-only; add --read-write to allow writes");
+        }
+        if has("Table with name") && has("does not exist") {
+            return Some(
+                "List what exists with `ducklocal schema` (with --database PATH for a database \
+                 file); read a data file by quoting its path: FROM 'data.csv'",
+            );
+        }
+        if has("Referenced column") || has("Candidate bindings") {
+            return Some(
+                "See a relation's columns with `ducklocal schema PATH` or DESCRIBE; double-quote \
+                 names with spaces or capitals",
+            );
+        }
+        if has("No files found") {
+            return Some(
+                "Relative paths resolve against the current directory; check the name, or use an \
+                 absolute path",
+            );
+        }
+        if has("Could not convert") || has("Conversion Error") {
+            return Some(
+                "TRY_CAST(expr AS type) turns values that do not convert into NULL; \
+                 `ducklocal schema PATH --stats` shows what the column holds",
+            );
+        }
+    }
+    if kind == "argument" && has("Expected exactly one SQL statement") {
+        return Some(
+            "Run one statement per call: chain steps with WITH … AS (…), or make separate calls",
+        );
+    }
+    None
+}
+
+/// The known flag an unknown one was most likely meant to be: one or two
+/// edits away, or the same name with a different number of dashes.
+fn closest_flag<'a>(text: &str, spec: &'a [FlagSpec]) -> Option<&'a str> {
+    let bare = text.trim_start_matches('-');
+    spec.iter()
+        .map(|flag| (flag.name, edit_distance(bare, flag.name.trim_start_matches('-'))))
+        .filter(|(_, distance)| *distance <= 2)
+        .min_by_key(|(_, distance)| *distance)
+        .map(|(name, _)| name)
+}
+
+/// Levenshtein distance, over chars; flag names are short.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitute = previous + usize::from(ca != *cb);
+            previous = row[j + 1];
+            row[j + 1] = substitute.min(row[j] + 1).min(previous + 1);
+        }
+    }
+    row[b.len()]
 }
 
 /// One flag a command accepts: its name and whether it takes a value.
@@ -158,7 +247,11 @@ pub(crate) fn parse_args(
             continue;
         }
         let Some(flag) = spec.iter().find(|flag| flag.name == text) else {
-            return Err(CliError::argument(format!("Unknown {command} option: {text}")));
+            let error = CliError::argument(format!("Unknown {command} option: {text}"));
+            return Err(match closest_flag(text, spec) {
+                Some(name) => error.with_hint(format!("Did you mean {name}?")),
+                None => error.with_hint(format!("See ducklocal {command} --help")),
+            });
         };
         if !seen.insert(flag.name) {
             return Err(CliError::argument(format!("Duplicate option: {}", flag.name)));
@@ -468,7 +561,8 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
     .map_err(|e| CliError::failure("database", e))
 }
 
-/// `ducklocal profile TARGET [--database PATH]`.
+/// `ducklocal profile TARGET [--database PATH]`: the deprecated spelling of
+/// `schema TARGET --stats`, kept so released scripts keep working.
 ///
 /// One positional argument, because the thing being profiled is the whole
 /// request; `--database` only says where to look for a name.
@@ -502,6 +596,12 @@ fn profile(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     }
+    profile_target(target, database)
+}
+
+/// Exact per-column statistics of one relation: a data file, a workbook's
+/// first sheet, or — with a database — a table or view name.
+pub(crate) fn profile_target(target: &str, database: Option<PathBuf>) -> Result<String, CliError> {
     let conn = open(database, false)?;
     // A target that names nothing is a mistake in the arguments, and reporting
     // it as a SQL failure would send a caller looking at their data instead of
@@ -519,7 +619,16 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
     if !matches!(
         first,
-        "query" | "profile" | "export" | "check" | "dash" | "lsp" | "--help" | "--version"
+        "query"
+            | "schema"
+            | "profile"
+            | "open"
+            | "export"
+            | "check"
+            | "dash"
+            | "lsp"
+            | "--help"
+            | "--version"
     ) && !first.starts_with("--")
     {
         return None;
@@ -535,8 +644,12 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("--version", 1) => Ok(format!("ducklocal {}", env!("CARGO_PKG_VERSION"))),
         ("query", 2) if args[1] == "--help" => Ok(QUERY_HELP.to_string()),
         ("query", _) => query(&args[1..]),
+        ("schema", 2) if args[1] == "--help" => Ok(crate::schema_cli::SCHEMA_HELP.to_string()),
+        ("schema", _) => crate::schema_cli::run(&args[1..]),
         ("profile", 2) if args[1] == "--help" => Ok(PROFILE_HELP.to_string()),
         ("profile", _) => profile(&args[1..]),
+        ("open", 2) if args[1] == "--help" => Ok(crate::remote::OPEN_HELP.to_string()),
+        ("open", _) => crate::remote::open(&args[1..]),
         ("export", _) => crate::app_export::dispatch(&args[1..]),
         ("check", 2) if args[1] == "--help" => Ok(CHECK_HELP.to_string()),
         ("check", _) => crate::spec::check(&args[1..]),
@@ -560,12 +673,43 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     Some(match result {
         Ok(()) => 0,
         Err(error) => {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "{}",
-                json!({"error": {"kind": error.kind, "message": error.message}})
-            );
+            let hint = error
+                .hint
+                .clone()
+                .or_else(|| hint_for(error.kind, &error.message).map(str::to_string));
+            let mut body = json!({"kind": error.kind, "message": error.message});
+            if let Some(hint) = hint {
+                body["hint"] = json!(hint);
+            }
+            let _ = writeln!(std::io::stderr().lock(), "{}", json!({"error": body}));
             error.code
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_misspelled_flag_is_matched_to_the_one_meant() {
+        assert_eq!(closest_flag("--limt", QUERY_SPEC), Some("--limit"));
+        assert_eq!(closest_flag("-sql", QUERY_SPEC), Some("--sql"));
+        assert_eq!(closest_flag("--databse", QUERY_SPEC), Some("--database"));
+        assert_eq!(closest_flag("--everything", QUERY_SPEC), None);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn hints_follow_the_message_and_the_kind() {
+        let read_only = "Invalid Input Error: Cannot execute statement of type \"DROP\" on database \"w\" which is attached in read-only mode!";
+        assert!(hint_for("sql", read_only).unwrap().contains("--read-write"));
+        assert!(hint_for("sql", "Catalog Error: Table with name x does not exist!")
+            .unwrap()
+            .contains("ducklocal schema"));
+        assert!(hint_for("argument", "Expected exactly one SQL statement; found 2").is_some());
+        // A kind the hint is not about gets none.
+        assert!(hint_for("io", "Table with name x does not exist").is_none());
+        assert!(hint_for("sql", "Parser Error: syntax error at or near \"x\"").is_none());
+    }
 }

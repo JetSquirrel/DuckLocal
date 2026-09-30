@@ -10,7 +10,8 @@
 //! A `pie` is the same matrix with one series, never merged or truncated —
 //! its slices must add up to the whole — then folded into its largest
 //! slices. A `map` skips the matrix: it is the results chart's `GeoData`,
-//! over the columns the spec names.
+//! over the columns the spec names. A `card` is one cell: its column's value
+//! in the first row, grouped by thousands when it is a plain number.
 //!
 //! Everything here is pure and tested as such; the view (`view.rs`) only
 //! renders what this prepares.
@@ -25,7 +26,7 @@ use crate::i18n::trf;
 use crate::query::QueryResult;
 use crate::query::ColumnKind;
 use crate::ui::chart::{format_value, parse_number, pie_slices, PieSlice};
-use crate::ui::geo::{is_lat_name, is_lng_name, GeoData};
+use crate::ui::geo::{is_lat_name, is_lng_name, GeoData, MapStyle, SizeScale};
 
 /// A chart is at most a couple of thousand pixels wide; past this, points are
 /// bucket-averaged, as in the results chart.
@@ -66,6 +67,10 @@ pub struct PreparedPlot {
     pub pie: Vec<Arc<PieSlice>>,
     /// A `map`'s points.
     pub geo: Option<Arc<GeoData>>,
+    /// A `card`'s value, ready to show.
+    pub card: Option<SharedString>,
+    /// Grid columns the plot spans, default applied.
+    pub width: u8,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
@@ -77,7 +82,10 @@ pub struct PreparedPlot {
 /// Prepare one plot from its query's result. `table` plots need no
 /// preparation — the view renders the result grid directly — and a plot whose
 /// query failed carries the failure instead of data.
-pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>) -> PreparedPlot {
+pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
+    plot: &Plot,
+    result: Option<&Result<R, String>>,
+) -> PreparedPlot {
     let base = |failure: Option<String>| PreparedPlot {
         name: plot.name.clone(),
         title: plot.title.clone().unwrap_or_else(|| plot.name.clone()),
@@ -88,26 +96,54 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
         points: Vec::new(),
         pie: Vec::new(),
         geo: None,
+        card: None,
+        width: plot.width(),
         notice: None,
         failure,
     };
     let Some(result) = result else {
         return base(Some(trf("dashboard.query_missing", &[&plot.query])));
     };
-    let result = match result {
-        Ok(result) => result,
+    let result: &QueryResult = match result {
+        Ok(result) => result.borrow(),
         Err(error) => return base(Some(error.clone())),
     };
     if plot.kind == "table" {
         return base(None);
     }
-
     let column = |name: &str| {
         result
             .columns
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case(name))
     };
+    if plot.kind == "card" {
+        let ix = match plot.value.as_deref() {
+            Some(name) => match column(name) {
+                Some(ix) => ix,
+                None => return base(Some(missing_column(name, result))),
+            },
+            None if result.columns.is_empty() => {
+                return base(Some(missing_column("value", result)))
+            }
+            None => 0,
+        };
+        let (value, notice) = match result.rows.first() {
+            Some(row) => (
+                group_thousands(row.get(ix).map(String::as_str).unwrap_or("")),
+                (result.rows.len() > 1)
+                    .then(|| trf("dashboard.card.first_row", &[&result.rows.len().to_string()])),
+            ),
+            None => ("—".to_string(), Some(crate::i18n::tr("dashboard.card.no_rows").to_string())),
+        };
+        return PreparedPlot {
+            label_name: result.columns[ix].name.clone(),
+            card: Some(SharedString::from(value)),
+            notice,
+            ..base(None)
+        };
+    }
+
     if plot.kind == "map" {
         // Named columns are taken at their word; a missing one is found by
         // name among the numeric columns, as the results chart finds them.
@@ -138,7 +174,35 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
             Some(Err(name)) => return base(Some(missing_column(name, result))),
             None => None,
         };
-        let geo = GeoData::from_columns(result, lat_ix, lng_ix, color_ix);
+        let size_ix = match plot.size.as_deref().map(|name| column(name).ok_or(name)) {
+            Some(Ok(ix)) => Some(ix),
+            Some(Err(name)) => return base(Some(missing_column(name, result))),
+            None => None,
+        };
+        let tooltip = match &plot.tooltip {
+            Some(names) => {
+                let mut ixs = Vec::with_capacity(names.len());
+                for name in names {
+                    match column(name) {
+                        Some(ix) => ixs.push(ix),
+                        None => return base(Some(missing_column(name, result))),
+                    }
+                }
+                Some(ixs)
+            }
+            None => None,
+        };
+        let scale = plot
+            .size_scale
+            .as_deref()
+            .and_then(SizeScale::parse)
+            .unwrap_or_default();
+        let style = MapStyle {
+            color: color_ix,
+            size: size_ix.map(|ix| (ix, scale)),
+            tooltip,
+        };
+        let geo = GeoData::from_columns(result, lat_ix, lng_ix, &style);
         return PreparedPlot {
             label_name: format!(
                 "{} / {}",
@@ -352,8 +416,39 @@ pub(crate) fn prepare(plot: &Plot, result: Option<&Result<QueryResult, String>>)
         points,
         pie,
         geo: None,
+        card: None,
+        width: plot.width(),
         notice: (!notices.is_empty()).then(|| notices.join(" · ")),
         failure: None,
+    }
+}
+
+/// A cell as a card shows it: a plain decimal number with its integer part
+/// grouped by thousands (`1859708` → `1,859,708`), anything else — a date, a
+/// word, an exponent — exactly as the database wrote it.
+fn group_thousands(cell: &str) -> String {
+    let (sign, unsigned) = match cell.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", cell),
+    };
+    let (int, frac) = match unsigned.split_once('.') {
+        Some((int, frac)) => (int, Some(frac)),
+        None => (unsigned, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(int) || frac.is_some_and(|f| !digits(f)) {
+        return cell.to_string();
+    }
+    let mut grouped = String::with_capacity(int.len() + int.len() / 3);
+    for (ix, ch) in int.chars().enumerate() {
+        if ix > 0 && (int.len() - ix) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    match frac {
+        Some(frac) => format!("{sign}{grouped}.{frac}"),
+        None => format!("{sign}{grouped}"),
     }
 }
 
@@ -395,6 +490,11 @@ mod tests {
             lat: None,
             lng: None,
             color: None,
+            size: None,
+            size_scale: None,
+            tooltip: None,
+            value: None,
+            width: None,
             line: 1,
             col: 1,
             span: (0, 4),
@@ -501,7 +601,7 @@ mod tests {
     fn a_failed_query_carries_its_error() {
         let prepared = prepare(
             &plot("bar", Some("y"), None),
-            Some(&Err("boom".to_string())),
+            Some(&Err::<QueryResult, _>("boom".to_string())),
         );
         assert_eq!(prepared.failure.as_deref(), Some("boom"));
     }
@@ -632,5 +732,42 @@ mod tests {
         let total: f64 = pie.pie.iter().map(|s| s.value() as f64).sum();
         assert_eq!(total, (1..=300).sum::<i64>() as f64);
         assert!(pie.notice.unwrap().contains('1'), "the negative band is reported");
+    }
+
+    #[test]
+    fn a_card_shows_its_first_row_grouped() {
+        let data = || {
+            Ok(result(
+                vec![
+                    column("label", ColumnKind::Text),
+                    column("total", ColumnKind::Numeric),
+                ],
+                vec![vec!["all", "1859708"], vec!["more", "2"]],
+            ))
+        };
+        let card = |value: Option<&str>| Plot {
+            value: value.map(str::to_string),
+            ..plot("card", None, None)
+        };
+        let shown = prepare(&card(Some("total")), Some(&data()));
+        assert_eq!(shown.card.as_ref().map(|c| c.as_ref()), Some("1,859,708"));
+        assert_eq!(shown.width, 3, "a card is a quarter row by default");
+        assert!(shown.notice.is_some(), "a second row is said, not shown");
+        // Left out, the value is the first column.
+        let first = prepare(&card(None), Some(&data()));
+        assert_eq!(first.card.as_ref().map(|c| c.as_ref()), Some("all"));
+        let missing = prepare(&card(Some("nope")), Some(&data()));
+        assert!(missing.failure.unwrap().contains("nope"));
+        assert_eq!(prepare(&plot("line", Some("y"), None), Some(&data())).width, 12);
+    }
+
+    #[test]
+    fn only_plain_numbers_are_grouped() {
+        assert_eq!(group_thousands("1234567.891"), "1,234,567.891");
+        assert_eq!(group_thousands("-1000"), "-1,000");
+        assert_eq!(group_thousands("999"), "999");
+        assert_eq!(group_thousands("1e10"), "1e10");
+        assert_eq!(group_thousands("2026-09-30"), "2026-09-30");
+        assert_eq!(group_thousands(""), "");
     }
 }

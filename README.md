@@ -19,7 +19,7 @@ ducklocal warehouse.duckdb    # or an existing DuckDB database
 
 Each CSV, TSV, Parquet, JSON, or Excel file becomes queryable as the window opens. You can also drag files or folders onto the window, or pick them from the file dialog — and they stay registered, so the next launch starts with the same workspace. One open request attaches at most 256 files.
 
-Your data stays on your machine: nothing is uploaded, and there is no account.
+Your data stays on your machine: nothing is uploaded, and there is no account. Map charts can draw an OpenStreetMap base map under their points, off until you turn it on (View → Online base map): its tile requests reveal the area being viewed, never your rows.
 
 ## Features
 
@@ -43,7 +43,15 @@ ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
 
-Results are structured JSON, with explicit truncation and precision-preserving value encodings; `--format md` prints the same values as a Markdown table for a document to quote. File databases default to read-only; writes require `--read-write`. Read-only is not a filesystem/network sandbox: `COPY` can still write files.
+Results are structured JSON, with explicit truncation and precision-preserving value encodings; `--format md` prints the same values as a Markdown table for a document to quote. File databases default to read-only; writes require `--read-write`. Read-only is not a filesystem/network sandbox: `COPY` can still write files. An error is JSON too, and carries a `hint` when there is an obvious next step — the flag that was meant, `--read-write` for a refused write, `ducklocal schema` for a table that does not exist.
+
+`ducklocal schema` maps what there is to query in one call — every file under the PATHs, or a database's tables and views, with their columns and the SQL that reads each. A large catalog comes back as a summary sized for a prompt, and `--stats` gives one relation's exact per-column statistics:
+
+```bash
+ducklocal schema ./data/
+ducklocal schema --database warehouse.duckdb --table orders
+ducklocal schema sales.csv --stats        # nulls, distinct, min/max, median, day coverage
+```
 
 An analysis app can be exported as one standalone HTML file — the statements its `query()` calls issued, with their results — for sharing with someone who does not have DuckLocal:
 
@@ -51,13 +59,23 @@ An analysis app can be exported as one standalone HTML file — the statements i
 ducklocal export --html examples/analysis_app
 ```
 
-A dashboard can also be declared as data: a `.dash` file of query and plot blocks, opened as a tab like an app, editable right there in the GUI. `ducklocal check` validates a spec without a window, and `ducklocal lsp` gives any LSP-capable editor the same diagnostics, completion, hover and go-to-definition:
+A dashboard can also be declared as data: a `.dash` file of query and plot blocks, opened as a tab like an app, editable right there in the GUI. A `filter` block makes a bar chart or a table clickable: the value picked there narrows every query that reads it as `$name` — cross-filtering, with the picking plot itself left whole. `ducklocal check` validates a spec without a window, and `ducklocal lsp` gives any LSP-capable editor the same diagnostics, completion, hover and go-to-definition:
 
 ```bash
 ducklocal dashboard.dash                  # open as a dashboard tab
 ducklocal check dashboard.dash            # validate; JSON diagnostics, exit 2 on mistakes
 ducklocal lsp                             # language server over stdio, for editors
 ```
+
+When the work is for a person to see, `ducklocal open` hands it to the window that is already running — starting one if none is — as a tab in front. It runs in the window's own session, so they can carry on from it:
+
+```bash
+ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
+ducklocal open dashboard.dash             # a dashboard tab; data files and folders attach
+ducklocal open --no-launch --sql-file q.sql   # exit 1, kind not_running, if no window is up
+```
+
+The other direction works too: `ducklocal open --state` reports what the running window shows — its tabs, each query's SQL and result, each dashboard's picked filters — so an agent can carry on from where the person left off.
 
 See the [CLI guide](https://ducklocal.app/docs/cli) for conversion, stdin, output, app export, and safety details.
 

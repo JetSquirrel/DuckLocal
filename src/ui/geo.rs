@@ -1,12 +1,14 @@
 //! Map mode of the chart tab: a result with a latitude and a longitude column
 //! plots each row as a point on a Web Mercator projection, fitted to the
-//! points' extent, over a graticule labelled in degrees.
+//! points' extent, over a graticule labelled in degrees — and OpenStreetMap
+//! tiles, once someone turns them on (`tiles`).
 //!
-//! There is no base map: tiles would need the network, and an embedded
+//! Without tiles the points draw the shape on their own; an embedded
 //! coastline would say nothing at the city scale most station, store or
-//! sensor tables live at. The points themselves draw the shape. When a low
+//! sensor tables live at. When a low
 //! cardinality text column is present (a `type`, a `country`), points are
-//! colored by it, so the map says something beyond "where".
+//! colored by it, so the map says something beyond "where"; a dashboard can
+//! also size them by a number (`MapStyle`), so it says "how much" too.
 //!
 //! Like the other charts, detection and projection happen once per result set
 //! (`GeoData::detect`); a frame re-derives only the viewport transform, which
@@ -41,6 +43,12 @@ const MAX_MERCATOR_LAT: f64 = 85.051_128_78;
 /// single street does not fill the plot at an absurd scale.
 const MIN_SPAN: f64 = 0.01;
 const DOT_SIZE: f32 = 9.;
+/// A sized point's diameter at the largest value, and the least any point
+/// gets — below this a dot stops being findable, let alone hoverable.
+const MAX_SIZED: f32 = 40.;
+const MIN_SIZED: f32 = 5.;
+/// Tooltip rows of measures a map shows unasked.
+const DEFAULT_MEASURES: usize = 4;
 const HOVER_DOT_SIZE: f32 = 12.;
 const HOVER_HALO: f32 = 20.;
 /// How close, in pixels, the cursor must be to a point to hover it.
@@ -63,6 +71,78 @@ pub(crate) struct GeoPoint {
     y: f64,
     label: SharedString,
     category: Option<usize>,
+    /// The point's diameter in pixels.
+    diameter: f32,
+    /// The cells of `GeoData::measures`, in order, as the query returned
+    /// them: a tooltip shows the number, not a rounding of it.
+    measures: Vec<SharedString>,
+}
+
+/// How a sized map turns a value into a point's area.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SizeScale {
+    /// Area in proportion to the value: what a reader's eye compares.
+    #[default]
+    Sqrt,
+    /// By order of magnitude, for values spanning several: one heavy row
+    /// would otherwise shrink every other point to the minimum.
+    Log,
+}
+
+impl SizeScale {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "sqrt" => Some(Self::Sqrt),
+            "log" => Some(Self::Log),
+            _ => None,
+        }
+    }
+
+    /// The diameter for `value` on a map whose usable values run
+    /// `min..=max`, or `None` when the value cannot be placed on the scale.
+    fn diameter(self, value: f64, min: f64, max: f64) -> Option<f32> {
+        match self {
+            Self::Sqrt if value >= 0. && max > 0. => {
+                Some((MAX_SIZED * (value / max).sqrt() as f32).max(MIN_SIZED))
+            }
+            Self::Log if value > 0. => {
+                let t = if max > min {
+                    (value.ln() - min.ln()) / (max.ln() - min.ln())
+                } else {
+                    1.
+                };
+                Some(MIN_SIZED + (MAX_SIZED - MIN_SIZED) * t as f32)
+            }
+            _ => None,
+        }
+    }
+
+    fn usable(self, value: f64) -> bool {
+        match self {
+            Self::Sqrt => value >= 0.,
+            Self::Log => value > 0.,
+        }
+    }
+}
+
+/// What a dashboard's `map` plot asks of the points beyond placing them.
+#[derive(Clone, Debug, Default)]
+pub struct MapStyle {
+    /// The column to color by; `None` picks one.
+    pub color: Option<usize>,
+    /// The numeric column to size by, and how.
+    pub size: Option<(usize, SizeScale)>,
+    /// The columns the tooltip lists, in order; `None` lists the size column
+    /// and the other numbers, then the coordinates.
+    pub tooltip: Option<Vec<usize>>,
+}
+
+/// The size key's reference values and the scale they sit on.
+#[derive(Debug)]
+struct SizeKey {
+    scale: SizeScale,
+    min: f64,
+    max: f64,
 }
 
 /// Everything the map needs, derived from a result set once.
@@ -83,6 +163,17 @@ pub struct GeoData {
     pub dropped: usize,
     /// How many rows had valid coordinates, when more than were plotted.
     pub capped_from: Option<usize>,
+    /// The column points are sized by.
+    pub size_name: Option<String>,
+    size_key: Option<SizeKey>,
+    /// Points whose size value was missing, or off its scale (negative, or
+    /// not positive on a log scale): drawn at the smallest size.
+    pub size_missing: usize,
+    /// The tooltip's measure rows: column names, matching each point's
+    /// `measures`.
+    measures: Vec<String>,
+    /// Whether the tooltip ends with the coordinates.
+    show_coordinates: bool,
 }
 
 impl GeoData {
@@ -101,22 +192,22 @@ impl GeoData {
         if valid.is_empty() || valid.len() * 2 < result.rows.len() {
             return None;
         }
-        Some(Self::build(result, lat_ix, lng_ix, valid, None))
+        Some(Self::build(result, lat_ix, lng_ix, valid, &MapStyle::default()))
     }
 
     /// The map a dashboard's `map` plot names outright: its latitude and
-    /// longitude columns, and optionally the column to color by (`None` picks
-    /// one as `detect` does). Rows without valid coordinates are dropped and
-    /// counted; nothing is second-guessed, so an empty map says the columns
-    /// held no coordinates rather than falling back to something else.
+    /// longitude columns, and the `style` its other attributes ask for.
+    /// Rows without valid coordinates are dropped and counted; nothing is
+    /// second-guessed, so an empty map says the columns held no coordinates
+    /// rather than falling back to something else.
     pub fn from_columns(
         result: &QueryResult,
         lat_ix: usize,
         lng_ix: usize,
-        color_ix: Option<usize>,
+        style: &MapStyle,
     ) -> Self {
         let valid = valid_coordinates(result, lat_ix, lng_ix);
-        Self::build(result, lat_ix, lng_ix, valid, color_ix)
+        Self::build(result, lat_ix, lng_ix, valid, style)
     }
 
     fn build(
@@ -124,19 +215,46 @@ impl GeoData {
         lat_ix: usize,
         lng_ix: usize,
         valid: Vec<(usize, f64, f64)>,
-        color_ix: Option<usize>,
+        style: &MapStyle,
     ) -> Self {
         let dropped = result.rows.len() - valid.len();
         let valid_count = valid.len();
         let capped_from = (valid_count > MAX_GEO_POINTS).then_some(valid_count);
 
         let label_ix = label_column(result, &[lat_ix, lng_ix]);
-        let category = match color_ix {
+        let category = match style.color {
             Some(column) => category_of(result, &valid, column),
             None => category_column(result, &valid, label_ix),
         };
 
-        let points: Vec<GeoPoint> = valid
+        // The scale's ends come from the values that can sit on it.
+        let size_key = style.size.and_then(|(column, scale)| {
+            let (min, max) = valid
+                .iter()
+                .filter_map(|(ix, _, _)| parse_number(result.rows[*ix].get(column)?))
+                .filter(|value| scale.usable(*value))
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(v), hi.max(v))
+                });
+            (min <= max).then_some((column, SizeKey { scale, min, max }))
+        });
+        let mut size_missing = 0;
+
+        let measure_ixs: Vec<usize> = match &style.tooltip {
+            Some(columns) => columns.clone(),
+            None => {
+                let size_ix = style.size.map(|(column, _)| column);
+                let category_ix = category.as_ref().map(|c| c.column);
+                let others = (0..result.columns.len()).filter(|&ix| {
+                    result.columns[ix].kind == ColumnKind::Numeric
+                        && ![Some(lat_ix), Some(lng_ix), size_ix, category_ix, label_ix]
+                            .contains(&Some(ix))
+                });
+                size_ix.into_iter().chain(others).take(DEFAULT_MEASURES).collect()
+            }
+        };
+
+        let mut points: Vec<GeoPoint> = valid
             .into_iter()
             .take(MAX_GEO_POINTS)
             .map(|(ix, lat, lng)| {
@@ -148,6 +266,26 @@ impl GeoData {
                 let category = category
                     .as_ref()
                     .and_then(|c| row.get(c.column).map(|v| c.slot(v)));
+                let diameter = match (&size_key, style.size) {
+                    (Some((column, key)), _) => row
+                        .get(*column)
+                        .and_then(|cell| parse_number(cell))
+                        .and_then(|value| key.scale.diameter(value, key.min, key.max))
+                        .unwrap_or_else(|| {
+                            size_missing += 1;
+                            MIN_SIZED
+                        }),
+                    // Asked for, but no row had a usable value.
+                    (None, Some(_)) => {
+                        size_missing += 1;
+                        MIN_SIZED
+                    }
+                    (None, None) => DOT_SIZE,
+                };
+                let measures = measure_ixs
+                    .iter()
+                    .map(|ix| row.get(*ix).cloned().unwrap_or_default().into())
+                    .collect();
                 GeoPoint {
                     lat,
                     lng,
@@ -155,9 +293,16 @@ impl GeoData {
                     y: mercator_y(lat),
                     label,
                     category,
+                    diameter,
+                    measures,
                 }
             })
             .collect();
+        // Largest first, so a small point is never buried under a big one
+        // and stays reachable by the pointer.
+        if style.size.is_some() {
+            points.sort_by(|a, b| b.diameter.total_cmp(&a.diameter));
+        }
 
         let extent = points.iter().fold(
             (
@@ -189,6 +334,14 @@ impl GeoData {
             extent,
             dropped,
             capped_from,
+            size_name: style.size.map(|(column, _)| result.columns[column].name.clone()),
+            size_key: size_key.map(|(_, key)| key),
+            size_missing,
+            measures: measure_ixs
+                .iter()
+                .map(|ix| result.columns[*ix].name.clone())
+                .collect(),
+            show_coordinates: style.tooltip.is_none(),
         }
     }
 
@@ -433,6 +586,16 @@ fn fold_category(column: usize, sorted: Vec<(String, usize)>) -> Category {
     }
 }
 
+/// A latitude's projected ordinate, for the tile layer's tests.
+#[cfg(test)]
+pub(crate) fn project_lat(lat: f64) -> f64 {
+    mercator_y(lat)
+}
+
+/// Most tiles a map asks for at once; a bigger plot drops a zoom level
+/// rather than filling the policy's queue with one view.
+const MAX_TILES: usize = 48;
+
 fn mercator_y(lat: f64) -> f64 {
     let phi = lat.clamp(-MAX_MERCATOR_LAT, MAX_MERCATOR_LAT).to_radians();
     (FRAC_PI_4 + phi / 2.).tan().ln().to_degrees()
@@ -579,6 +742,8 @@ impl Plot for GeoPlot {
             theme.background,
         );
 
+        let dark = theme.mode.is_dark();
+
         // The plot area reads as a map sheet: a faint fill and a frame.
         window.paint_quad(quad(
             area,
@@ -589,8 +754,40 @@ impl Plot for GeoPlot {
             BorderStyle::default(),
         ));
 
+        // The base map, when tiles are on and have arrived. Whatever has not
+        // arrived yet leaves the sheet showing through.
+        let base_map = crate::ui::tiles::enabled(cx);
+        let mut drew_tiles = false;
+        if base_map {
+            let mut z = crate::ui::tiles::zoom_for(view.scale);
+            let mut wanted = crate::ui::tiles::covering(view.visible(), z);
+            while wanted.len() > MAX_TILES && z > 0 {
+                z -= 1;
+                wanted = crate::ui::tiles::covering(view.visible(), z);
+            }
+            for (key, image) in crate::ui::tiles::visible(&wanted, window, cx) {
+                let (x0, x1, y0, y1) = crate::ui::tiles::extent_of(key);
+                let (left, top) = view.project(x0, y1);
+                let (right, bottom) = view.project(x1, y0);
+                let tile = Bounds::from_corners(
+                    bounds.origin + point(px(left), px(top)),
+                    bounds.origin + point(px(right), px(bottom)),
+                );
+                drew_tiles |= window
+                    .paint_image(area, tile, Corners::all(px(4.)), image, 0, false)
+                    .is_ok();
+            }
+            // Tiles are drawn for daylight; in the dark theme a veil of the
+            // background keeps them from glaring behind the points.
+            if drew_tiles && dark {
+                window.paint_quad(fill(area, background.opacity(0.35)).corner_radii(px(4.)));
+            }
+        }
+        let theme = cx.theme();
+
         // Graticule: meridians at round longitudes, parallels at round
-        // latitudes (unevenly spaced, as Mercator spaces them).
+        // latitudes (unevenly spaced, as Mercator spaces them). Over a base
+        // map the streets are the reference; only the labels stay.
         let (vx0, vx1, vy0, vy1) = view.visible();
         let lng_step = nice_step(vx1 - vx0, view.area.size.width as f64);
         let (lat0, lat1) = (inverse_mercator_y(vy0), inverse_mercator_y(vy1));
@@ -601,12 +798,14 @@ impl Plot for GeoPlot {
         let parallels: Vec<(f32, f64)> = steps_within(lat0.max(-85.), lat1.min(85.), lat_step)
             .map(|lat| (view.project(0., mercator_y(lat)).1, lat))
             .collect();
-        Grid::new()
-            .x(meridians.iter().map(|(x, _)| px(x - view.area.origin.x)))
-            .y(parallels.iter().map(|(y, _)| px(y - view.area.origin.y)))
-            .stroke(grid)
-            .dash_array(&[px(4.), px(2.)])
-            .paint(&area, window);
+        if !drew_tiles {
+            Grid::new()
+                .x(meridians.iter().map(|(x, _)| px(x - view.area.origin.x)))
+                .y(parallels.iter().map(|(y, _)| px(y - view.area.origin.y)))
+                .stroke(grid)
+                .dash_array(&[px(4.), px(2.)])
+                .paint(&area, window);
+        }
 
         let mut labels: Vec<Text> = meridians
             .iter()
@@ -627,6 +826,21 @@ impl Plot for GeoPlot {
             )
             .align(TextAlign::Right)
         }));
+        // The tile policy asks for the credit on the map itself, whenever its
+        // tiles are shown.
+        if drew_tiles {
+            labels.push(
+                Text::new(
+                    crate::ui::tiles::ATTRIBUTION,
+                    point(
+                        px(view.area.origin.x + view.area.size.width - 6.),
+                        px(view.area.origin.y + view.area.size.height - TEXT_SIZE - 6.),
+                    ),
+                    if dark { theme.foreground } else { muted },
+                )
+                .align(TextAlign::Right),
+            );
+        }
         PlotLabel::new(labels).paint(&bounds, window, cx);
 
         // One quad per point, ringed in the background color so overlapping
@@ -636,15 +850,20 @@ impl Plot for GeoPlot {
         for p in self.data.points.iter() {
             let (x, y) = view.project(p.x, p.y);
             let color = self.color_of(p, cx);
-            let origin = bounds.origin + point(px(x - DOT_SIZE / 2.), px(y - DOT_SIZE / 2.));
+            let d = p.diameter;
+            let origin = bounds.origin + point(px(x - d / 2.), px(y - d / 2.));
             window.paint_quad(quad(
-                Bounds::new(origin, size(px(DOT_SIZE), px(DOT_SIZE))),
-                px(DOT_SIZE / 2.),
+                Bounds::new(origin, size(px(d), px(d))),
+                px(d / 2.),
                 Background::from(color),
                 px(1.),
                 ring,
                 BorderStyle::default(),
             ));
+        }
+
+        if let Some(key) = &self.data.size_key {
+            paint_size_key(key, &view, bounds, window, cx);
         }
     }
 
@@ -660,18 +879,33 @@ impl Plot for GeoPlot {
     ) -> Option<TooltipState> {
         let view = Viewport::fit(self.data.extent, bounds.size);
         let (cx_, cy_) = (position.x.as_f32(), position.y.as_f32());
-        // Later points paint on top, so on a tie the last one is the one seen.
+        // A point is under the pointer inside its own circle, or near a small
+        // one. Of those, the one painted last — on top, and for a sized map
+        // the smallest — is the one seen; closeness breaks the rest.
         let (index, (x, y), _) = self
             .data
             .points
             .iter()
             .enumerate()
-            .map(|(ix, p)| {
+            .filter_map(|(ix, p)| {
                 let (x, y) = view.project(p.x, p.y);
-                (ix, (x, y), (x - cx_).powi(2) + (y - cy_).powi(2))
+                let d2 = (x - cx_).powi(2) + (y - cy_).powi(2);
+                let reach = (p.diameter / 2.).max(HIT_RADIUS);
+                (d2 <= reach * reach).then_some((ix, (x, y), d2))
             })
-            .filter(|(_, _, d2)| *d2 <= HIT_RADIUS * HIT_RADIUS)
-            .min_by(|a, b| a.2.total_cmp(&b.2).then(b.0.cmp(&a.0)))?;
+            .max_by(|a, b| {
+                let inside = |(ix, _, d2): &(usize, (f32, f32), f32)| {
+                    let r = self.data.points[*ix].diameter / 2.;
+                    *d2 <= r * r
+                };
+                inside(a)
+                    .cmp(&inside(b))
+                    .then(if inside(a) && inside(b) {
+                        a.0.cmp(&b.0)
+                    } else {
+                        b.2.total_cmp(&a.2).then(a.0.cmp(&b.0))
+                    })
+            })?;
         let at = point(px(x), px(y));
         Some(TooltipState::new(index, at, vec![at]))
     }
@@ -700,9 +934,15 @@ impl Plot for GeoPlot {
             let value = self.data.categories.get(slot).cloned().unwrap_or_default();
             tooltip = tooltip.row(color, name.clone(), value);
         }
-        tooltip = tooltip
-            .plain_row(self.data.lat_name.clone(), format!("{:.5}", p.lat))
-            .plain_row(self.data.lng_name.clone(), format!("{:.5}", p.lng));
+        // The numbers the map is about come first; where it is, after.
+        for (name, value) in self.data.measures.iter().zip(&p.measures) {
+            tooltip = tooltip.plain_row(name.clone(), value.clone());
+        }
+        if self.data.show_coordinates {
+            tooltip = tooltip
+                .plain_row(self.data.lat_name.clone(), format!("{:.5}", p.lat))
+                .plain_row(self.data.lng_name.clone(), format!("{:.5}", p.lng));
+        }
         if self.data.label_name.is_none() {
             // Without a name column the title is the row number; say so.
             tooltip = tooltip.plain_row(tr("chart.map.no_label"), "");
@@ -711,13 +951,75 @@ impl Plot for GeoPlot {
     }
 }
 
+/// The size key: the largest value's circle and a smaller reference inside
+/// it, bottom-aligned in the plot area's lower-left corner, each labelled —
+/// how a reader turns a circle back into a number.
+fn paint_size_key(
+    key: &SizeKey,
+    view: &Viewport,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let theme = cx.theme();
+    let (muted, background) = (theme.muted_foreground, theme.background);
+    let small = match key.scale {
+        // A quarter of the largest value draws half its diameter: the pair
+        // shows that area, not width, carries the value.
+        SizeScale::Sqrt => key.max / 4.,
+        SizeScale::Log => key.min,
+    };
+    let entries: Vec<(f64, f32)> = [key.max, small]
+        .into_iter()
+        .filter(|v| *v > 0. || key.scale == SizeScale::Sqrt)
+        .filter_map(|v| key.scale.diameter(v, key.min, key.max).map(|d| (v, d)))
+        .collect();
+    let Some(&(_, largest)) = entries.first() else {
+        return;
+    };
+    let pad = 8.;
+    let label_width = 64.;
+    let panel = Bounds::new(
+        bounds.origin
+            + point(
+                px(view.area.origin.x + 6.),
+                px(view.area.origin.y + view.area.size.height - largest - pad * 2. - 6.),
+            ),
+        size(px(largest + label_width + pad * 2.), px(largest + pad * 2.)),
+    );
+    window.paint_quad(fill(panel, background.opacity(0.85)).corner_radii(px(4.)));
+    let bottom = panel.origin.y + px(pad + largest);
+    let center_x = panel.origin.x + px(pad + largest / 2.);
+    let mut labels = Vec::new();
+    for (value, d) in &entries {
+        let origin = point(center_x - px(d / 2.), bottom - px(*d));
+        window.paint_quad(quad(
+            Bounds::new(origin, size(px(*d), px(*d))),
+            px(d / 2.),
+            Background::from(gpui_kit::transparent_black()),
+            px(1.),
+            muted,
+            BorderStyle::default(),
+        ));
+        labels.push(Text::new(
+            crate::ui::chart::format_value(*value),
+            point(
+                center_x + px(largest / 2. + 6.) - bounds.origin.x,
+                bottom - px(*d) - bounds.origin.y - px(1.),
+            ),
+            muted,
+        ));
+    }
+    PlotLabel::new(labels).paint(&bounds, window, cx);
+}
+
 #[cfg(test)]
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
         format_degrees, inverse_mercator_y, is_lat_name, is_lng_name, mercator_y, nice_step,
-        GeoData, MAX_CATEGORIES,
+        GeoData, MapStyle, SizeScale, DOT_SIZE, MAX_CATEGORIES, MAX_SIZED, MIN_SIZED,
     };
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
 
@@ -840,5 +1142,101 @@ mod tests {
         assert_eq!(format_degrees(52.0, 1.0, 'N', 'S'), "52°N");
         assert_eq!(format_degrees(-4.5, 0.5, 'E', 'W'), "4.5°W");
         assert_eq!(format_degrees(0.0, 0.5, 'E', 'W'), "0°");
+    }
+
+    fn traffic() -> QueryResult {
+        QueryResult {
+            columns: Vec::from([
+                column("place", ColumnKind::Text),
+                column("lat", ColumnKind::Numeric),
+                column("lng", ColumnKind::Numeric),
+                column("requests", ColumnKind::Numeric),
+                column("ips", ColumnKind::Numeric),
+            ]),
+            rows: [
+                ["Hong Kong", "22.3", "114.2", "836", "40"],
+                ["Tokyo", "35.7", "139.7", "209", "12"],
+                ["Singapore", "1.35", "103.8", "0", "1"],
+                ["Nowhere", "10.0", "10.0", "NULL", "0"],
+            ]
+            .into_iter()
+            .map(|r| r.into_iter().map(String::from).collect())
+            .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        }
+    }
+
+    fn sized(scale: SizeScale, tooltip: Option<Vec<usize>>) -> GeoData {
+        GeoData::from_columns(
+            &traffic(),
+            1,
+            2,
+            &MapStyle {
+                color: None,
+                size: Some((3, scale)),
+                tooltip,
+            },
+        )
+    }
+
+    fn diameter_of(geo: &GeoData, label: &str) -> f32 {
+        geo.points.iter().find(|p| p.label == label).unwrap().diameter
+    }
+
+    #[test]
+    fn area_follows_the_value() {
+        let geo = sized(SizeScale::Sqrt, None);
+        let (hk, tokyo) = (diameter_of(&geo, "Hong Kong"), diameter_of(&geo, "Tokyo"));
+        assert_eq!(hk, MAX_SIZED);
+        // A quarter of the value is a quarter of the area: half the diameter.
+        let ratio = (tokyo / hk) as f64;
+        assert!((ratio - (209f64 / 836.).sqrt()).abs() < 1e-3, "{ratio}");
+        // Zero is on the scale, just too small to see unclamped.
+        assert_eq!(diameter_of(&geo, "Singapore"), MIN_SIZED);
+        // A missing value is drawn smallest, and counted.
+        assert_eq!(diameter_of(&geo, "Nowhere"), MIN_SIZED);
+        assert_eq!(geo.size_missing, 1);
+        assert_eq!(geo.size_name.as_deref(), Some("requests"));
+    }
+
+    #[test]
+    fn a_log_scale_spreads_orders_of_magnitude_and_rejects_zero() {
+        let geo = sized(SizeScale::Log, None);
+        // Smallest positive value at the minimum, largest at the maximum.
+        assert_eq!(diameter_of(&geo, "Tokyo"), MIN_SIZED);
+        assert_eq!(diameter_of(&geo, "Hong Kong"), MAX_SIZED);
+        // Zero has no logarithm: it and the missing value are counted.
+        assert_eq!(geo.size_missing, 2);
+    }
+
+    #[test]
+    fn big_points_paint_first_so_small_ones_stay_on_top() {
+        let geo = sized(SizeScale::Sqrt, None);
+        let diameters: Vec<f32> = geo.points.iter().map(|p| p.diameter).collect();
+        assert!(diameters.windows(2).all(|w| w[0] >= w[1]), "{diameters:?}");
+    }
+
+    #[test]
+    fn the_tooltip_leads_with_the_numbers() {
+        // Unasked: the size column, then the other numbers, then where.
+        let geo = sized(SizeScale::Sqrt, None);
+        assert_eq!(geo.measures, ["requests", "ips"]);
+        assert!(geo.show_coordinates);
+        let hk = geo.points.iter().find(|p| p.label == "Hong Kong").unwrap();
+        assert_eq!(hk.measures, ["836", "40"]);
+
+        // Asked: exactly those columns, in that order, and no coordinates.
+        let geo = sized(SizeScale::Sqrt, Some(vec![4, 0]));
+        assert_eq!(geo.measures, ["ips", "place"]);
+        assert!(!geo.show_coordinates);
+    }
+
+    #[test]
+    fn an_unsized_map_keeps_its_dots_and_still_shows_numbers() {
+        let geo = GeoData::detect(&traffic()).unwrap();
+        assert!(geo.points.iter().all(|p| p.diameter == DOT_SIZE));
+        assert_eq!(geo.size_name, None);
+        assert_eq!(geo.measures, ["requests", "ips"]);
     }
 }
