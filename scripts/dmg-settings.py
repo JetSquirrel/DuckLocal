@@ -11,7 +11,10 @@ import os.path
 app = defines["app"]  # noqa: F821 (dmgbuild provides `defines`)
 name = os.path.basename(app)
 
-format = "UDZO"
+# LZMA rather than zlib (UDZO): about 30% smaller for the same app, and
+# every macOS DuckLocal supports (12+, see Info.plist) mounts it. Opening
+# the image takes a moment longer; the installed app is byte-identical.
+format = "ULMO"
 files = [app]
 symlinks = {"Applications": "/Applications"}
 
