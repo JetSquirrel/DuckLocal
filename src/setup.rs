@@ -328,9 +328,10 @@ pub fn agent_prompt() -> String {
          over local CSV, TSV, Parquet, JSON and Excel files and databases, and prints JSON.\n\
          \n\
          - Start with `{command} --help` for the options.\n\
-         - Read a file's columns before querying it: \
-         `{command} query --sql \"DESCRIBE SELECT * FROM 'data.csv'\"`.\n\
-         - Profile what you will chart or summarize: `{command} profile data.csv`.\n\
+         - See what there is to query, with columns, before writing SQL: \
+         `{command} schema ./data/` (or `--database file.duckdb`).\n\
+         - Profile what you will chart or summarize: `{command} schema data.csv --stats`.\n\
+         - To see what I have open in the DuckLocal window: `{command} open --state`.\n\
          - Compute totals in SQL, not from sample rows; check `truncated` in the output.\n\
          - Use `--format md` for a table to show me, JSON when you parse it.\n\
          - It opens data read-only by default. Answer from the values it returns, \
@@ -367,8 +368,9 @@ mod tests {
     fn the_prompt_names_a_command_that_runs() {
         let prompt = agent_prompt();
         assert!(prompt.contains("--help"));
-        assert!(prompt.contains("profile"));
-        assert!(prompt.contains("DESCRIBE"));
+        assert!(prompt.contains("schema ./data/"));
+        assert!(prompt.contains("--stats"));
+        assert!(prompt.contains("open --state"));
     }
 
     #[cfg(unix)]

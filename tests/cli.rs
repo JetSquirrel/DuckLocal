@@ -805,6 +805,105 @@ export default class App extends View {
     assert_eq!(replaced["rows"], 2);
 }
 
+/// A `source` names data files beside the spec: its path is the `.dash`
+/// file's folder's business, not the working directory's, and every query
+/// that names it reads it — a `WITH` query, a `SUMMARIZE`, a plain `SELECT` —
+/// with the database's own table of the same name shadowed for that query.
+/// Cards and widths come back in the report.
+#[test]
+fn check_runs_sources_from_the_specs_folder() {
+    let s = Sandbox::new();
+    let dash = s.0.join("dash");
+    std::fs::create_dir_all(dash.join("exports")).unwrap();
+    std::fs::write(dash.join("exports/orders-1.csv"), "channel,amount\nweb,10\nshop,20\n").unwrap();
+    std::fs::write(dash.join("exports/orders-2.csv"), "channel,amount\nweb,5\n").unwrap();
+    std::fs::write(
+        dash.join("board.dash"),
+        r#"
+source "orders" { path = "exports/orders-*.csv" }
+
+query "total" { sql = "SELECT sum(amount) AS total, count(*) AS n FROM orders" }
+query "by_channel" {
+  sql = <<SQL
+    -- a leading note
+    WITH c AS (SELECT channel, amount FROM orders)
+    SELECT channel, sum(amount) AS amount FROM c GROUP BY channel ORDER BY amount DESC
+  SQL
+}
+query "shape" { sql = "SUMMARIZE orders;" }
+
+plot "total"  { type = "card" query = query.total value = total title = "Revenue" }
+plot "orders" { type = "card" query = query.total value = n }
+plot "chart"  { type = "bar" query = query.by_channel x = channel y = amount width = 6 }
+plot "stats"  { type = "table" query = query.shape x = column_name width = 6 }
+"#,
+    )
+    .unwrap();
+    // The database has its own `orders`: the source shadows it.
+    s.success(&[
+        "query",
+        "--database",
+        "data.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE orders AS SELECT 'nope' AS other",
+    ]);
+
+    // Run from the sandbox, not the spec's folder: the glob still resolves.
+    let out = s.object(&["check", "dash/board.dash", "--database", "data.duckdb"]);
+    assert_eq!(out["sources"][0]["name"], "orders");
+    assert_eq!(out["sources"][0]["path"], "exports/orders-*.csv");
+    let resolved = out["sources"][0]["resolved"].as_str().unwrap();
+    assert!(resolved.ends_with("dash/exports/orders-*.csv"), "{resolved}");
+    assert!(std::path::Path::new(resolved).is_absolute(), "{resolved}");
+    let total = &out["queries"][0]["columns"];
+    assert_eq!(total[0]["name"], "total");
+    assert_eq!(out["queries"][1]["columns"][0]["name"], "channel");
+    assert_eq!(out["queries"][2]["columns"][0]["name"], "column_name");
+    assert_eq!(out["plots"][0]["type"], "card");
+    assert_eq!(out["plots"][0]["value"], "total");
+    assert_eq!(out["plots"][0]["width"], 3);
+    assert_eq!(out["plots"][2]["width"], 6);
+
+    // A card's value is checked against the columns like any other.
+    std::fs::write(
+        dash.join("badcard.dash"),
+        "source \"orders\" { path = \"exports/orders-*.csv\" }\nquery \"q\" { sql = \"FROM orders\" }\nplot \"c\" { type = \"card\" query = query.q value = revenue }\n",
+    )
+    .unwrap();
+    let error = s.error(&["check", "dash/badcard.dash", "--database", "data.duckdb"], 2, "spec");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("value = \"revenue\""), "{message}");
+
+    // A path that matches nothing fails when the query runs, not statically.
+    std::fs::write(
+        dash.join("gone.dash"),
+        "source \"o\" { path = \"missing/*.csv\" }\nquery \"q\" { sql = \"FROM o\" }\n",
+    )
+    .unwrap();
+    s.object(&["check", "dash/gone.dash"]);
+    s.error(&["check", "dash/gone.dash", "--database", "data.duckdb"], 1, "sql");
+
+    // Statically: a workbook, a name SQL cannot read bare, a width off the grid.
+    std::fs::write(
+        dash.join("bad.dash"),
+        r#"
+source "book" { path = "sales.xlsx" }
+source "2026 orders" { path = "o.csv" }
+query "q" { sql = "SELECT 1 AS a" }
+plot "p" { type = "bar" query = query.q x = a y = a width = 13 }
+plot "c" { type = "card" query = query.q x = a }
+"#,
+    )
+    .unwrap();
+    let error = s.error(&["check", "dash/bad.dash"], 2, "spec");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("bad.dash:2: A workbook"), "{message}");
+    assert!(message.contains("bad.dash:3: source \"2026 orders\""), "{message}");
+    assert!(message.contains("bad.dash:5: width"), "{message}");
+    assert!(message.contains("bad.dash:6: A card shows one value"), "{message}");
+}
+
 /// `check` validates a dashboard spec the way the CLI validates everything:
 /// statically first — no database, nothing executes — and, when `--database`
 /// is given, against the columns the queries really return.
@@ -1087,4 +1186,194 @@ fn export_argument_errors_never_start_an_app() {
     // Help is help, and it is not an app.
     let help = s.text(&["export", "--help"]);
     assert!(help.contains("export --html"), "{help}");
+}
+
+#[test]
+fn open_checks_its_arguments_and_never_starts_a_window_it_was_told_not_to() {
+    let s = Sandbox::new();
+    let output = s.run(&["open", "--help"], None);
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout).unwrap().contains("--no-launch"));
+    for args in [
+        vec!["open"],
+        vec!["open", "--no-launch"],
+        vec!["open", "--run", "a.csv"],
+        vec!["open", "--title", "x", "a.csv"],
+        vec!["open", "--sql", "  "],
+        vec!["open", "--sql", "SELECT 1", "--sql-file", "x.sql"],
+        vec!["open", "--sql", "SELECT 1", "--wat"],
+        vec!["open", "--sql", "SELECT 1", "--run", "--run"],
+    ] {
+        s.error(&args, 2, "argument");
+    }
+    s.error(&["open", "--sql-file", "missing.sql"], 1, "io");
+    // The sandbox's HOME has no endpoint, so no window is reachable — and the
+    // command writes nothing there finding that out (`run` checks).
+    s.error(
+        &["open", "--no-launch", "--sql", "SELECT 1", "--run"],
+        1,
+        "not_running",
+    );
+    s.error(&["open", "--no-launch", "sales.dash"], 1, "not_running");
+}
+
+#[test]
+fn schema_lists_files_and_databases_sized_for_a_prompt() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.0.join("data/nested")).unwrap();
+    std::fs::write(s.0.join("data/orders.csv"), "channel,amount\nweb,10\nshop,20\n").unwrap();
+    std::fs::write(s.0.join("data/nested/notes.txt"), "a,b\n1,2\n").unwrap();
+    s.success(&[
+        "query",
+        "--sql",
+        "COPY (SELECT range AS id FROM range(7)) TO 'data/ids.parquet'",
+    ]);
+
+    // A folder expands as a drop on the window would; every file is whole.
+    let out = s.object(&["schema", "data"]);
+    assert_eq!(out["detail"], "full");
+    let relations = out["relations"].as_array().unwrap();
+    let names: Vec<&str> = relations.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["data/ids.parquet", "data/nested/notes.txt", "data/orders.csv"]);
+    // Parquet knows its row count; a CSV would need a scan.
+    assert_eq!(relations[0]["rows"], 7);
+    assert!(relations[2]["rows"].is_null());
+    assert_eq!(relations[2]["from"], "'data/orders.csv'");
+    assert_eq!(relations[2]["columns"][1]["name"], "amount");
+    // A .txt is read as CSV only when asked to.
+    assert_eq!(relations[1]["from"], "read_csv_auto('data/nested/notes.txt')");
+    // `from` is SQL that works as given.
+    let rows = s.success(&[
+        "query",
+        "--sql",
+        &format!("SELECT count(*) AS n FROM {}", relations[1]["from"].as_str().unwrap()),
+    ]);
+    assert_eq!(rows["rows"][0][0], 1);
+
+    // A database past the threshold keeps the largest few whole.
+    let mut ddl = vec!["CREATE TABLE big AS SELECT range AS id FROM range(1000)".to_string()];
+    for i in 0..14 {
+        ddl.push(format!("CREATE TABLE t{i} (a INTEGER, b VARCHAR)"));
+    }
+    for sql in &ddl {
+        s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", sql]);
+    }
+    let out = s.object(&["schema", "--database", "w.duckdb"]);
+    assert_eq!(out["detail"], "summary");
+    assert_eq!(out["without_columns"], 10);
+    assert!(out["hint"].as_str().unwrap().contains("--table"));
+    let big = out["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "big")
+        .unwrap();
+    assert_eq!(big["columns"][0]["name"], "id");
+    // A database named as a PATH is the same request.
+    let one = s.object(&["schema", "w.duckdb", "--table", "t3"]);
+    assert_eq!(one["relations"][0]["columns"][1]["type"], "VARCHAR");
+    assert_eq!(s.object(&["schema", "w.duckdb", "--full"])["without_columns"], 0);
+
+    s.error(&["schema"], 2, "argument");
+    s.error(&["schema", "missing.csv"], 2, "argument");
+    let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
+    assert!(error["error"]["hint"].as_str().is_some());
+}
+
+#[test]
+fn errors_say_what_to_do_next() {
+    let s = Sandbox::new();
+    let error = s.error(&["query", "--limt", "5"], 2, "argument");
+    assert_eq!(error["error"]["hint"], "Did you mean --limit?");
+    let error = s.error(&["query", "--sql", "SELECT 1; SELECT 2"], 2, "argument");
+    assert!(error["error"]["hint"].as_str().unwrap().contains("one statement"));
+    let error = s.error(&["query", "--sql", "SELECT * FROM missing_table"], 1, "sql");
+    assert!(error["error"]["hint"].as_str().unwrap().contains("ducklocal schema"));
+    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE t(a INT)"]);
+    let error = s.error(&["query", "--database", "w.duckdb", "--sql", "DROP TABLE t"], 1, "sql");
+    assert!(error["error"]["hint"].as_str().unwrap().contains("--read-write"));
+    // A syntax error has nothing to add to DuckDB's own message.
+    let error = s.error(&["query", "--sql", "SELEC 1"], 1, "sql");
+    assert!(error["error"].get("hint").is_none());
+}
+
+#[test]
+fn open_state_reads_a_running_window_and_never_starts_one() {
+    let s = Sandbox::new();
+    let output = s.run(&["open", "--help"], None);
+    assert!(String::from_utf8(output.stdout).unwrap().contains("--state"));
+    let error = s.error(&["open", "--state"], 1, "not_running");
+    assert!(error["error"]["hint"].as_str().unwrap().contains("ducklocal open"));
+    // It reads; mixed with something to open it is a mistake, not a guess.
+    s.error(&["open", "--state", "--sql", "SELECT 1"], 2, "argument");
+    s.error(&["open", "--state", "a.csv"], 2, "argument");
+}
+
+#[test]
+fn schema_stats_profiles_one_relation() {
+    let s = Sandbox::new();
+    std::fs::write(s.0.join("orders.csv"), "day,amount\n2026-01-01,10.5\n2026-01-03,20\n").unwrap();
+    std::fs::write(s.0.join("other.csv"), "a\n1\n").unwrap();
+    let mut stats = s.object(&["schema", "orders.csv", "--stats"]);
+    // The same report the deprecated `profile` gives, timing aside.
+    let mut profiled = s.profile(&["profile", "orders.csv"]);
+    stats.as_object_mut().unwrap().remove("elapsed_ms");
+    profiled.as_object_mut().unwrap().remove("elapsed_ms");
+    assert_eq!(stats, profiled);
+    assert_eq!(stats["row_count"], 2);
+    // Two relations need --table to say which.
+    let error = s.error(&["schema", ".", "--stats"], 2, "argument");
+    assert!(error["error"]["hint"].as_str().unwrap().contains("--table"));
+    let picked = s.object(&["schema", ".", "--stats", "--table", "orders.csv"]);
+    assert_eq!(picked["row_count"], 2);
+    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE t AS SELECT 1 AS n"]);
+    let table = s.object(&["schema", "--database", "w.duckdb", "--table", "t", "--stats"]);
+    assert_eq!(table["row_count"], 1);
+    s.error(&["schema", "orders.csv", "--stats", "--full"], 2, "argument");
+    // Help lists five commands; the rest stay callable.
+    let help = String::from_utf8(s.run(&["--help"], None).stdout).unwrap();
+    for gone in ["profile", "lsp", "state"] {
+        assert!(!help.contains(&format!("ducklocal {gone}")), "{help}");
+    }
+}
+
+#[test]
+fn check_reports_filters_and_runs_queries_with_nothing_picked() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("orders.csv"),
+        "day,channel,amount\n2026-01-01,web,10\n2026-01-01,shop,20\n2026-01-02,web,5\n",
+    )
+    .unwrap();
+    let spec = r#"
+source "orders" { path = "orders.csv" }
+query "by_channel" { sql = "SELECT channel, sum(amount) AS amount FROM orders WHERE $day GROUP BY 1" }
+query "by_day" { sql = "SELECT day, sum(amount) AS amount FROM orders WHERE $channel AND $day GROUP BY 1" }
+query "days" { sql = "SELECT DISTINCT day FROM orders ORDER BY 1" }
+plot "channels" { type = "bar" query = query.by_channel x = channel y = amount }
+plot "days" { type = "table" query = query.days x = day }
+plot "trend" { type = "line" query = query.by_day x = day y = amount }
+filter "channel" { plot = plot.channels }
+filter "day" {
+  plot = plot.days
+  column = day
+}
+"#;
+    std::fs::write(s.0.join("board.dash"), spec).unwrap();
+    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE x(a INT)"]);
+    let out = s.object(&["check", "board.dash", "--database", "w.duckdb"]);
+    let filters = out["filters"].as_array().unwrap();
+    assert_eq!(filters[0]["name"], "channel");
+    assert_eq!(filters[0]["column"], "channel");
+    assert_eq!(filters[0]["queries"], json!(["by_day"]));
+    assert_eq!(filters[1]["queries"], json!(["by_channel", "by_day"]));
+
+    // A placeholder with no filter, and a filter on a column its plot's
+    // query does not return, are both spec mistakes.
+    std::fs::write(s.0.join("typo.dash"), spec.replace("AND $day", "AND $dy")).unwrap();
+    let error = s.error(&["check", "typo.dash"], 2, "spec");
+    assert!(error["error"]["message"].as_str().unwrap().contains("$dy"));
+    std::fs::write(s.0.join("column.dash"), spec.replace("column = day", "column = nope")).unwrap();
+    let error = s.error(&["check", "column.dash", "--database", "w.duckdb"], 2, "spec");
+    assert!(error["error"]["message"].as_str().unwrap().contains("\"nope\""));
 }

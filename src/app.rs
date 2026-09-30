@@ -183,8 +183,9 @@ impl DuckLocalApp {
         .detach();
 
         // Finder opens queue from the moment the platform callback is
-        // registered — possibly before this view exists — so drain on a slow
-        // poll and open them like a drop on the window. The task ends with
+        // registered — possibly before this view exists — and `ducklocal
+        // open` requests from the moment the listener starts, so drain both
+        // on a slow poll and open them like a drop on the window. The task ends with
         // the window: `update_in` fails once the view is gone.
         cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -194,11 +195,25 @@ impl DuckLocalApp {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner),
                 );
-                if paths.is_empty() {
+                let requests = crate::remote::take_pending();
+                let state_wanted = crate::remote::state_wanted();
+                if paths.is_empty() && requests.is_empty() && !state_wanted {
                     continue;
                 }
                 if this
-                    .update_in(cx, |this, window, cx| this.open_external(paths, window, cx))
+                    .update_in(cx, |this, window, cx| {
+                        if !paths.is_empty() {
+                            this.open_external(paths, window, cx);
+                        }
+                        for request in requests {
+                            this.open_remote(request, window, cx);
+                        }
+                        // After the opens, so an `open` then a `state` sees
+                        // the tab the open made.
+                        if state_wanted {
+                            crate::remote::answer_state(this.snapshot(cx));
+                        }
+                    })
                     .is_err()
                 {
                     break;
@@ -234,6 +249,67 @@ impl DuckLocalApp {
         if !data.is_empty() {
             open_paths(self.state.clone(), data, window, cx);
         }
+    }
+
+    /// A request from `ducklocal open`: its paths open like a drop, then its
+    /// SQL gets a tab of its own, in front, in a window brought forward — the
+    /// command's caller wants someone to see it.
+    fn open_remote(
+        &mut self,
+        request: crate::remote::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.activate_window();
+        self.open_external(request.paths, window, cx);
+        let Some(sql) = request.sql else {
+            return;
+        };
+        self.workspace
+            .update(cx, |ws, cx| ws.open_query_tab(sql, request.title, window, cx));
+        if !request.run {
+            return;
+        }
+        // The SQL may name what the paths attach, and attaching is off the
+        // UI thread: run once no open request is in flight.
+        let state = self.state.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            while cx
+                .update(|_, cx| state.read(cx).is_opening())
+                .unwrap_or(false)
+            {
+                smol::Timer::after(Duration::from_millis(50)).await;
+            }
+            this.update_in(cx, |this, window, cx| {
+                this.workspace
+                    .update(cx, |ws, cx| ws.run_active(window, cx));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What the window shows, for `ducklocal open --state`: the database, the files
+    /// attached to it, and the workspace's tabs.
+    fn snapshot(&self, cx: &App) -> serde_json::Value {
+        use serde_json::json;
+        let state = self.state.read(cx);
+        let mut snapshot = self.workspace.read(cx).snapshot(cx);
+        snapshot["database"] = match &state.target {
+            Some(crate::db::DatabaseTarget::File(path)) => json!(path),
+            Some(crate::db::DatabaseTarget::Memory) => json!(":memory:"),
+            None => serde_json::Value::Null,
+        };
+        snapshot["attached"] = json!(state
+            .attached_files
+            .iter()
+            .map(|file| json!({
+                "path": file.path,
+                "name": file.view_name,
+                "rows": file.row_count,
+            }))
+            .collect::<Vec<_>>());
+        snapshot
     }
 
     fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {

@@ -2,9 +2,10 @@
 //!
 //! `mod.rs` checks a spec without a window; this module draws one. A
 //! `Dashboard` parses and validates its file, runs every query on the window's
-//! connection, and renders each plot as one panel of a vertical resizable
-//! stack — the plot heights are the user's to drag, and a stack taller than
-//! the tab scrolls. The data a plot draws is
+//! connection, and lays the plots out on a twelve-column grid: each plot
+//! spans its `width`, plots fill a row left to right and wrap, and each row is
+//! one panel of a vertical resizable stack — the row heights are the user's
+//! to drag, and a stack taller than the tab scrolls. The data a plot draws is
 //! `prepare`'s business; the view only renders what it prepares. A plot whose
 //! query failed, or whose columns do not resolve, shows the reason in its own
 //! panel: one bad plot never takes the dashboard down. And a reload follows
@@ -17,6 +18,13 @@
 //! grouped bars, bare lines, unconnected dots — on the same primitives the
 //! catalog charts compose.
 //!
+//! A `filter` block makes a plot pickable: a click on a bar, or on a table's
+//! row, picks a value, and every query that reads `$name` re-runs with it —
+//! only those, and only when the SQL they would run has changed; the picking
+//! plot's own queries never narrow (see `filter.rs`). The picks show as chips
+//! above the plots, each clearing its own; a click on the picked bar again
+//! clears it too.
+//!
 //! The toolbar's source toggle swaps the whole body for the spec's text in an
 //! editor — not a read-only one: the source is where a dashboard is fixed.
 //! Edits are written back with the save button or ⌘S, and a save reloads; a
@@ -25,6 +33,7 @@
 //! a dirty dot, and an external change to the file is a conflict banner
 //! rather than a silent overwrite; with a clean buffer it just reloads.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -32,6 +41,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::component::alert::Alert;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize,
@@ -40,9 +50,11 @@ use gpui_kit::component::label::Label;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
 use gpui_kit::prelude::FluentBuilder;
+
+use super::wheel::WheelLatch;
 use gpui_kit::*;
 
 use lsp_types::{
@@ -54,6 +66,7 @@ use crate::analysis::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::complete::{self, CompletionKind};
+use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
 use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
@@ -67,6 +80,10 @@ use crate::ui::results::fit_column_width;
 const PLOT_DEFAULT: f32 = 300.;
 const PLOT_MIN: f32 = 160.;
 const PLOT_MAX: f32 = 800.;
+/// A row of nothing but cards holds one number each: it starts short.
+const CARD_DEFAULT: f32 = 104.;
+const CARD_MIN: f32 = 80.;
+const CARD_MAX: f32 = 400.;
 
 /// A `.dash` file open as a tab: its plots, and the run that produced them.
 pub struct Dashboard {
@@ -109,7 +126,30 @@ pub struct Dashboard {
     /// Polls the spec file for external changes. Dropping it ends the
     /// watcher, which is how closing the tab stops watching.
     watcher: Option<Task<()>>,
+    /// Which scroller the wheel gesture in progress moves: a table plot, or
+    /// the stack it sits in (see `wheel`).
+    wheel: WheelLatch,
+    /// The spec the plots on screen came from: which filters exist and which
+    /// plot each picks on.
+    spec: Option<Arc<Spec>>,
+    /// What each filter has picked, by filter name. Survives reloads for as
+    /// long as the filter does.
+    picks: HashMap<String, Pick>,
+    /// Each query's last outcome and the SQL that produced it: a re-run after
+    /// a pick reuses every query whose SQL the pick did not change.
+    outcomes: Outcomes,
+    /// A pick changed while a run was in flight: run again when it lands.
+    refilter_pending: bool,
+    /// Where each pickable plot was last laid out, by plot name, for a click
+    /// to find its bar.
+    plot_bounds: HashMap<String, Rc<Cell<Option<Bounds<Pixels>>>>>,
+    /// Row-selection subscriptions of the pickable tables, by table entity;
+    /// dropped with them.
+    table_subscriptions: Vec<(EntityId, Subscription)>,
 }
+
+/// Each query's outcome by name, with the SQL that ran.
+type Outcomes = HashMap<String, (String, Result<Arc<QueryResult>, String>)>;
 
 impl Dashboard {
     pub fn new(id: u64, path: PathBuf, cx: &mut Context<Self>) -> Self {
@@ -131,6 +171,13 @@ impl Dashboard {
             known_stamp,
             conflict: false,
             watcher: None,
+            wheel: WheelLatch::default(),
+            spec: None,
+            picks: HashMap::new(),
+            outcomes: HashMap::new(),
+            refilter_pending: false,
+            plot_bounds: HashMap::new(),
+            table_subscriptions: Vec::new(),
         };
         this.watch(cx);
         this.reload(cx);
@@ -139,6 +186,41 @@ impl Dashboard {
 
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// What the tab shows, for `ducklocal open --state`: each plot and whether it
+    /// drew, and every filter with the value it has picked, if any.
+    pub fn summary(&self) -> serde_json::Value {
+        use serde_json::json;
+        let filters = self.spec.as_ref().map_or_else(Vec::new, |spec| {
+            spec.filters
+                .iter()
+                .map(|filter| {
+                    let pick = self.picks.get(&filter.name);
+                    json!({
+                        "name": filter.name,
+                        "plot": filter.plot,
+                        "column": filter.column,
+                        "picked": pick.is_some(),
+                        "value": pick.and_then(|pick| pick.value.clone()),
+                    })
+                })
+                .collect()
+        });
+        json!({
+            "running": self.running,
+            "error": self.spec_error,
+            "stale": self.stale_reason,
+            "plots": self.plots.iter().map(|plot| json!({
+                "name": plot.name,
+                "type": plot.kind,
+                "title": plot.title,
+                "query": plot.query,
+                "failure": plot.failure,
+                "rows": self.results.get(&plot.query).map(|r| r.rows.len()),
+            })).collect::<Vec<_>>(),
+            "filters": filters,
+        })
     }
 
     pub fn is_showing_source(&self) -> bool {
@@ -267,11 +349,27 @@ impl Dashboard {
             // reload is no reason to lose it.
             self.read_source();
         }
+        // A reload re-reads the data as well as the spec: nothing is reused.
+        self.start_run(HashMap::new(), cx);
+    }
+
+    /// Re-run after a pick changed: every query whose SQL the picks leave as
+    /// it was keeps its result, so only the narrowed plots redraw.
+    fn refilter(&mut self, cx: &mut Context<Self>) {
+        if self.running {
+            self.refilter_pending = true;
+            return;
+        }
+        self.start_run(self.outcomes.clone(), cx);
+    }
+
+    fn start_run(&mut self, reuse: Outcomes, cx: &mut Context<Self>) {
         self.running = true;
         cx.notify();
         let path = self.path.clone();
+        let picks = self.picks.clone();
         cx.spawn(async move |this, cx| {
-            let run = smol::unblock(move || load(&path)).await;
+            let run = smol::unblock(move || load(&path, &picks, &reuse)).await;
             this.update(cx, |this, cx| {
                 this.running = false;
                 match run.spec_error {
@@ -285,10 +383,45 @@ impl Dashboard {
                     spec_error => {
                         this.spec_error = spec_error;
                         this.stale_reason = None;
+                        // A table whose query came back as the very same
+                        // result keeps its entity: its scroll position and
+                        // its selected row — the pick — are the user's.
+                        let tables = run
+                            .plots
+                            .iter()
+                            .map(|plot| {
+                                let old = this
+                                    .plots
+                                    .iter()
+                                    .position(|p| p.name == plot.name && p.kind == "table")?;
+                                let same = match (
+                                    this.results.get(&plot.query),
+                                    run.results.get(&plot.query),
+                                ) {
+                                    (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                                    _ => false,
+                                };
+                                same.then(|| this.tables.get(old).cloned().flatten()).flatten()
+                            })
+                            .collect::<Vec<_>>();
+                        this.table_subscriptions.retain(|(id, _)| {
+                            tables.iter().flatten().any(|table| table.entity_id() == *id)
+                        });
+                        this.tables = tables;
                         this.plots = run.plots;
                         this.results = run.results;
-                        this.tables = vec![None; this.plots.len()];
+                        this.outcomes = run.outcomes;
+                        this.spec = run.spec;
+                        // A pick whose filter is gone from the spec goes too.
+                        let spec = this.spec.clone();
+                        this.picks.retain(|name, _| {
+                            spec.as_ref()
+                                .is_some_and(|spec| spec.filters.iter().any(|f| &f.name == name))
+                        });
                     }
+                }
+                if std::mem::take(&mut this.refilter_pending) {
+                    this.refilter(cx);
                 }
                 cx.notify();
             })
@@ -297,12 +430,199 @@ impl Dashboard {
         .detach();
     }
 
+    /// Whether a click on this plot picks a value: some filter names it.
+    fn is_pickable(&self, plot: &str) -> bool {
+        self.spec
+            .as_ref()
+            .is_some_and(|spec| spec.filters.iter().any(|f| f.plot == plot))
+    }
+
+    /// The band a bar plot shows as picked: the value of a filter that picks
+    /// the plot's own x.
+    fn picked_band(&self, plot: &PreparedPlot) -> Option<SharedString> {
+        let spec = self.spec.as_ref()?;
+        spec.filters
+            .iter()
+            .filter(|f| f.plot == plot.name && f.column.eq_ignore_ascii_case(&plot.label_name))
+            .find_map(|f| self.picks.get(&f.name))
+            .map(|pick| SharedString::from(pick.value.clone().unwrap_or_else(|| "NULL".into())))
+    }
+
+    /// A click on a pickable bar plot: the band under it becomes the pick —
+    /// or, when it is the band already picked, the pick is cleared.
+    fn bar_clicked(&mut self, ix: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let plot = &self.plots[ix];
+        let Some(bounds) = self.plot_bounds.get(&plot.name).and_then(|cell| cell.get()) else {
+            return;
+        };
+        let local = point(position.x - bounds.origin.x, position.y - bounds.origin.y);
+        let Some(band) = GroupedBars::new("dashboard-hit", plot).band_at(local, bounds) else {
+            return;
+        };
+        let Some(result) = self.results.get(&plot.query).cloned() else {
+            return;
+        };
+        // The row the bar came from: the first whose x is the band.
+        let Some(x) = result
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(&plot.label_name))
+        else {
+            return;
+        };
+        let Some(row) = result
+            .rows
+            .iter()
+            .position(|row| row.get(x).is_some_and(|cell| cell.as_str() == band.as_ref()))
+        else {
+            return;
+        };
+        let name = plot.name.clone();
+        self.pick_row(&name, &result, row, true, cx);
+    }
+
+    /// Pick, for every filter on `plot`, its column's value in `row`. With
+    /// `toggle`, a pick that is already the one made clears instead.
+    fn pick_row(
+        &mut self,
+        plot: &str,
+        result: &QueryResult,
+        row: usize,
+        toggle: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(spec) = self.spec.clone() else {
+            return;
+        };
+        let mut changed = false;
+        for filter in spec.filters.iter().filter(|f| f.plot == plot) {
+            let Some(column) = result
+                .columns
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(&filter.column))
+            else {
+                continue;
+            };
+            let Some(cell) = result.rows.get(row).and_then(|r| r.get(column)) else {
+                continue;
+            };
+            let pick = Pick {
+                column: filter.column.clone(),
+                // The grid's NULL is SQL's: compared with IS NULL.
+                value: (cell != "NULL").then(|| cell.clone()),
+            };
+            if self.picks.get(&filter.name) == Some(&pick) {
+                if toggle {
+                    self.picks.remove(&filter.name);
+                    changed = true;
+                }
+            } else {
+                self.picks.insert(filter.name.clone(), pick);
+                changed = true;
+            }
+        }
+        if changed {
+            self.refilter(cx);
+            cx.notify();
+        }
+    }
+
+    /// Clear one filter's pick, or every pick; a table it was picked on lets
+    /// go of its selected row.
+    fn clear_picks(&mut self, only: Option<&str>, cx: &mut Context<Self>) {
+        let cleared: Vec<String> = self
+            .picks
+            .keys()
+            .filter(|name| only.is_none_or(|only| only == name.as_str()))
+            .cloned()
+            .collect();
+        if cleared.is_empty() {
+            return;
+        }
+        for name in &cleared {
+            self.picks.remove(name);
+        }
+        if let Some(spec) = self.spec.clone() {
+            for filter in spec.filters.iter().filter(|f| cleared.contains(&f.name)) {
+                for (ix, plot) in self.plots.iter().enumerate() {
+                    if plot.name == filter.plot {
+                        if let Some(Some(table)) = self.tables.get(ix) {
+                            table.update(cx, |table, cx| table.clear_selection(cx));
+                        }
+                    }
+                }
+            }
+        }
+        self.refilter(cx);
+        cx.notify();
+    }
+
+    /// The picks in force, as chips above the plots: each says what it
+    /// narrows to and clears on its ✕.
+    fn render_picks(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.picks.is_empty() {
+            return None;
+        }
+        let spec = self.spec.clone()?;
+        let chips = spec
+            .filters
+            .iter()
+            .filter_map(|filter| Some((filter, self.picks.get(&filter.name)?)))
+            .enumerate()
+            .map(|(ix, (filter, pick))| {
+                let name = filter.name.clone();
+                let value = pick.value.clone().unwrap_or_else(|| "NULL".into());
+                Button::new(("dashboard-pick", ix))
+                    .outline()
+                    .xsmall()
+                    .label(format!("{} = {value}", filter.column))
+                    .icon(IconName::Close)
+                    .tooltip(tr("dashboard.filter.clear"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.clear_picks(Some(&name), cx)
+                    }))
+            })
+            .collect::<Vec<_>>();
+        let several = chips.len() > 1;
+        Some(
+            h_flex()
+                .flex_none()
+                .flex_wrap()
+                .gap_2()
+                .px_3()
+                .py_1p5()
+                .items_center()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr("dashboard.filter.label")),
+                )
+                .children(chips)
+                .when(several, |this| {
+                    this.child(
+                        Button::new("dashboard-picks-clear")
+                            .ghost()
+                            .xsmall()
+                            .label(tr("dashboard.filter.clear_all"))
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_picks(None, cx))),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     fn render_plot(
         &mut self,
         ix: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.plots[ix].kind == "card" && self.plots[ix].failure.is_none() {
+            return render_card(&self.plots[ix], cx);
+        }
         let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
             let is_empty = match plot.kind.as_str() {
@@ -322,6 +642,13 @@ impl Dashboard {
         // x column — for a pie, what the shares are of; for a map, which
         // columns place the points. Tables and failures have nothing to say.
         let drawn = !is_table && failure.is_none() && !is_empty;
+        if failure.is_none() && self.is_pickable(&self.plots[ix].name) {
+            let hint = tr("dashboard.filter.hint").to_string();
+            notice = Some(match notice.take() {
+                Some(notice) => format!("{notice} · {hint}"),
+                None => hint,
+            });
+        }
         let mut legend = Vec::new();
         let axes = drawn.then(|| {
             let plot = &self.plots[ix];
@@ -359,6 +686,45 @@ impl Dashboard {
             self.render_table(ix, window, cx)
         } else if is_empty {
             empty_chart(cx)
+        } else if self.plots[ix].kind == "bar" && self.is_pickable(&self.plots[ix].name) {
+            let picked = self.picked_band(&self.plots[ix]);
+            let chart = GroupedBars::new(
+                (ElementId::from("dashboard-chart"), self.plots[ix].name.clone()),
+                &self.plots[ix],
+            )
+            .selected(picked);
+            // The chart fills this box, so the box's bounds are the chart's:
+            // the canvas records them for the click to hit-test against.
+            let bounds = self
+                .plot_bounds
+                .entry(self.plots[ix].name.clone())
+                .or_default()
+                .clone();
+            div()
+                .size_full()
+                .px_2()
+                .pb_2()
+                .child(
+                    div()
+                        .size_full()
+                        .relative()
+                        .cursor_pointer()
+                        .child(chart)
+                        .child(
+                            canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                this.bar_clicked(ix, event.position, cx)
+                            }),
+                        ),
+                )
+                .into_any_element()
         } else {
             div()
                 .size_full()
@@ -425,11 +791,26 @@ impl Dashboard {
         };
         if self.tables[ix].is_none() {
             let delegate = SpecTableDelegate::new(result.clone());
-            self.tables[ix] = Some(cx.new(|cx| TableState::new(delegate, window, cx)));
+            let table = cx.new(|cx| TableState::new(delegate, window, cx));
+            let plot = self.plots[ix].name.clone();
+            if self.is_pickable(&plot) {
+                // A row selected — by click or by the arrow keys — is a pick;
+                // the table's own highlight is what shows it.
+                let picked_from = result.clone();
+                let subscription = cx.subscribe(&table, move |this, _, event: &TableEvent, cx| {
+                    if let TableEvent::SelectRow(row) = event {
+                        this.pick_row(&plot, &picked_from, *row, false, cx);
+                    }
+                });
+                self.table_subscriptions.push((table.entity_id(), subscription));
+            }
+            self.tables[ix] = Some(table);
         }
         let table = self.tables[ix].clone().expect("built just above");
         let truncated = result.truncated;
         let row_count = result.rows.len();
+        let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
+        let wheel = self.wheel.clone();
         v_flex()
             .size_full()
             .when(truncated, |this| {
@@ -443,12 +824,22 @@ impl Dashboard {
                 )
             })
             .child(
-                div().flex_1().min_h_0().child(
-                    DataTable::new(&table)
-                        .small()
-                        .stripe(true)
-                        .scrollbar_visible(true, true),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    // Runs after the table's own scrolling and before the
+                    // stack's, so it decides whether the stack moves too.
+                    .on_scroll_wheel(move |event, window, cx| {
+                        if wheel.table_scrolled(ix, &rows, event, window) {
+                            cx.stop_propagation();
+                        }
+                    })
+                    .child(
+                        DataTable::new(&table)
+                            .small()
+                            .stripe(true)
+                            .scrollbar_visible(true, true),
+                    ),
             )
             .into_any_element()
     }
@@ -636,8 +1027,33 @@ impl Dashboard {
     }
 }
 
+// TEMP frame trace
+pub(crate) static TRACE_WHEEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn trace_frame(started: Instant) {
+    use std::sync::Mutex;
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    if !*ON.get_or_init(|| std::env::var_os("DUCKLOCAL_TRACE_FRAMES").is_some()) {
+        return;
+    }
+    let mut last = LAST.lock().unwrap();
+    let dt = last.map(|l| started.duration_since(l).as_secs_f64() * 1000.).unwrap_or(0.);
+    *last = Some(started);
+    let wheels = TRACE_WHEEL.swap(0, std::sync::atomic::Ordering::Relaxed);
+    eprintln!("FRAME dt={dt:.2} render={:.3} wheels={wheels}", started.elapsed().as_secs_f64() * 1000.);
+}
+
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let __started = Instant::now();
+        let __out = self.render_inner(window, cx);
+        trace_frame(__started);
+        __out
+    }
+}
+
+impl Dashboard {
+    fn render_inner(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let body = if self.showing_source {
             // The source view stands on its own, spec error or not: the text
             // of a broken spec is exactly what one opens the source to fix.
@@ -653,22 +1069,51 @@ impl Render for Dashboard {
                 self.render_empty(cx)
             }
         } else {
-            let panels = (0..self.plots.len())
-                .map(|ix| {
+            let rows = grid_rows(self.plots.iter().map(|plot| plot.width));
+            let mut stack = 0.;
+            let panels = rows
+                .iter()
+                .map(|row| {
+                    let cards = row.iter().all(|&ix| self.plots[ix].kind == "card");
+                    let (default, min, max) = if cards {
+                        (CARD_DEFAULT, CARD_MIN, CARD_MAX)
+                    } else {
+                        (PLOT_DEFAULT, PLOT_MIN, PLOT_MAX)
+                    };
+                    stack += default;
+                    // A row short of twelve columns leaves the rest empty,
+                    // so a plot's width means the same on every row.
+                    let cells = row.iter().enumerate().map(|(position, &ix)| {
+                        let share = self.plots[ix].width as f32 / model::GRID_COLUMNS as f32;
+                        div()
+                            .h_full()
+                            .w(relative(share))
+                            .min_w_0()
+                            .when(position > 0, |this| {
+                                this.border_l_1().border_color(cx.theme().border)
+                            })
+                            .child(self.render_plot(ix, window, cx))
+                    });
+                    let cells = cells.collect::<Vec<_>>();
                     resizable_panel()
-                        .size(px(PLOT_DEFAULT))
-                        .size_range(px(PLOT_MIN)..px(PLOT_MAX))
-                        .child(self.render_plot(ix, window, cx))
+                        .size(px(default))
+                        .size_range(px(min)..px(max))
+                        .child(h_flex().size_full().children(cells))
                 })
                 .collect::<Vec<_>>();
-            // Every plot keeps its default height and the tab scrolls, rather
+            // Every row keeps its default height and the tab scrolls, rather
             // than a dozen plots squeezed into one screen and the rest clipped
             // out of reach. Dragging a divider still trades height between
             // neighbours; a tab taller than the stack is filled, as before.
-            let stack = px(PLOT_DEFAULT * self.plots.len() as f32);
+            let stack = px(stack);
+            let wheel = self.wheel.clone();
             div()
                 .id(format!("dashboard-scroll-{}", self.id))
                 .size_full()
+                .on_scroll_wheel(move |event, window, _| {
+                    TRACE_WHEEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    wheel.stack_scrolled(event, window)
+                })
                 .overflow_y_scrollbar()
                 .child(
                     div()
@@ -686,19 +1131,25 @@ impl Render for Dashboard {
             .text_color(cx.theme().foreground)
             .children(self.render_conflict_warning(cx))
             .children(self.render_stale_warning(cx))
+            .when(!self.showing_source, |this| this.children(self.render_picks(cx)))
             .child(body)
+            .into_any_element()
     }
 }
 
 /// Everything one run of a dashboard produces, computed off the UI thread.
 struct Run {
     spec_error: Option<String>,
+    spec: Option<Arc<Spec>>,
     plots: Vec<PreparedPlot>,
     results: HashMap<String, Arc<QueryResult>>,
+    outcomes: Outcomes,
 }
 
 /// Read, parse, validate, run, prepare. Blocking — call it off the UI thread.
-fn load(path: &Path) -> Run {
+/// `picks` narrow the queries that read their filters; a query whose SQL
+/// comes out as `reuse` last ran it keeps that outcome instead of running.
+fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let display = path.display().to_string();
     let spec = (|| -> Result<Spec, String> {
         let source = std::fs::read_to_string(path).map_err(|e| format!("{display}: {e}"))?;
@@ -717,8 +1168,10 @@ fn load(path: &Path) -> Run {
         Err(spec_error) => {
             return Run {
                 spec_error: Some(spec_error),
+                spec: None,
                 plots: Vec::new(),
                 results: HashMap::new(),
+                outcomes: HashMap::new(),
             };
         }
     };
@@ -726,50 +1179,86 @@ fn load(path: &Path) -> Run {
     // Every query runs once, however many plots draw from it, and only after
     // it has been shown to read and nothing else: opening a file someone sent
     // must not be what runs its `DROP` or `COPY … TO`.
-    let outcomes: Vec<Result<QueryResult, String>> = spec
-        .queries
-        .iter()
-        .map(|query| match super::validate_query_sql(&query.sql)
-            .and_then(|()| crate::query::run(&query.sql).map_err(|e| format!("{e:#}")))
-        {
-            Ok(QueryOutcome::Rows(result)) => Ok(result),
-            Ok(QueryOutcome::Affected { .. }) => {
-                Err(trf("dashboard.query_not_rows", &[&query.name]))
-            }
-            Err(e) => Err(e),
-        })
-        .collect();
+    // The check is on the SQL as written; what runs has the sources it names
+    // in front of it, which only read.
+    // Picks go in before the sources, which only read.
+    let base = super::source::base_of(path);
+    let mut outcomes: Outcomes = HashMap::new();
+    for query in &spec.queries {
+        let sql = super::validate_query_sql(&query.sql).map(|()| {
+            let narrowed = super::filter::apply(&query.sql, &picks_for(&spec, query, picks));
+            super::source::expand(&narrowed, &spec.sources, &base)
+        });
+        let entry = match sql {
+            Err(error) => (String::new(), Err(error)),
+            Ok(sql) => match reuse.get(&query.name) {
+                Some((ran, outcome)) if *ran == sql => (sql, outcome.clone()),
+                _ => {
+                    let outcome = match crate::query::run(&sql) {
+                        Ok(QueryOutcome::Rows(result)) => Ok(Arc::new(result)),
+                        Ok(QueryOutcome::Affected { .. }) => {
+                            Err(trf("dashboard.query_not_rows", &[&query.name]))
+                        }
+                        Err(e) => Err(format!("{e:#}")),
+                    };
+                    (sql, outcome)
+                }
+            },
+        };
+        outcomes.insert(query.name.clone(), entry);
+    }
 
     // validate() has already said every plot's query exists.
     let plots = spec
         .plots
         .iter()
-        .map(|plot| {
-            let result = spec
-                .queries
-                .iter()
-                .position(|q| q.name == plot.query)
-                .map(|ix| &outcomes[ix]);
-            prepare(plot, result)
-        })
+        .map(|plot| prepare(plot, outcomes.get(&plot.query).map(|(_, outcome)| outcome)))
         .collect();
 
-    let results = spec
-        .queries
+    let results = outcomes
         .iter()
-        .zip(outcomes)
-        .filter_map(|(query, outcome)| {
-            outcome
-                .ok()
-                .map(|result| (query.name.clone(), Arc::new(result)))
+        .filter_map(|(name, (_, outcome))| {
+            outcome.as_ref().ok().map(|result| (name.clone(), result.clone()))
         })
         .collect();
 
     Run {
         spec_error: None,
+        spec: Some(Arc::new(spec)),
         plots,
         results,
+        outcomes,
     }
+}
+
+/// The picks a query sees: each filter it reads that has one — except a
+/// filter picked on a plot this very query draws, which would otherwise
+/// narrow the plot down to the one value just clicked.
+fn picks_for(
+    spec: &Spec,
+    query: &model::Query,
+    picks: &HashMap<String, Pick>,
+) -> HashMap<String, Pick> {
+    spec.filters_of(query)
+        .into_iter()
+        .filter(|filter| {
+            spec.plots
+                .iter()
+                .find(|plot| plot.name == filter.plot)
+                .is_none_or(|plot| plot.query != query.name)
+        })
+        .filter_map(|filter| {
+            let pick = picks.get(&filter.name)?;
+            // The column is the spec's as it stands, not as it was clicked.
+            Some((
+                filter.name.clone(),
+                Pick {
+                    column: filter.column.clone(),
+                    value: pick.value.clone(),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// One plot's chart element, built from the prepared data on each frame;
@@ -871,6 +1360,59 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         // A pivoted line draws lines, no fill.
         _ => SeriesPlot::lines(named_id(), plot).into_any_element(),
     }
+}
+
+/// Plots in rows of the grid: each row takes plots in order until the next
+/// would not fit in the twelve columns, then a new row starts. Indices into
+/// the plot list, every plot in exactly one row.
+fn grid_rows(widths: impl IntoIterator<Item = u8>) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut used = model::GRID_COLUMNS;
+    for (ix, width) in widths.into_iter().enumerate() {
+        if used + width > model::GRID_COLUMNS {
+            rows.push(Vec::new());
+            used = 0;
+        }
+        used += width;
+        rows.last_mut().expect("pushed above").push(ix);
+    }
+    rows
+}
+
+/// A card: its title over its one value, large. What was dropped to get to
+/// one value — the rows past the first — is said under it, small.
+fn render_card(plot: &PreparedPlot, cx: &App) -> AnyElement {
+    v_flex()
+        .size_full()
+        .px_4()
+        .py_3()
+        .gap_1()
+        .justify_center()
+        .overflow_hidden()
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .text_ellipsis()
+                .child(plot.title.clone()),
+        )
+        .child(
+            div()
+                .text_3xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_ellipsis()
+                .child(plot.card.clone().unwrap_or_default()),
+        )
+        .when_some(plot.notice.clone(), |this, notice| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_ellipsis()
+                    .child(notice),
+            )
+        })
+        .into_any_element()
 }
 
 /// The plot body when nothing parsed: the same medium-over-muted message the
@@ -1080,5 +1622,90 @@ impl CompletionProvider for SpecCompletionProvider {
             .last()
             .map(|c| c.is_alphanumeric() || c == '_' || c == '.')
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro
+    // shadows the built-in `#[test]`.
+    use super::{grid_rows, load, Pick, Run};
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    const BOARD: &str = r#"
+source "orders" { path = "orders.csv" }
+query "by_channel" { sql = "SELECT channel, sum(amount) AS amount FROM orders GROUP BY 1 ORDER BY 1" }
+query "total" { sql = "SELECT sum(amount) AS total FROM orders WHERE $channel" }
+query "count" { sql = "SELECT count(*) AS n FROM orders" }
+plot "channels" { type = "bar" query = query.by_channel x = channel y = amount }
+plot "total" { type = "card" query = query.total }
+plot "count" { type = "card" query = query.count }
+filter "channel" { plot = plot.channels }
+"#;
+
+    fn total(run: &Run) -> String {
+        run.results["total"].rows[0][0].clone()
+    }
+
+    #[test]
+    fn a_pick_narrows_the_queries_that_read_it_and_reuses_the_rest() {
+        let _guard = crate::db::connection_guard();
+        crate::db::open_memory().unwrap();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/view-tests")
+            .join(format!("pick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("orders.csv"), "channel,amount\nweb,10\nshop,20\nweb,5\n,1\n")
+            .unwrap();
+        let path = dir.join("board.dash");
+        std::fs::write(&path, BOARD).unwrap();
+
+        let fresh = load(&path, &HashMap::new(), &HashMap::new());
+        assert_eq!(fresh.spec_error, None);
+        assert_eq!(total(&fresh), "36");
+
+        let mut picks = HashMap::new();
+        picks.insert(
+            "channel".to_string(),
+            Pick {
+                column: "channel".into(),
+                value: Some("web".into()),
+            },
+        );
+        let narrowed = load(&path, &picks, &fresh.outcomes);
+        assert_eq!(total(&narrowed), "15");
+        // The picking plot's own query is not narrowed, and neither it nor a
+        // query that reads no filter ran again: the same result comes back.
+        for unchanged in ["by_channel", "count"] {
+            assert!(
+                Arc::ptr_eq(&fresh.results[unchanged], &narrowed.results[unchanged]),
+                "{unchanged} ran again"
+            );
+        }
+        assert_eq!(narrowed.results["by_channel"].rows.len(), 3);
+
+        // The grid's NULL picks the rows with no channel.
+        picks.get_mut("channel").unwrap().value = None;
+        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "1");
+
+        // A reload reuses nothing: every query runs.
+        let reloaded = load(&path, &picks, &HashMap::new());
+        assert!(!Arc::ptr_eq(&fresh.results["count"], &reloaded.results["count"]));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn plots_fill_rows_and_wrap() {
+        // Four cards, then two halves, then a full row, then a lone third
+        // that no longer fits beside an eight.
+        assert_eq!(
+            grid_rows([3, 3, 3, 3, 6, 6, 12, 8, 6]),
+            vec![vec![0, 1, 2, 3], vec![4, 5], vec![6], vec![7], vec![8]]
+        );
+        // Existing specs: every plot the full width, one per row.
+        assert_eq!(grid_rows([12, 12]), vec![vec![0], vec![1]]);
+        assert!(grid_rows([]).is_empty());
     }
 }

@@ -756,6 +756,16 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "A map needs coordinate columns: name them with lat and lng. The query returns: {}",
     ),
     (
+        "dashboard.card.first_row",
+        "显示的是 {} 行中的第一行",
+        "Showing the first of {} rows",
+    ),
+    (
+        "dashboard.card.no_rows",
+        "查询没有返回行",
+        "The query returned no rows",
+    ),
+    (
         "dashboard.empty",
         "这个 spec 没有声明任何 plot 块。",
         "This spec declares no plot blocks.",
@@ -789,6 +799,14 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "dashboard.conflict",
         "文件在磁盘上已被修改",
         "The file changed on disk",
+    ),
+    ("dashboard.filter.label", "筛选", "Filtered by"),
+    ("dashboard.filter.clear", "清除此筛选", "Clear this filter"),
+    ("dashboard.filter.clear_all", "全部清除", "Clear all"),
+    (
+        "dashboard.filter.hint",
+        "点击可筛选其他图表",
+        "Click to filter the other plots",
     ),
     (
         "dashboard.conflict.hint",

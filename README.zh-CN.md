@@ -43,7 +43,15 @@ ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
 
-结果为结构化 JSON，显式标记截断并保留数值精度；`--format md` 把同样的值输出为 Markdown 表格，便于写进文档引用。文件数据库默认只读，写入需 `--read-write`；只读不是文件系统/网络沙箱，`COPY` 仍可写文件。
+结果为结构化 JSON，显式标记截断并保留数值精度；`--format md` 把同样的值输出为 Markdown 表格，便于写进文档引用。文件数据库默认只读，写入需 `--read-write`；只读不是文件系统/网络沙箱，`COPY` 仍可写文件。出错时同样输出 JSON；有明确下一步时会带 `hint`，比如拼错的参数本来是哪个、写入被拒时加 `--read-write`、表不存在时先跑 `ducklocal schema`。
+
+`ducklocal schema` 一次列出所有可查询的东西：PATH 下的每个文件，或数据库的表和视图，连同列和读取它的 SQL。目录很大时返回适合放进提示词的摘要；`--stats` 给出单个关系精确的逐列统计：
+
+```bash
+ducklocal schema ./data/
+ducklocal schema --database warehouse.duckdb --table orders
+ducklocal schema sales.csv --stats        # 空值、去重数、最值、中位数、日期覆盖
+```
 
 分析应用可以导出为一个独立 HTML 文件——应用 `query()` 发出的语句及其结果——方便发给没有 DuckLocal 的人：
 
@@ -51,13 +59,23 @@ ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ducklocal export --html examples/analysis_app
 ```
 
-dashboard 也可以声明为数据：一个由 query 和 plot block 组成的 `.dash` 文件，像应用一样以标签页打开，并可直接在 GUI 里编辑。`ducklocal check` 无窗口校验规格文件，`ducklocal lsp` 则把同样的诊断、补全、悬停和跳转定义提供给任何支持 LSP 的编辑器：
+dashboard 也可以声明为数据：一个由 query 和 plot block 组成的 `.dash` 文件，像应用一样以标签页打开，并可直接在 GUI 里编辑。`filter` block 让柱状图或表格可以点选：选中的值会筛选所有以 `$name` 引用它的查询，也就是交叉筛选，做选择的那张图本身保持不变。`ducklocal check` 无窗口校验规格文件，`ducklocal lsp` 则把同样的诊断、补全、悬停和跳转定义提供给任何支持 LSP 的编辑器：
 
 ```bash
 ducklocal dashboard.dash                  # 以 dashboard 标签页打开
 ducklocal check dashboard.dash            # 校验；JSON 诊断，有错误时退出码 2
 ducklocal lsp                             # 面向编辑器的语言服务器（stdio）
 ```
+
+如果结果是给人看的，`ducklocal open` 会把它交给已经在运行的窗口（没有就先启动一个），作为前台的新标签页打开。它在窗口自己的会话里运行，人可以直接接着改：
+
+```bash
+ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
+ducklocal open dashboard.dash             # 打开为 dashboard 标签页；数据文件和文件夹会被挂载
+ducklocal open --no-launch --sql-file q.sql   # 没有窗口时退出码 1，kind 为 not_running
+```
+
+反方向也可以：`ducklocal open --state` 报告正在运行的窗口里显示的内容，包括各个标签页、每个查询的 SQL 和结果、每个 dashboard 当前选中的筛选。这样 agent 可以从人停下的地方接着做。
 
 转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](https://ducklocal.app/docs/zh/cli)。
 

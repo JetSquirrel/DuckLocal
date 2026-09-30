@@ -103,6 +103,7 @@ fn serve(database: Option<PathBuf>) -> Result<i32, CliError> {
             kind: "lsp",
             message: error.to_string(),
             code: 2,
+            hint: None,
         })?;
 
     let mut documents: HashMap<Url, String> = HashMap::new();
@@ -407,7 +408,15 @@ fn hover_at(source: &str, position: Position) -> Option<Hover> {
         Hit::Attr { name, .. } => attr_doc(&name)?.to_string(),
         Hit::Block { kind, name, .. } => match kind.as_str() {
             "query" => format!("**query \"{name}\"**\n\nA named query: one `sql` attribute holding one statement, as a heredoc or a string."),
-            "plot" => format!("**plot \"{name}\"**\n\nA named plot: `type`, `query`, `x` and `y`, plus optional `series` and `title`; a `map` takes `lat`, `lng` and optional `color`, `size`, `size_scale` and `tooltip` instead of `x`, `y` and `series`."),
+            "plot" => format!("**plot \"{name}\"**\n\nA named plot: `type`, `query`, `x` and `y`, plus optional `series`, `title` and `width`; a `map` takes `lat`, `lng` and optional `color`, `size`, `size_scale` and `tooltip` instead of `x`, `y` and `series`; a `card` takes an optional `value` instead."),
+            "filter" => {
+                let (plot, column) = spec.filters.iter().find(|f| f.name == name).map(|f| (f.plot.clone(), f.column.clone())).unwrap_or_default();
+                format!("**filter \"{name}\"**\n\nA click on plot `{plot}` picks a `{column}`; a query reads it as `${name}` — `(\"{column}\" = <picked>)`, or `TRUE` while nothing is picked. The plot's own query is never narrowed by it.")
+            }
+            "source" => {
+                let path = spec.sources.iter().find(|s| s.name == name).map(|s| s.path.clone()).unwrap_or_default();
+                format!("**source \"{name}\"**\n\n`{path}`, read as `{name}` by every query that names it. The path is relative to this file.")
+            }
             _ => return None,
         },
         Hit::Ref { segments, .. } => {
@@ -418,6 +427,9 @@ fn hover_at(source: &str, position: Position) -> Option<Hover> {
                     query.name,
                     sql_summary(&query.sql)
                 )
+            } else if segments.len() == 2 && segments[0] == "plot" {
+                let plot = spec.plots.iter().find(|p| p.name == segments[1])?;
+                format!("**plot \"{}\"**\n\nA `{}` of query `{}`.", plot.name, plot.kind, plot.query)
             } else {
                 return None;
             }
@@ -440,13 +452,17 @@ fn definition_at(source: &str, uri: &Url, position: Position) -> Option<GotoDefi
     let Hit::Ref { segments, .. } = spec.locate(line, col)? else {
         return None;
     };
-    if segments.len() != 2 || segments[0] != "query" {
+    if segments.len() != 2 {
         return None;
     }
-    let query = spec.queries.iter().find(|q| q.name == segments[1])?;
+    let target = match segments[0].as_str() {
+        "query" => spec.queries.iter().find(|q| q.name == segments[1])?.name_span,
+        "plot" => spec.plots.iter().find(|p| p.name == segments[1])?.name_span,
+        _ => return None,
+    };
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: uri.clone(),
-        range: span_range(source, query.name_span),
+        range: span_range(source, target),
     }))
 }
 
@@ -462,7 +478,7 @@ fn validate(source: &str) -> Option<Spec> {
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {
         "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
-        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`.",
+        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
         "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map`.",
         "y" => "**y**\n\nThe numeric column the plot draws; a `pie`'s slice sizes. Optional for `table`, not for a `map`.",
@@ -473,7 +489,12 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "size" => "**size**\n\nOptional, for a `map`: a numeric column its points are sized by — the area follows the value, so twice the value is twice the ink. A key in the corner reads sizes back.",
         "size_scale" => "**size_scale**\n\nOptional, with `size`: `\"sqrt\"` (the default, area follows value) or `\"log\"`, for values spanning orders of magnitude.",
         "tooltip" => "**tooltip**\n\nOptional, for a `map`: the columns its tooltip lists, in order — `tooltip = [place, requests, ips]`. Left out, it lists the size column and the other numbers, then the coordinates.",
-        "title" => "**title**\n\nOptional: the plot's title.",
+        "title" => "**title**\n\nOptional: the plot's title; a `card`'s label.",
+        "width" => "**width**\n\nOptional: how many of the dashboard's 12 columns the plot spans, 1 to 12. Plots fill a row left to right and wrap. Default 12, or 3 for a `card`.",
+        "value" => "**value**\n\nOptional, for a `card`: the column it shows, from the query's first row. Left out, the first column.",
+        "plot" => "**plot**\n\nThe plot a click picks a value on: `plot = plot.some_name`, a `bar` or a `table`.",
+        "column" => "**column**\n\nOptional for a bar, required for a table: the column whose value the click picks, and that `$name` compares. Default: the bar's `x`.",
+        "path" => "**path**\n\nThe source's data: a `.csv`, `.tsv`, `.parquet` or `.json` file, or a glob of them read as one relation. Relative to this `.dash` file.",
         _ => return None,
     })
 }

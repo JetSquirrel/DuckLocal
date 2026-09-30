@@ -7,7 +7,8 @@
 //! coastline would say nothing at the city scale most station, store or
 //! sensor tables live at. When a low
 //! cardinality text column is present (a `type`, a `country`), points are
-//! colored by it, so the map says something beyond "where".
+//! colored by it, so the map says something beyond "where"; a dashboard can
+//! also size them by a number (`MapStyle`), so it says "how much" too.
 //!
 //! Like the other charts, detection and projection happen once per result set
 //! (`GeoData::detect`); a frame re-derives only the viewport transform, which

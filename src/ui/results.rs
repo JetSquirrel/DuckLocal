@@ -399,6 +399,42 @@ pub struct ResultsPanel {
 }
 
 impl ResultsPanel {
+    /// What the panel shows, for `ducklocal open --state`: the result's shape and
+    /// its first rows, or the error, or what the run changed.
+    pub fn summary(&self) -> serde_json::Value {
+        use serde_json::json;
+        let mut summary = match &self.view {
+            ResultView::Empty => json!({"status": "empty"}),
+            ResultView::Running => json!({"status": "running"}),
+            ResultView::Rows(result) => json!({
+                "status": "rows",
+                "columns": result.columns.iter().map(|c| json!({
+                    "name": c.name,
+                    "type": c.duck_type,
+                })).collect::<Vec<_>>(),
+                "row_count": result.rows.len(),
+                "truncated": result.truncated,
+                "preview": result.rows.iter().take(crate::remote::STATE_PREVIEW_ROWS).collect::<Vec<_>>(),
+                "elapsed_ms": result.elapsed_ms,
+            }),
+            ResultView::Affected { count, elapsed_ms } => json!({
+                "status": "affected",
+                "count": count,
+                "elapsed_ms": elapsed_ms,
+            }),
+            ResultView::Failed(message) => json!({"status": "failed", "error": message}),
+            ResultView::Explain { lines, elapsed_ms } => json!({
+                "status": "explain",
+                "plan": lines,
+                "elapsed_ms": elapsed_ms,
+            }),
+        };
+        if let Some(sql) = &self.rows_sql {
+            summary["sql"] = json!(sql);
+        }
+        summary
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| TableState::new(ResultTableDelegate::new(), window, cx));
         let filter_input =

@@ -337,12 +337,14 @@ fn completion_inside_a_plot_offers_its_attributes() {
             "y",
             "series",
             "title",
+            "width",
             "lat",
             "lng",
             "color",
             "size",
             "size_scale",
-            "tooltip"
+            "tooltip",
+            "value"
         ],
         "{response}"
     );

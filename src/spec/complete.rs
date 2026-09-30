@@ -13,21 +13,26 @@
 use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
-/// them: the common ones first, a map's own after.
-pub(crate) const PLOT_ATTRS: [&str; 12] = [
+/// them: the common ones first, a map's and a card's own after.
+pub(crate) const PLOT_ATTRS: [&str; 14] = [
     "type",
     "query",
     "x",
     "y",
     "series",
     "title",
+    "width",
     "lat",
     "lng",
     "color",
     "size",
     "size_scale",
     "tooltip",
+    "value",
 ];
+
+/// The block kinds, in the order completion offers them at the top level.
+const BLOCKS: [&str; 4] = ["query", "plot", "source", "filter"];
 
 /// One thing that could be inserted at the cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,13 +52,14 @@ pub(crate) struct Completion {
 /// `CompletionItemKind` for the GUI, the LSP's for the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompletionKind {
-    /// `query` / `plot` at the top level.
+    /// `query` / `plot` / `source` at the top level.
     Block,
     /// An attribute name inside a block.
     Attribute,
     /// One of the plot types after `type =`.
     Value,
-    /// A query block's name after `query = query.`.
+    /// A query block's name after `query = query.`, or a plot's after
+    /// `plot = plot.`.
     Reference,
 }
 
@@ -88,6 +94,17 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
                 label: name.clone(),
                 kind: CompletionKind::Reference,
                 detail: Some("query block".to_string()),
+                insert_text: name,
+            })
+            .collect();
+    }
+    if after_ref_dot(&before, "plot") {
+        return block_names(source, "plot")
+            .into_iter()
+            .map(|name| Completion {
+                label: name.clone(),
+                kind: CompletionKind::Reference,
+                detail: Some("plot block".to_string()),
                 insert_text: name,
             })
             .collect();
@@ -127,9 +144,11 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .map(|name| attribute(name, "plot"))
             .collect(),
         Some(kind) if kind == "query" => vec![attribute("sql", "query")],
+        Some(kind) if kind == "source" => vec![attribute("path", "source")],
+        Some(kind) if kind == "filter" => vec![attribute("plot", "filter"), attribute("column", "filter")],
         // An unknown block kind has no known attributes to offer.
         Some(_) => Vec::new(),
-        None => ["query", "plot"]
+        None => BLOCKS
             .into_iter()
             .map(|name| Completion {
                 label: name.to_string(),
@@ -184,16 +203,48 @@ fn heredoc_delimiter(line: &str) -> Option<String> {
 
 /// The cursor follows `query = query.`, possibly part-way into the name.
 fn after_query_dot(before: &str) -> bool {
+    after_ref_dot(before, "query")
+}
+
+/// The cursor follows `kind = kind.` — `plot = plot.` in a filter —
+/// possibly part-way into the name.
+fn after_ref_dot(before: &str, kind: &str) -> bool {
     let before = before.trim_end();
     let ident_len = trailing_ident_len(before);
     let head = &before[..before.len() - ident_len];
-    let Some(head) = head.strip_suffix("query.") else {
+    let Some(head) = head.strip_suffix(&format!("{kind}.")) else {
         return false;
     };
     let Some(head) = head.trim_end().strip_suffix('=') else {
         return false;
     };
-    head.trim() == "query"
+    head.trim() == kind
+}
+
+/// The names of the file's blocks of one kind, when it parses; mid-edit,
+/// the `kind "name"` openers a line scan finds.
+fn block_names(source: &str, kind: &str) -> Vec<String> {
+    if let Ok(file) = model::parse(source) {
+        return file
+            .blocks
+            .iter()
+            .filter(|block| block.kind == kind)
+            .map(|block| block.name.clone())
+            .collect();
+    }
+    let mut names = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if block_opener(trimmed).as_deref() == Some(kind) {
+            let rest = trimmed[kind.len()..].trim_start();
+            if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                if !names.iter().any(|n: &String| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
 }
 
 /// The cursor follows `type =`, optionally inside an opened quote. The answer
@@ -332,14 +383,14 @@ mod tests {
     #[test]
     fn block_types_at_the_top_level() {
         let candidates = complete("", 1, 1);
-        assert_eq!(labels(&candidates), ["query", "plot"]);
+        assert_eq!(labels(&candidates), BLOCKS);
         assert!(candidates
             .iter()
             .all(|c| c.kind == CompletionKind::Block));
 
         // Between two blocks, and past the last one.
-        assert_eq!(labels(&complete(SPEC, 6, 1)), ["query", "plot"]);
-        assert_eq!(labels(&complete(SPEC, 12, 1)), ["query", "plot"]);
+        assert_eq!(labels(&complete(SPEC, 6, 1)), BLOCKS);
+        assert_eq!(labels(&complete(SPEC, 12, 1)), BLOCKS);
     }
 
     #[test]
@@ -358,6 +409,9 @@ mod tests {
 
         let candidates = complete("query \"q\" {\n  s\n}", 2, 3);
         assert_eq!(labels(&candidates), ["sql"]);
+
+        let candidates = complete("source \"orders\" {\n  \n}", 2, 3);
+        assert_eq!(labels(&candidates), ["path"]);
     }
 
     #[test]
@@ -398,6 +452,13 @@ mod tests {
         let partial = source.replace("query = query.\n", "query = query.re\n");
         let candidates = complete(&partial, 8, 19);
         assert_eq!(labels(&candidates), ["revenue", "cost"]);
+    }
+
+    #[test]
+    fn filter_attributes_and_plot_names() {
+        let source = "plot \"channels\" {\n  type = \"bar\"\n}\nfilter \"c\" {\n  plot = plot.\n}\n";
+        assert_eq!(labels(&complete(source, 5, 3)), ["plot", "column"]);
+        assert_eq!(labels(&complete(source, 5, 15)), ["channels"]);
     }
 
     #[test]
