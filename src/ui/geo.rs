@@ -1,10 +1,11 @@
 //! Map mode of the chart tab: a result with a latitude and a longitude column
 //! plots each row as a point on a Web Mercator projection, fitted to the
-//! points' extent, over a graticule labelled in degrees.
+//! points' extent, over a graticule labelled in degrees — and OpenStreetMap
+//! tiles, once someone turns them on (`tiles`).
 //!
-//! There is no base map: tiles would need the network, and an embedded
+//! Without tiles the points draw the shape on their own; an embedded
 //! coastline would say nothing at the city scale most station, store or
-//! sensor tables live at. The points themselves draw the shape. When a low
+//! sensor tables live at. When a low
 //! cardinality text column is present (a `type`, a `country`), points are
 //! colored by it, so the map says something beyond "where".
 //!
@@ -433,6 +434,16 @@ fn fold_category(column: usize, sorted: Vec<(String, usize)>) -> Category {
     }
 }
 
+/// A latitude's projected ordinate, for the tile layer's tests.
+#[cfg(test)]
+pub(crate) fn project_lat(lat: f64) -> f64 {
+    mercator_y(lat)
+}
+
+/// Most tiles a map asks for at once; a bigger plot drops a zoom level
+/// rather than filling the policy's queue with one view.
+const MAX_TILES: usize = 48;
+
 fn mercator_y(lat: f64) -> f64 {
     let phi = lat.clamp(-MAX_MERCATOR_LAT, MAX_MERCATOR_LAT).to_radians();
     (FRAC_PI_4 + phi / 2.).tan().ln().to_degrees()
@@ -579,6 +590,8 @@ impl Plot for GeoPlot {
             theme.background,
         );
 
+        let dark = theme.mode.is_dark();
+
         // The plot area reads as a map sheet: a faint fill and a frame.
         window.paint_quad(quad(
             area,
@@ -589,8 +602,40 @@ impl Plot for GeoPlot {
             BorderStyle::default(),
         ));
 
+        // The base map, when tiles are on and have arrived. Whatever has not
+        // arrived yet leaves the sheet showing through.
+        let base_map = crate::ui::tiles::enabled(cx);
+        let mut drew_tiles = false;
+        if base_map {
+            let mut z = crate::ui::tiles::zoom_for(view.scale);
+            let mut wanted = crate::ui::tiles::covering(view.visible(), z);
+            while wanted.len() > MAX_TILES && z > 0 {
+                z -= 1;
+                wanted = crate::ui::tiles::covering(view.visible(), z);
+            }
+            for (key, image) in crate::ui::tiles::visible(&wanted, window, cx) {
+                let (x0, x1, y0, y1) = crate::ui::tiles::extent_of(key);
+                let (left, top) = view.project(x0, y1);
+                let (right, bottom) = view.project(x1, y0);
+                let tile = Bounds::from_corners(
+                    bounds.origin + point(px(left), px(top)),
+                    bounds.origin + point(px(right), px(bottom)),
+                );
+                drew_tiles |= window
+                    .paint_image(area, tile, Corners::all(px(4.)), image, 0, false)
+                    .is_ok();
+            }
+            // Tiles are drawn for daylight; in the dark theme a veil of the
+            // background keeps them from glaring behind the points.
+            if drew_tiles && dark {
+                window.paint_quad(fill(area, background.opacity(0.35)).corner_radii(px(4.)));
+            }
+        }
+        let theme = cx.theme();
+
         // Graticule: meridians at round longitudes, parallels at round
-        // latitudes (unevenly spaced, as Mercator spaces them).
+        // latitudes (unevenly spaced, as Mercator spaces them). Over a base
+        // map the streets are the reference; only the labels stay.
         let (vx0, vx1, vy0, vy1) = view.visible();
         let lng_step = nice_step(vx1 - vx0, view.area.size.width as f64);
         let (lat0, lat1) = (inverse_mercator_y(vy0), inverse_mercator_y(vy1));
@@ -601,12 +646,14 @@ impl Plot for GeoPlot {
         let parallels: Vec<(f32, f64)> = steps_within(lat0.max(-85.), lat1.min(85.), lat_step)
             .map(|lat| (view.project(0., mercator_y(lat)).1, lat))
             .collect();
-        Grid::new()
-            .x(meridians.iter().map(|(x, _)| px(x - view.area.origin.x)))
-            .y(parallels.iter().map(|(y, _)| px(y - view.area.origin.y)))
-            .stroke(grid)
-            .dash_array(&[px(4.), px(2.)])
-            .paint(&area, window);
+        if !drew_tiles {
+            Grid::new()
+                .x(meridians.iter().map(|(x, _)| px(x - view.area.origin.x)))
+                .y(parallels.iter().map(|(y, _)| px(y - view.area.origin.y)))
+                .stroke(grid)
+                .dash_array(&[px(4.), px(2.)])
+                .paint(&area, window);
+        }
 
         let mut labels: Vec<Text> = meridians
             .iter()
@@ -627,6 +674,21 @@ impl Plot for GeoPlot {
             )
             .align(TextAlign::Right)
         }));
+        // The tile policy asks for the credit on the map itself, whenever its
+        // tiles are shown.
+        if drew_tiles {
+            labels.push(
+                Text::new(
+                    crate::ui::tiles::ATTRIBUTION,
+                    point(
+                        px(view.area.origin.x + view.area.size.width - 6.),
+                        px(view.area.origin.y + view.area.size.height - TEXT_SIZE - 6.),
+                    ),
+                    if dark { theme.foreground } else { muted },
+                )
+                .align(TextAlign::Right),
+            );
+        }
         PlotLabel::new(labels).paint(&bounds, window, cx);
 
         // One quad per point, ringed in the background color so overlapping
