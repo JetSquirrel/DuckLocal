@@ -249,3 +249,16 @@ jobs:
           files: ${{ steps.packages.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same packages on dl.ducklocal.app, which the site links to: many
+      # visitors in mainland China cannot reach GitHub's download host at a
+      # usable speed. After the GitHub release, so a failed mirror shows up
+      # as this step failing, never as a missing release.
+      - name: Mirror to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+          # One path per line, none with spaces (artifacts/...).
+          FILES: ${{ steps.packages.outputs.files }}
+        run: sh scripts/mirror-to-r2.sh "$VERSION" $FILES
