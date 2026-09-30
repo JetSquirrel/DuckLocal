@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 hmac = "0.12"
 sha2 = "0.10"
+getrandom = "0.3"
 quick-xml = { version = "0.36", features = ["serialize"] }
 unicode-width = "0.2"
 

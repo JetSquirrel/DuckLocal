@@ -55,6 +55,17 @@ ducklocal check dashboard.dash --database warehouse.duckdb
 
 Validates a `.dash` file — `query "name" { sql = <<SQL … SQL }` blocks and `plot "name" { type/query/x/y/series/title }` blocks joined by `query.name` references — without opening a window. Static checks (syntax, duplicate names, dangling references, SQL through the real parser — one read-only statement per query) need no database; `--database` (existing file, read-only) additionally describes each query and checks plot columns against what it returns, including a numeric-type check on `y`. Success prints one JSON object with the spec's queries and plots. A spec mistake is exit 2, kind `spec`, one `file:line: message` per diagnostic, all diagnostics at once; database/I/O failures are exit 1.
 
+## Show work in the running window
+
+```bash
+ducklocal open --title "Revenue by channel" --run --sql "SELECT channel, sum(amount) AS total FROM 'orders.csv' GROUP BY 1"
+ducklocal open dashboard.dash
+ducklocal open ./data/ --sql-file analysis.sql
+echo "SELECT 42" | ducklocal open --sql-file - --no-launch
+```
+
+Sends one request to the DuckLocal window that is already running and brings it forward: PATHs open as a drop on the window would (a `.dash` or app folder as a tab, data files/folders/patterns attached), then `--sql`/`--sql-file` opens in a new query tab titled `--title`; `--run` runs it once the PATHs have attached. Relative PATHs resolve against the command's directory. With no window running it starts one (up to 30s) unless `--no-launch` is given. Success prints `{"delivered": true, "launched": BOOL}` — delivery, not the query's result: it runs in the window's session (its connection, attached views and history), and any error appears there, not on stdout. Exit 2 for arguments, 1 with kind `not_running` (no window reachable), `refused` (the endpoint rejected the request) or `launch`.
+
 ## Discover, aggregate, convert
 
 Confirm the actual schema before using `amount`:

@@ -59,6 +59,14 @@ ducklocal check dashboard.dash            # validate; JSON diagnostics, exit 2 o
 ducklocal lsp                             # language server over stdio, for editors
 ```
 
+When the work is for a person to see, `ducklocal open` hands it to the window that is already running — starting one if none is — as a tab in front. It runs in the window's own session, so they can carry on from it:
+
+```bash
+ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
+ducklocal open dashboard.dash             # a dashboard tab; data files and folders attach
+ducklocal open --no-launch --sql-file q.sql   # exit 1, kind not_running, if no window is up
+```
+
 See the [CLI guide](https://ducklocal.app/docs/cli) for conversion, stdin, output, app export, and safety details.
 
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and verified file conversion. Copy it into your target project's supported skills directory; for example, from this checkout:

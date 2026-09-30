@@ -97,7 +97,8 @@ Export model (`ducklocal export --html APP`):
 - Do not automatically retry writes. A failed command may already have written data, including when output serialization fails. Inspect the result and destination first.
 - Do not save credentials, tokens, or secrets in SQL files, skill files, history, or project configuration. This skill has no credential store.
 - Each CLI invocation is a separate process/connection. GUI registered views and in-memory tables do not carry over. Use explicit `--database` for authorized persistent work; use separate single-statement invocations.
-- `ducklocal export --html` runs an analysis app once and writes its statements and results as one standalone HTML file. It is the only subcommand that starts the window platform (a hidden window, no visible UI). The report carries the app's data, not its interface or its interactive state.
+- `ducklocal export --html` runs an analysis app once and writes its statements and results as one standalone HTML file, in a hidden window with no visible UI.
+- `ducklocal open` puts SQL, a `.dash` spec or data in front of the person, in the running window — starting one if none is. Use it when the user wants to see or continue the work in the GUI, not to get results: it returns delivery only, and the SQL runs in the window's session, not the CLI's. Pass `--no-launch` when a window appearing unasked would be unwelcome (for example on a headless machine). The report carries the app's data, not its interface or its interactive state.
 - No dedicated S3 browsing, spatial command suite, session memory, or MCP server is provided. Do not invent flags or claim these capabilities.
 
 ## Failures

@@ -1088,3 +1088,32 @@ fn export_argument_errors_never_start_an_app() {
     let help = s.text(&["export", "--help"]);
     assert!(help.contains("export --html"), "{help}");
 }
+
+#[test]
+fn open_checks_its_arguments_and_never_starts_a_window_it_was_told_not_to() {
+    let s = Sandbox::new();
+    let output = s.run(&["open", "--help"], None);
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout).unwrap().contains("--no-launch"));
+    for args in [
+        vec!["open"],
+        vec!["open", "--no-launch"],
+        vec!["open", "--run", "a.csv"],
+        vec!["open", "--title", "x", "a.csv"],
+        vec!["open", "--sql", "  "],
+        vec!["open", "--sql", "SELECT 1", "--sql-file", "x.sql"],
+        vec!["open", "--sql", "SELECT 1", "--wat"],
+        vec!["open", "--sql", "SELECT 1", "--run", "--run"],
+    ] {
+        s.error(&args, 2, "argument");
+    }
+    s.error(&["open", "--sql-file", "missing.sql"], 1, "io");
+    // The sandbox's HOME has no endpoint, so no window is reachable — and the
+    // command writes nothing there finding that out (`run` checks).
+    s.error(
+        &["open", "--no-launch", "--sql", "SELECT 1", "--run"],
+        1,
+        "not_running",
+    );
+    s.error(&["open", "--no-launch", "sales.dash"], 1, "not_running");
+}

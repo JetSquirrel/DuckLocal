@@ -59,6 +59,14 @@ ducklocal check dashboard.dash            # 校验；JSON 诊断，有错误时�
 ducklocal lsp                             # 面向编辑器的语言服务器（stdio）
 ```
 
+如果结果是给人看的，`ducklocal open` 会把它交给已经在运行的窗口（没有就先启动一个），作为前台的新标签页打开。它在窗口自己的会话里运行，人可以直接接着改：
+
+```bash
+ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
+ducklocal open dashboard.dash             # 打开为 dashboard 标签页；数据文件和文件夹会被挂载
+ducklocal open --no-launch --sql-file q.sql   # 没有窗口时退出码 1，kind 为 not_running
+```
+
 转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](https://ducklocal.app/docs/zh/cli)。
 
 [官方 agent skill](skills/ducklocal/SKILL.md) 教 AI 先查 schema，再进行 SQL 分析及验证格式转换。复制到目标项目支持的 skill 目录即可，例如在本仓库执行：

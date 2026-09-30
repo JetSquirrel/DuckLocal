@@ -635,6 +635,29 @@ impl Workspace {
         self.focus_active_editor(window, cx);
     }
 
+    /// A new query tab holding `sql`, in front — what `ducklocal open --sql`
+    /// asks for. The SQL is the tab's own, not a history refill, so it never
+    /// overwrites a tab someone is writing in.
+    pub fn open_query_tab(
+        &mut self,
+        sql: String,
+        title: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut tab = self.new_tab_editor(window, cx);
+        if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+            tab.title = title.into();
+        }
+        tab.editor
+            .update(cx, |editor, cx| editor.set_value(sql, window, cx));
+        self.tabs.push(WorkspaceTab::Query(tab));
+        self.active = self.tabs.len() - 1;
+        self.editor_shown = true;
+        cx.notify();
+        self.focus_active_editor(window, cx);
+    }
+
     /// The tab strip's "+": a query, or an app folder to open as one.
     fn pick_app_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
@@ -930,7 +953,7 @@ impl Workspace {
         self.run_active(window, cx);
     }
 
-    fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running || self.explaining {
             return;
         }

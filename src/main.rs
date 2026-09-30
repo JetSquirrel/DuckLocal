@@ -12,6 +12,7 @@ mod perf_probe;
 mod profile;
 mod query;
 mod recents;
+mod remote;
 mod s3;
 mod schema;
 mod script;
@@ -74,6 +75,8 @@ fn main() {
             // The interface size is the rem base; it must be re-applied after
             // every Theme::change, which resets the theme to stock defaults.
             ui::scale::apply(cx);
+            // `ducklocal open` reaches this window from here on.
+            remote::serve();
 
             let window_bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             let options = WindowOptions {

@@ -11,6 +11,7 @@ DuckLocal — local data workspace and headless SQL
 
 Usage:
   ducklocal [PATH ...]          Open the GUI on files, folders or globs
+  ducklocal open [OPTIONS]      Show SQL or a PATH in the running window
   ducklocal query [OPTIONS]     Run one SQL statement, print JSON
   ducklocal profile TARGET      Per-column statistics, JSON
   ducklocal export --html APP   Export an analysis app as standalone HTML
@@ -519,7 +520,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     let first = args.first()?.to_str()?;
     if !matches!(
         first,
-        "query" | "profile" | "export" | "check" | "dash" | "lsp" | "--help" | "--version"
+        "query" | "profile" | "open" | "export" | "check" | "dash" | "lsp" | "--help" | "--version"
     ) && !first.starts_with("--")
     {
         return None;
@@ -537,6 +538,8 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("query", _) => query(&args[1..]),
         ("profile", 2) if args[1] == "--help" => Ok(PROFILE_HELP.to_string()),
         ("profile", _) => profile(&args[1..]),
+        ("open", 2) if args[1] == "--help" => Ok(crate::remote::OPEN_HELP.to_string()),
+        ("open", _) => crate::remote::open(&args[1..]),
         ("export", _) => crate::app_export::dispatch(&args[1..]),
         ("check", 2) if args[1] == "--help" => Ok(CHECK_HELP.to_string()),
         ("check", _) => crate::spec::check(&args[1..]),
