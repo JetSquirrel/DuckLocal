@@ -93,8 +93,9 @@ impl WheelLatch {
         });
         self.hold(target, now);
         if target != Target::Table(ix) {
-            // Not this table's gesture: take back what its listener did.
-            handle.set_offset(point(offset.x - delta.x, before));
+            // Not this table's gesture: take back what its listener did. Only
+            // the rows move on this handle; the columns scroll on another.
+            handle.set_offset(point(offset.x, before));
         }
         target != Target::Stack
     }
