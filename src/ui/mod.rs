@@ -34,6 +34,7 @@ gpui_kit::actions!(
         CloseTab,
         OpenData,
         OpenSetup,
+        ToggleBaseMap,
         Quit
     ]
 );
@@ -73,6 +74,11 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &ZoomReset, cx| scale::set(scale::UiSize::Default, cx));
     cx.on_action(|_: &StopQuery, _| crate::db::interrupt());
     cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &ToggleBaseMap, cx| {
+        tiles::toggle(cx);
+        // The item's check mark is part of the menu, built once.
+        set_menus(cx);
+    });
     // After the bindings: the menu bar reads each item's shortcut from the
     // keymap at the moment it is built.
     set_menus(cx);
@@ -88,6 +94,7 @@ pub fn set_menus(cx: &mut App) {
         items,
         disabled: false,
     };
+    let base_map = tiles::enabled(cx);
     cx.set_menus(vec![
         Menu {
             name: "DuckLocal".into(),
@@ -135,6 +142,9 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("menu.zoom_in"), ZoomIn),
                 MenuItem::action(tr("menu.zoom_out"), ZoomOut),
                 MenuItem::action(tr("menu.zoom_reset"), ZoomReset),
+                MenuItem::Separator,
+                MenuItem::action(tr("menu.base_map"), ToggleBaseMap)
+                    .checked(base_map),
             ],
         ),
     ]);

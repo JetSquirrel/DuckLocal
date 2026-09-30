@@ -404,6 +404,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("menu.zoom_in", "放大界面", "Larger interface"),
     ("menu.zoom_out", "缩小界面", "Smaller interface"),
     ("menu.zoom_reset", "默认大小", "Default size"),
+    (
+        "menu.base_map",
+        "在线底图（OpenStreetMap）",
+        "Online base map (OpenStreetMap)",
+    ),
     ("workspace.stop.tooltip", "中断正在运行的查询", "Interrupt the running query"),
     ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),

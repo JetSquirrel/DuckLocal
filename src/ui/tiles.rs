@@ -2,10 +2,11 @@
 //! demand, kept on disk, and drawn in the same Web Mercator projection the
 //! points use.
 //!
-//! This is the one place the app reaches the network on its own. What leaves
+//! It is off until someone turns it on (View → Online base map), because it
+//! is the one place the app would reach the network on its own: what leaves
 //! the machine is which tiles are wanted — roughly the area and zoom being
-//! looked at — never a row of data. `map_tiles = off` in the settings turns it
-//! off, and the map falls back to its graticule, as it does offline.
+//! looked at — never a row of data. Off, or offline, the map draws over its
+//! graticule. The choice is the `map_tiles` setting, `on` or `off`.
 //!
 //! The OpenStreetMap Foundation's tile policy is what shapes the fetching: an
 //! identifying User-Agent, at most two requests at a time, tiles cached for a
@@ -61,7 +62,7 @@ struct Config {
 impl Config {
     fn load() -> Self {
         let setting = |key| crate::history::get_setting(key).ok().flatten();
-        let enabled = setting("map_tiles").is_none_or(|value| value != "off");
+        let enabled = setting("map_tiles").is_some_and(|value| value == "on");
         let template = setting("map_tile_url")
             .filter(|url| url.contains("{z}") && url.contains("{x}") && url.contains("{y}"))
             .unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
@@ -81,10 +82,22 @@ struct Tiles {
 
 impl Global for Tiles {}
 
-/// Whether the base map is on: it is, unless the `map_tiles` setting is `off`.
+/// Whether the base map is on: only once someone has turned it on.
 pub(crate) fn enabled(cx: &mut App) -> bool {
     let tiles = cx.default_global::<Tiles>();
     tiles.config.get_or_insert_with(Config::load).enabled
+}
+
+/// Turn the base map on or off, remember the choice, and redraw every map.
+pub(crate) fn toggle(cx: &mut App) {
+    let tiles = cx.default_global::<Tiles>();
+    let config = tiles.config.get_or_insert_with(Config::load);
+    config.enabled = !config.enabled;
+    let value = if config.enabled { "on" } else { "off" };
+    if let Err(error) = crate::history::set_setting("map_tiles", value) {
+        tracing::warn!("map_tiles not saved: {error:#}");
+    }
+    cx.refresh_windows();
 }
 
 /// The tiles among `wanted` that are ready to draw. The rest are asked for;
