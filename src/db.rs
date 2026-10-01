@@ -75,10 +75,18 @@ impl DatabaseTarget {
 
 /// `$HOME`, read once. `file_label` runs on every frame of both the title
 /// bar and the status bar, so it should not go back to the environment each
-/// time.
+/// time. Windows does not set `HOME` outside a Unix-style shell; its home is
+/// `USERPROFILE`.
 fn home() -> Option<&'static str> {
     static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| std::env::var("HOME").ok()).as_deref()
+    HOME.get_or_init(|| {
+        std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()
+            .map(|home| home.trim_end_matches(std::path::is_separator).to_string())
+            .filter(|home| !home.is_empty())
+    })
+    .as_deref()
 }
 
 /// Display `$HOME` as `~`.
@@ -93,16 +101,19 @@ pub(crate) fn compact_home(path: &str) -> String {
 /// home of `/Users/al` leaves `/Users/alice/x` alone.
 fn compact_home_under(path: &str, home: &str) -> String {
     match path.strip_prefix(home) {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+        Some(rest) if rest.is_empty() || rest.starts_with(std::path::is_separator) => {
+            format!("~{rest}")
+        }
         _ => path.to_string(),
     }
 }
 
-/// Replace a `~/` prefix with `$HOME` expanded.
+/// Replace a `~/` prefix (or `~\` on Windows) with `$HOME` expanded.
 pub fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/") {
+    let mut chars = path.chars();
+    if chars.next() == Some('~') && chars.next().is_some_and(std::path::is_separator) {
         if let Some(home) = home() {
-            return format!("{home}/{rest}");
+            return format!("{home}{}", &path[1..]);
         }
     }
     path.to_string()
@@ -484,6 +495,21 @@ mod tests {
         assert_eq!(compact_home_under("/Users/al/x.csv", "/Users/al"), "~/x.csv");
         assert_eq!(compact_home_under("/Users/al", "/Users/al"), "~");
         assert_eq!(compact_home_under("/Users/alice/x", "/Users/al"), "/Users/alice/x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_is_compacted_at_a_backslash() {
+        assert_eq!(compact_home_under(r"C:\Users\al\x.csv", r"C:\Users\al"), r"~\x.csv");
+        assert_eq!(compact_home_under(r"C:\Users\alice\x", r"C:\Users\al"), r"C:\Users\alice\x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_tilde_expansion_takes_a_backslash() {
+        let expanded = expand_tilde(r"~\data\x.duckdb");
+        assert!(!expanded.starts_with('~'));
+        assert!(expanded.ends_with(r"\data\x.duckdb"));
     }
 
     #[test]

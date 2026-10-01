@@ -128,7 +128,22 @@ fn is_hidden(path: &Path) -> bool {
 }
 
 pub fn canonical_file_path(path: &str) -> std::io::Result<String> {
-    std::fs::canonicalize(expand_tilde(path)).map(|path| path.to_string_lossy().into_owned())
+    std::fs::canonicalize(expand_tilde(path))
+        .map(|path| strip_verbatim(&path.to_string_lossy()).to_string())
+}
+
+/// Windows' `canonicalize` answers with a verbatim path (`\\?\C:\data\x.csv`).
+/// Its `?` would read as a pattern on the next open, and the prefix is noise in
+/// the sidebar, so drop it: `\\?\C:\…` becomes `C:\…` and `\\?\UNC\host\…`
+/// becomes `\\host\…`. Elsewhere the path passes through unchanged.
+fn strip_verbatim(path: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}").into();
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(disk) if disk.as_bytes().get(1) == Some(&b':') => disk.into(),
+        _ => path.into(),
+    }
 }
 
 /// Add one file to the request, ignoring repeats and everything past the cap.
@@ -160,19 +175,24 @@ fn is_pattern(path: &str) -> bool {
 /// Expand a pattern in every path component against the filesystem.
 fn glob(pattern: &str) -> Vec<String> {
     let path = Path::new(pattern);
-    let mut dirs: Vec<PathBuf> = if path.is_absolute() {
-        vec![PathBuf::from("/")]
-    } else {
+    // The fixed start of the path: `/`, or on Windows a drive or share and its
+    // root (`C:\`, `\\host\share\`). Patterns only ever come after it.
+    let root: PathBuf = path
+        .components()
+        .take_while(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+        .collect();
+    let mut dirs: Vec<PathBuf> = if root.as_os_str().is_empty() {
         vec![PathBuf::from(".")]
+    } else {
+        vec![root]
     };
 
     for component in path.components() {
         let part = match component {
-            Component::CurDir | Component::RootDir => continue,
+            Component::Prefix(_) | Component::CurDir | Component::RootDir => continue,
             // `..` is a location, not a pattern: follow it literally.
             Component::ParentDir => "..".to_string(),
             Component::Normal(name) => name.to_string_lossy().to_string(),
-            Component::Prefix(_) => return Vec::new(),
         };
 
         let mut next = Vec::new();
@@ -320,6 +340,33 @@ mod tests {
         assert_eq!(sources.files.len(), 2);
         assert!(sources.files.iter().all(|path| path.ends_with(".csv")));
         assert!(sources.problems.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn glob_expands_under_a_drive_letter() {
+        let dir = scratch("glob_drive");
+        touch(&dir.join("data/logs-a.csv"));
+        touch(&dir.join("data/logs-b.csv"));
+        let root = canonical_file_path(&dir.to_string_lossy()).unwrap();
+        assert!(root.as_bytes().get(1) == Some(&b':'), "{root}");
+
+        let sources = resolve(&[format!(r"{root}\data\*.csv")]);
+
+        assert_eq!(sources.files.len(), 2);
+        assert!(sources.problems.is_empty());
+    }
+
+    #[test]
+    fn verbatim_prefixes_are_dropped() {
+        assert_eq!(strip_verbatim(r"\\?\C:\data\x.csv"), r"C:\data\x.csv");
+        assert_eq!(strip_verbatim(r"\\?\UNC\host\share\x.csv"), r"\\host\share\x.csv");
+        assert_eq!(strip_verbatim("/home/al/x.csv"), "/home/al/x.csv");
+        // A verbatim path that is not a drive path keeps its prefix.
+        assert_eq!(
+            strip_verbatim(r"\\?\Volume{1234}\x.csv"),
+            r"\\?\Volume{1234}\x.csv"
+        );
     }
 
     #[test]
