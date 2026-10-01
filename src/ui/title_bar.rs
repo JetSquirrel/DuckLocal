@@ -372,6 +372,8 @@ impl TitleBarView {
             .dropdown_caret(true)
             .loading(opening)
             .disabled(opening)
+            // Out of the Windows caption hit-test, like "expand-sidebar".
+            .occlude()
             .dropdown_menu(move |menu, _, _| {
                 let (files_state, folder_state, memory_state) =
                     (state.clone(), state.clone(), state.clone());
@@ -464,6 +466,12 @@ impl Render for TitleBarView {
                                         &crate::ui::ToggleSidebar,
                                         None,
                                     )
+                                    // The TitleBar marks its whole content
+                                    // strip as a native drag area; on Windows
+                                    // that answers HTCAPTION for every child
+                                    // and swallows its clicks. Occluding keeps
+                                    // this button out of the caption hit-test.
+                                    .occlude()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.state
                                             .update(cx, |state, cx| state.toggle_sidebar(cx));
@@ -507,6 +515,9 @@ impl Render for TitleBarView {
                             Button::new("setup")
                                 .icon(IconName::Bot)
                                 .tooltip(tr("setup.title"))
+                                // Out of the Windows caption hit-test, like
+                                // "expand-sidebar".
+                                .occlude()
                                 .on_click(|_, window, cx| {
                                     crate::ui::setup_dialog::open(window, cx)
                                 }),
@@ -518,6 +529,18 @@ impl Render for TitleBarView {
                                     Language::En => "中",
                                 })
                                 .tooltip(tr("title_bar.toggle_language"))
+                                // Windows turns the title bar into an
+                                // HTCAPTION region; a mouse-down that GPUI
+                                // leaves unhandled falls through to
+                                // DefWindowProc, which starts a window move
+                                // and swallows the mouse-up, so the click
+                                // never fires. Consume the press, the same
+                                // way gpui-kit's own AppMenuBar does.
+                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    gpui_kit::component::GlobalState::suppress_text_selection(cx);
+                                })
                                 .on_click(Self::toggle_language),
                         )
                         // `dropdown_menu` wraps the Button in a popover that is
@@ -530,6 +553,9 @@ impl Render for TitleBarView {
                                 .xsmall()
                                 .icon(IconName::ALargeSmall)
                                 .tooltip(tr("title_bar.ui_size"))
+                                // Out of the Windows caption hit-test, like
+                                // "expand-sidebar".
+                                .occlude()
                                 .dropdown_menu(|menu, _, _| {
                                     let current = crate::ui::scale::current();
                                     crate::ui::scale::UiSize::ALL.into_iter().fold(
@@ -550,6 +576,9 @@ impl Render for TitleBarView {
                             Button::new("toggle-theme")
                                 .icon(if dark { IconName::Sun } else { IconName::Moon })
                                 .tooltip(tr("title_bar.toggle_theme"))
+                                // Out of the Windows caption hit-test, like
+                                // "expand-sidebar".
+                                .occlude()
                                 .on_click(Self::toggle_theme),
                         ),
                 ),
