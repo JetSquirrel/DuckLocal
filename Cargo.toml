@@ -45,6 +45,9 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"
+# Same release tag as the build dependency (see above); the extra feature only
+# joins the test build, where `gpui_kit::test` and `#[gpui_kit::test]` live.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0", features = ["test-support"] }
 
 # `gpui-shell` scripts run on the QuickJS fork the toolkit pins; the crates.io
 # `rquickjs` would be a second, incompatible copy of the same crate.

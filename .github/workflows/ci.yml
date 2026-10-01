@@ -32,7 +32,9 @@ jobs:
   build:
     # The release ships Linux and Windows builds too; nothing else compiles
     # them, so a change that breaks either shows up here, on the pull request,
-    # rather than on a release tag. Build only: the tests run on macOS above.
+    # rather than on a release tag. Linux builds only; Windows runs the tests
+    # as well, since its paths (drive letters, `\`, no `$HOME`) are where the
+    # macOS run cannot catch a mistake.
     strategy:
       fail-fast: false
       matrix:
@@ -61,3 +63,7 @@ jobs:
 
       - name: Build
         run: cargo build --locked
+
+      - name: Run tests
+        if: runner.os == 'Windows'
+        run: cargo test --locked
