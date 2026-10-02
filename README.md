@@ -4,7 +4,7 @@
 
 **[ducklocal.app](https://ducklocal.app/)** · **[Docs](https://ducklocal.app/docs/)** · **[中文文档](README.zh-CN.md)**
 
-A local-first workspace for querying and exploring your data, built natively on DuckDB. Point it at your files — there is no connection to configure, no schema to create, and nothing is uploaded anywhere.
+A local-first workspace for querying and exploring your data, built natively on DuckDB. Point it at your files — no connection to configure, no schema to create, nothing uploaded.
 
 ![How DuckLocal works](assets/intro.png)
 
@@ -17,98 +17,53 @@ ducklocal './data/*.csv'      # a pattern
 ducklocal warehouse.duckdb    # or an existing DuckDB database
 ```
 
-Each CSV, TSV, Parquet, JSON, or Excel file becomes queryable as the window opens. You can also drag files or folders onto the window, or pick them from the file dialog — and they stay registered, so the next launch starts with the same workspace. One open request attaches at most 256 files.
+CSV, TSV, Parquet, JSON, and Excel files are queryable as soon as the window opens. You can also drag them onto the window or pick them from the file dialog; the workspace is remembered for the next launch.
 
-Your data stays on your machine: nothing is uploaded, and there is no account. Map charts can draw an OpenStreetMap base map under their points, off until you turn it on (View → Online base map): its tile requests reveal the area being viewed, never your rows.
+Your data stays on your machine, and there is no account. The only optional network use is the OpenStreetMap base map for map charts (View → Online base map, off by default), and S3 when you configure it.
 
 ## Features
 
-- Open local CSV / TSV / Parquet / JSON / Excel files, or whole folders — from the command line, the picker, or a drop on the window
-- SQL editor with syntax highlighting, autocompletion and one-click formatting, across multiple query tabs
-- Run queries with ⌘↵ (Cmd+Enter); inspect plans with EXPLAIN
-- Schema sidebar: browse databases / schemas / tables / columns, generate SELECT queries in one click, alter a column's data type from a dialog
-- Results grid with filtering, cell copy, CSV/Parquet export and built-in charts
-- Query history with one-click refill into the editor
-- Optional S3 support via httpfs; credentials are session-only
-- Light and dark themes, four interface sizes (⌘+ / ⌘− / ⌘0), English and 简体中文
+- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with ⌘↵, inspect plans with EXPLAIN
+- Schema sidebar: browse tables and columns, generate SELECTs, change a column's type
+- Results grid with filtering, copy, CSV/Parquet export, and built-in charts
+- Dashboards as `.dash` files, with cross-filtering
+- Query history, S3 via httpfs (session-only credentials)
+- Light and dark themes, four interface sizes, English and 简体中文
 
-## AI CLI and official skill
+## CLI for agents
 
-Run one SQL statement without opening a window or reading GUI history/settings:
+The same binary works headless and returns structured JSON, so an AI agent can explore data without a window:
 
 ```bash
-ducklocal --help
-ducklocal query --sql "DESCRIBE SELECT * FROM 'sales.csv'"
+ducklocal schema ./data/                                  # what can be queried, with columns
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
-ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
+ducklocal check dashboard.dash                            # validate a dashboard spec
+ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window
+ducklocal open --state                                    # read back what the window shows
 ```
 
-Results are structured JSON, with explicit truncation and precision-preserving value encodings; `--format md` prints the same values as a Markdown table for a document to quote. File databases default to read-only; writes require `--read-write`. Read-only is not a filesystem/network sandbox: `COPY` can still write files. An error is JSON too, and carries a `hint` when there is an obvious next step — the flag that was meant, `--read-write` for a refused write, `ducklocal schema` for a table that does not exist.
+Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option.
 
-`ducklocal schema` maps what there is to query in one call — every file under the PATHs, or a database's tables and views, with their columns and the SQL that reads each. A large catalog comes back as a summary sized for a prompt, and `--stats` gives one relation's exact per-column statistics:
-
-```bash
-ducklocal schema ./data/
-ducklocal schema --database warehouse.duckdb --table orders
-ducklocal schema sales.csv --stats        # nulls, distinct, min/max, median, day coverage
-```
-
-An analysis app can be exported as one standalone HTML file — the statements its `query()` calls issued, with their results — for sharing with someone who does not have DuckLocal:
-
-```bash
-ducklocal export --html examples/analysis_app
-```
-
-A dashboard can also be declared as data: a `.dash` file of query and plot blocks, opened as a tab like an app, editable right there in the GUI. A `filter` block makes a bar chart or a table clickable: the value picked there narrows every query that reads it as `$name` — cross-filtering, with the picking plot itself left whole. `ducklocal check` validates a spec without a window, and `ducklocal lsp` gives any LSP-capable editor the same diagnostics, completion, hover and go-to-definition:
-
-```bash
-ducklocal dashboard.dash                  # open as a dashboard tab
-ducklocal check dashboard.dash            # validate; JSON diagnostics, exit 2 on mistakes
-ducklocal lsp                             # language server over stdio, for editors
-```
-
-When the work is for a person to see, `ducklocal open` hands it to the window that is already running — starting one if none is — as a tab in front. It runs in the window's own session, so they can carry on from it:
-
-```bash
-ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
-ducklocal open dashboard.dash             # a dashboard tab; data files and folders attach
-ducklocal open --no-launch --sql-file q.sql   # exit 1, kind not_running, if no window is up
-```
-
-The other direction works too: `ducklocal open --state` reports what the running window shows — its tabs, each query's SQL and result, each dashboard's picked filters — so an agent can carry on from where the person left off.
-
-See the [CLI guide](https://ducklocal.app/docs/cli) for conversion, stdin, output, app export, and safety details.
-
-The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and verified file conversion. Copy it into your target project's supported skills directory; for example, from this checkout:
+The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and file conversion. Copy it into your project:
 
 ```bash
 mkdir -p /path/to/your-project/.claude/skills
 cp -R skills/ducklocal /path/to/your-project/.claude/skills/
 ```
 
-Inspect existing destinations before overwriting. No global configuration is changed. Current releases target macOS 12+ on Apple silicon; the app binary is `/Applications/DuckLocal.app/Contents/MacOS/ducklocal`. Check its help/version for CLI support, or build this checkout with `cargo build --locked` and use `./target/debug/ducklocal`.
-
 ## Documentation
 
-The guides are at **[ducklocal.app/docs](https://ducklocal.app/docs/)**: [getting started](https://ducklocal.app/docs/getting-started), a [10-minute tutorial](https://ducklocal.app/docs/tutorial) with sample data, [troubleshooting](https://ducklocal.app/docs/troubleshooting), [data sources](https://ducklocal.app/docs/data-sources), [S3 and httpfs](https://ducklocal.app/docs/s3), [SQL editor](https://ducklocal.app/docs/sql-editor), [schema browser and history](https://ducklocal.app/docs/schema-and-history), [results and charts](https://ducklocal.app/docs/results-and-charts), [settings and app data](https://ducklocal.app/docs/settings-and-data), [dashboards](https://ducklocal.app/docs/dashboards), and [development](https://ducklocal.app/docs/development).
+Guides, a tutorial, and troubleshooting are at **[ducklocal.app/docs](https://ducklocal.app/docs/)** (source: [JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site)).
 
-The website — the product page at [ducklocal.app](https://ducklocal.app/) and the docs — lives in its own repository, [JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site). A change here that changes what the docs say needs a pull request there too.
-
-## Run
+## Development
 
 ```bash
 cargo run                     # start with an empty workspace
 cargo run -- ./data/logs/     # or open something straight away
+./scripts/bundle.sh           # build target/release/DuckLocal.app (unsigned)
 ```
 
-## Build the macOS app
-
-```bash
-./scripts/bundle.sh
-# Produces target/release/DuckLocal.app
-```
-
-The released disk image runs on macOS 12 or later, Apple silicon only. `bundle.sh` does not sign what it builds; `scripts/package-macos.sh` is the shipping path and signs and notarizes the dmg. See [development](https://ducklocal.app/docs/development).
+Releases target macOS 12+ on Apple silicon; `scripts/package-macos.sh` builds the signed, notarized dmg. See [development](https://ducklocal.app/docs/development).
 
 ## License
 
