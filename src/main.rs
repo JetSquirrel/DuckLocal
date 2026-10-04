@@ -30,6 +30,11 @@ use crate::app::DuckLocalApp;
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(feature = "scroll-bench")]
+    if args.first().is_some_and(|arg| arg == "__scroll-bench") {
+        ui::scroll_bench::run();
+        return;
+    }
     // The guard prints the hotpath report when it drops, so it must drop
     // before `process::exit`, which skips destructors.
     let code = {
