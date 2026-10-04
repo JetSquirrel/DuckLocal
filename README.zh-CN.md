@@ -17,98 +17,53 @@ ducklocal './data/*.csv'      # 通配符
 ducklocal warehouse.duckdb    # 或已有的 DuckDB 数据库
 ```
 
-每个 CSV / TSV / Parquet / JSON / Excel 文件在窗口打开时即可查询。也可以把文件或文件夹拖进窗口，或用文件对话框选择；它们会被记住，下次启动直接回到同一个工作区。一次打开请求最多挂载 256 个文件。
+CSV / TSV / Parquet / JSON / Excel 文件在窗口打开时即可查询。也可以拖进窗口或用文件对话框选择；工作区会被记住，下次启动直接恢复。
 
-数据只留在这台机器上：不上传、不需要账号。地图图表可以在点下方绘制 OpenStreetMap 底图，默认关闭，需在「视图 → 在线底图」中开启：瓦片请求会暴露正在查看的区域，但绝不包含你的数据行。
+数据只留在这台机器上，不需要账号。仅有的可选联网是地图图表的 OpenStreetMap 底图（「视图 → 在线底图」，默认关闭），以及你主动配置的 S3。
 
 ## 功能
 
-- 把本地 CSV / TSV / Parquet / JSON / Excel 文件或整个文件夹打开为可查询关系：命令行、文件对话框、拖放三种入口
-- SQL 编辑器：语法高亮、自动补全、一键格式化，支持多查询 Tab
-- ⌘↵（Cmd+Enter）运行查询，EXPLAIN 查看查询计划
-- Schema 侧栏：浏览数据库 / schema / 表 / 列，一键生成 SELECT 查询，可在对话框中修改列的数据类型
-- 结果表格支持筛选、单元格复制、CSV/Parquet 导出和内置图表
-- 查询历史，单击回填编辑器
-- 可选 S3 支持（httpfs），凭据仅当前会话有效
-- 明暗主题切换，四档界面大小（⌘+ / ⌘− / ⌘0），中英文界面
+- SQL 编辑器：语法高亮、自动补全、格式化、多 Tab；⌘↵ 运行，EXPLAIN 查看计划
+- Schema 侧栏：浏览表和列、一键生成 SELECT、修改列类型
+- 结果表格：筛选、复制、CSV/Parquet 导出、内置图表
+- `.dash` 文件定义的 Dashboard，支持交叉筛选
+- 查询历史；通过 httpfs 支持 S3（凭据仅当前会话有效）
+- 明暗主题、四档界面大小、中英文界面
 
-## AI CLI 与官方 skill
+## 面向 Agent 的 CLI
 
-无窗口执行一条 SQL，不读取 GUI 历史或设置：
+同一个二进制可以无窗口运行并输出结构化 JSON，AI agent 不用打开界面就能探索数据：
 
 ```bash
-ducklocal --help
-ducklocal query --sql "DESCRIBE SELECT * FROM 'sales.csv'"
+ducklocal schema ./data/                                  # 列出可查询的内容及列
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
-ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
+ducklocal check dashboard.dash                            # 校验 dashboard 文件
+ducklocal open --run --sql "SELECT ..."                   # 把结果交给正在运行的窗口
+ducklocal open --state                                    # 读取窗口当前显示的内容
 ```
 
-结果为结构化 JSON，显式标记截断并保留数值精度；`--format md` 把同样的值输出为 Markdown 表格，便于写进文档引用。文件数据库默认只读，写入需 `--read-write`；只读不是文件系统/网络沙箱，`COPY` 仍可写文件。出错时同样输出 JSON；有明确下一步时会带 `hint`，比如拼错的参数本来是哪个、写入被拒时加 `--read-write`、表不存在时先跑 `ducklocal schema`。
+数据库文件默认只读，写入需加 `--read-write`。全部命令和参数见 [CLI 指南](https://ducklocal.app/docs/zh/cli)。
 
-`ducklocal schema` 一次列出所有可查询的东西：PATH 下的每个文件，或数据库的表和视图，连同列和读取它的 SQL。目录很大时返回适合放进提示词的摘要；`--stats` 给出单个关系精确的逐列统计：
-
-```bash
-ducklocal schema ./data/
-ducklocal schema --database warehouse.duckdb --table orders
-ducklocal schema sales.csv --stats        # 空值、去重数、最值、中位数、日期覆盖
-```
-
-分析应用可以导出为一个独立 HTML 文件——应用 `query()` 发出的语句及其结果——方便发给没有 DuckLocal 的人：
-
-```bash
-ducklocal export --html examples/analysis_app
-```
-
-dashboard 也可以声明为数据：一个由 query 和 plot block 组成的 `.dash` 文件，像应用一样以标签页打开，并可直接在 GUI 里编辑。`filter` block 让柱状图或表格可以点选：选中的值会筛选所有以 `$name` 引用它的查询，也就是交叉筛选，做选择的那张图本身保持不变。`ducklocal check` 无窗口校验规格文件，`ducklocal lsp` 则把同样的诊断、补全、悬停和跳转定义提供给任何支持 LSP 的编辑器：
-
-```bash
-ducklocal dashboard.dash                  # 以 dashboard 标签页打开
-ducklocal check dashboard.dash            # 校验；JSON 诊断，有错误时退出码 2
-ducklocal lsp                             # 面向编辑器的语言服务器（stdio）
-```
-
-如果结果是给人看的，`ducklocal open` 会把它交给已经在运行的窗口（没有就先启动一个），作为前台的新标签页打开。它在窗口自己的会话里运行，人可以直接接着改：
-
-```bash
-ducklocal open --title "Revenue" --run --sql "SELECT channel, sum(amount) FROM 'orders.csv' GROUP BY 1"
-ducklocal open dashboard.dash             # 打开为 dashboard 标签页；数据文件和文件夹会被挂载
-ducklocal open --no-launch --sql-file q.sql   # 没有窗口时退出码 1，kind 为 not_running
-```
-
-反方向也可以：`ducklocal open --state` 报告正在运行的窗口里显示的内容，包括各个标签页、每个查询的 SQL 和结果、每个 dashboard 当前选中的筛选。这样 agent 可以从人停下的地方接着做。
-
-转换、stdin、输出编码、应用导出和安全说明见 [CLI 指南](https://ducklocal.app/docs/zh/cli)。
-
-[官方 agent skill](skills/ducklocal/SKILL.md) 教 AI 先查 schema，再进行 SQL 分析及验证格式转换。复制到目标项目支持的 skill 目录即可，例如在本仓库执行：
+[官方 agent skill](skills/ducklocal/SKILL.md) 教 AI 先查 schema，再做 SQL 分析和格式转换。复制到你的项目即可：
 
 ```bash
 mkdir -p /path/to/your-project/.claude/skills
 cp -R skills/ducklocal /path/to/your-project/.claude/skills/
 ```
 
-目标已存在时先检查，避免覆盖。不修改全局配置。当前发布范围为 macOS 12+、Apple 芯片；app 内二进制位于 `/Applications/DuckLocal.app/Contents/MacOS/ducklocal`。先检查 help/version 是否支持 CLI，或 `cargo build --locked` 后用 `./target/debug/ducklocal`。
-
 ## 文档
 
-完整指南在 **[ducklocal.app/docs](https://ducklocal.app/docs/zh/)**：[快速上手](https://ducklocal.app/docs/zh/getting-started)、带样例数据的 [10 分钟上手教程](https://ducklocal.app/docs/zh/tutorial)、[常见问题排查](https://ducklocal.app/docs/zh/troubleshooting)、[数据源](https://ducklocal.app/docs/zh/data-sources)、[S3 与 httpfs](https://ducklocal.app/docs/zh/s3)、[SQL 编辑器](https://ducklocal.app/docs/zh/sql-editor)、[Schema 浏览与历史](https://ducklocal.app/docs/zh/schema-and-history)、[结果与图表](https://ducklocal.app/docs/zh/results-and-charts)、[设置与应用数据](https://ducklocal.app/docs/zh/settings-and-data)、[Dashboard](https://ducklocal.app/docs/zh/dashboards)、[开发](https://ducklocal.app/docs/zh/development)。
+使用指南、上手教程和问题排查见 **[ducklocal.app/docs](https://ducklocal.app/docs/zh/)**（源码：[JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site)）。
 
-网站——[ducklocal.app](https://ducklocal.app/zh/) 产品首页与文档——放在独立的仓库 [JetSquirrel/ducklocal-site](https://github.com/JetSquirrel/ducklocal-site)。这里的改动如果改变了文档里的说法，也需要向那边提交 pull request。
-
-## 运行
+## 开发
 
 ```bash
 cargo run                     # 启动空工作区
 cargo run -- ./data/logs/     # 或直接打开数据
+./scripts/bundle.sh           # 生成 target/release/DuckLocal.app（未签名）
 ```
 
-## 打包 macOS 应用
-
-```bash
-./scripts/bundle.sh
-# 生成 target/release/DuckLocal.app
-```
-
-发布的安装包要求 macOS 12 及以上、Apple 芯片。`bundle.sh` 不做签名；正式发布走 `scripts/package-macos.sh`，它会签名并对 dmg 做公证。详见[开发](https://ducklocal.app/docs/zh/development)。
+发布版本要求 macOS 12+、Apple 芯片；`scripts/package-macos.sh` 生成签名并公证的 dmg。详见[开发文档](https://ducklocal.app/docs/zh/development)。
 
 ## 开源协议
 
