@@ -105,6 +105,25 @@ fn perf_a_row_materialization() {
 }
 
 #[test]
+fn perf_a_temporal_cells() {
+    // Dates and timestamps are formatted per cell; at the cell cap that is
+    // up to 2M calls, so the formatter's own cost shows directly.
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    probe("A4 run_of: 100k x (date, timestamp, time) x 4", || {
+        crate::query::run_of(
+            &conn,
+            "SELECT DATE '2020-01-01' + (i % 2000)::INT AS d1,
+                    TIMESTAMP '2020-01-01' + to_seconds(i) AS t1,
+                    TIME '00:00:00' + to_seconds(i % 86400) AS h1,
+                    d1 AS d2, t1 AS t2, h1 AS h2, d1 AS d3, t1 AS t3,
+                    h1 AS h3, d1 AS d4, t1 AS t4, h1 AS h4
+             FROM range(100000) t(i)",
+        )
+        .unwrap()
+    });
+}
+
+#[test]
 fn perf_b_filter() {
     let conn = duckdb::Connection::open_in_memory().unwrap();
     wide_table(&conn);

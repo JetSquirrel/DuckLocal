@@ -42,6 +42,7 @@ pub struct CliResult {
     pub elapsed_ms: u128,
 }
 
+#[hotpath::measure]
 pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResult> {
     let started = Instant::now();
     let mut stmt = conn.prepare(sql)?;
@@ -112,20 +113,32 @@ fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
         }
         ValueRef::Float(v) => cli_float(v.into()),
         ValueRef::Double(v) => cli_float(v),
-        ValueRef::Decimal(v) => json!({"encoding": "decimal", "value": v.to_string()}),
+        ValueRef::Decimal(v) => tagged([("encoding", json!("decimal")), ("value", json!(v.to_string()))]),
         ValueRef::Text(v) => json!(std::str::from_utf8(v)?),
         ValueRef::Enum(..) => json!(value.as_str().map_err(|e| anyhow::anyhow!("{e:?}"))?),
         ValueRef::Blob(v) | ValueRef::Geometry(v) => {
-            let hex: String = v.iter().map(|byte| format!("{byte:02x}")).collect();
-            json!({"encoding": "hex", "value": hex})
+            use std::fmt::Write as _;
+            let mut hex = String::with_capacity(v.len() * 2);
+            for byte in v {
+                let _ = write!(hex, "{byte:02x}");
+            }
+            tagged([("encoding", json!("hex")), ("value", json!(hex))])
         }
-        ValueRef::Date32(v) => json!({"encoding": "date", "unit": "Day", "value": v.to_string()}),
-        ValueRef::Timestamp(unit, v) => {
-            json!({"encoding": "timestamp", "unit": format!("{unit:?}"), "value": v.to_string()})
-        }
-        ValueRef::Time64(unit, v) => {
-            json!({"encoding": "time", "unit": format!("{unit:?}"), "value": v.to_string()})
-        }
+        ValueRef::Date32(v) => tagged([
+            ("encoding", json!("date")),
+            ("unit", json!("Day")),
+            ("value", json!(v.to_string())),
+        ]),
+        ValueRef::Timestamp(unit, v) => tagged([
+            ("encoding", json!("timestamp")),
+            ("unit", json!(unit_name(unit))),
+            ("value", json!(v.to_string())),
+        ]),
+        ValueRef::Time64(unit, v) => tagged([
+            ("encoding", json!("time")),
+            ("unit", json!(unit_name(unit))),
+            ("value", json!(v.to_string())),
+        ]),
         ValueRef::Interval {
             months,
             days,
@@ -140,6 +153,28 @@ fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
         | ValueRef::Union(..) => cli_owned(&Value::from(value))?,
         _ => anyhow::bail!("Unsupported result type; CAST the value to VARCHAR explicitly"),
     })
+}
+
+/// An encoded cell, built without the `json!` macro's per-call work: the map
+/// is sized up front (with `preserve_order` it is an `IndexMap`, whose growth
+/// reallocates both its table and its entries) and the unit is a static name
+/// rather than a `Debug` render. Tagged cells were ~5x the cost of plain ones.
+fn tagged<const N: usize>(fields: [(&'static str, serde_json::Value); N]) -> serde_json::Value {
+    let mut map = serde_json::Map::with_capacity(N);
+    for (key, value) in fields {
+        map.insert(key.to_owned(), value);
+    }
+    serde_json::Value::Object(map)
+}
+
+/// `TimeUnit`'s `Debug` name, which is what the encoding has always carried.
+fn unit_name(unit: TimeUnit) -> &'static str {
+    match unit {
+        TimeUnit::Second => "Second",
+        TimeUnit::Millisecond => "Millisecond",
+        TimeUnit::Microsecond => "Microsecond",
+        TimeUnit::Nanosecond => "Nanosecond",
+    }
 }
 
 fn cli_float(value: f64) -> serde_json::Value {
@@ -334,6 +369,7 @@ fn fraction(prefix: String, micros: u32) -> String {
 /// Two things a table cannot say are said under it instead: that the result had
 /// no rows, and that it was cut short. A preview read as a complete answer is
 /// the mistake worth spending a line on.
+#[hotpath::measure]
 pub fn format_markdown(result: &CliResult) -> String {
     use std::fmt::Write as _;
 
@@ -448,6 +484,7 @@ pub fn run(sql: &str) -> Result<QueryOutcome> {
     crate::db::with_connection(|conn| run_of(conn, sql))
 }
 
+#[hotpath::measure]
 pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
     let started = Instant::now();
     let mut stmt = conn.prepare(sql)?;
@@ -885,10 +922,19 @@ pub fn value_to_string(value: &Value) -> String {
     }
 }
 
+// Dates and timestamps are written field by field rather than through
+// chrono's `format("%Y-…")`, which parses the pattern and allocates on every
+// call: one allocation per cell instead of three, a third of the time. Years
+// outside 0..=9999 keep chrono's rendering (a sign, more digits).
 fn format_date(days: i32) -> String {
-    chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163)
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| format!("{days} days"))
+    use chrono::Datelike as _;
+    match chrono::NaiveDate::from_num_days_from_ce_opt(days + 719_163) {
+        Some(d) if (0..=9999).contains(&d.year()) => {
+            format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
+        }
+        Some(d) => d.format("%Y-%m-%d").to_string(),
+        None => format!("{days} days"),
+    }
 }
 
 fn format_float(v: f64) -> String {
@@ -901,9 +947,20 @@ fn format_float(v: f64) -> String {
 
 fn format_timestamp(unit: TimeUnit, v: i64) -> String {
     let micros = unit.to_micros(v);
-    chrono::DateTime::from_timestamp_micros(micros)
-        .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| v.to_string())
+    use chrono::{Datelike as _, Timelike as _};
+    match chrono::DateTime::from_timestamp_micros(micros) {
+        Some(t) if (0..=9999).contains(&t.year()) => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            t.year(),
+            t.month(),
+            t.day(),
+            t.hour(),
+            t.minute(),
+            t.second()
+        ),
+        Some(t) => t.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => v.to_string(),
+    }
 }
 
 fn format_time(unit: TimeUnit, v: i64) -> String {

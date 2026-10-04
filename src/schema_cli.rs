@@ -93,6 +93,7 @@ struct Relation {
     sheets: Option<Vec<String>>,
 }
 
+#[hotpath::measure]
 pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     let mut paths = Vec::new();
     let mut database = None;
@@ -283,6 +284,7 @@ fn names_match(relation: &Relation, wanted: &str) -> bool {
 
 /// A data file as a relation: its columns per DuckDB's reader, and its row
 /// count when the format keeps one.
+#[hotpath::measure]
 fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Relation {
     let shown = Path::new(file)
         .strip_prefix(cwd)
@@ -405,6 +407,7 @@ fn quote(name: &str) -> String {
     }
 }
 
+#[hotpath::measure]
 fn describe(connection: &duckdb::Connection, sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut statement = connection
         .prepare(&format!("DESCRIBE {sql}"))
