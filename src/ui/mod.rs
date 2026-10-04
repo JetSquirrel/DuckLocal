@@ -5,6 +5,8 @@ pub mod completion;
 pub mod geo;
 #[cfg(test)]
 mod language_toggle_tests;
+#[cfg(feature = "scroll-bench")]
+pub mod scroll_bench;
 pub mod results;
 pub mod scale;
 pub mod setup_dialog;

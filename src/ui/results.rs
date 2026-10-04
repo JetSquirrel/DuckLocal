@@ -71,11 +71,11 @@ const STEP_LABEL_CHARS: usize = 36;
 const INDEX_COLUMN_HEADER: &str = "#";
 /// How many leading columns sit in front of the data columns.
 const LEADING_COLUMNS: usize = 1;
-/// Per-cell copy buttons build their ElementId as `row * MAX_ID_COLUMNS +
+/// Per-cell ElementIds (the hover target and the copy button) are built as `row * MAX_ID_COLUMNS +
 /// col`, so a result set is assumed to never exceed this many columns.
 const MAX_ID_COLUMNS: usize = 10_000;
-/// Room the per-cell copy button takes beside the text; it is laid out even
-/// while hidden, so a fitted column must leave space for it.
+/// Room the per-cell copy button takes beside the text; every cell reserves
+/// it, hovered or not, so a fitted column must leave space for it.
 const COPY_BUTTON_WIDTH: f32 = 24.;
 
 /// Compact cell padding shared by header and body cells.
@@ -186,6 +186,9 @@ pub struct ResultTableDelegate {
     filter: String,
     /// Visible row -> source row. `None` = unfiltered (identity mapping).
     filtered: Option<Vec<usize>>,
+    /// The (visible row, column) under the pointer: the one cell that gets a
+    /// copy button. See `render_td`.
+    hovered: Option<(usize, usize)>,
 }
 
 impl ResultTableDelegate {
@@ -195,6 +198,7 @@ impl ResultTableDelegate {
             result: None,
             filter: String::new(),
             filtered: None,
+            hovered: None,
         }
     }
 
@@ -233,6 +237,8 @@ impl ResultTableDelegate {
     }
 
     fn set_filter(&mut self, filter: String) {
+        // Visible row indices are about to mean other rows.
+        self.hovered = None;
         self.filtered = filter_row_indices(self.rows(), &filter);
         self.filter = filter;
     }
@@ -338,9 +344,26 @@ impl TableDelegate for ResultTableDelegate {
             .unwrap_or_default()
             .into();
         let is_null = text == "NULL";
-        let group_name: SharedString = format!("td-{row_ix}-{col_ix}").into();
+        let id = row_ix * MAX_ID_COLUMNS + col_ix;
+        let hovered = self.hovered == Some((row_ix, col_ix));
 
-        base.group(group_name.clone())
+        // Only the hovered cell builds its copy button. A Button with its
+        // icon and tooltip in every visible cell, hidden until hover, was
+        // half of each scrolling frame on a wide result (60k x 30: 7.9 ms of
+        // draw, 3.9 ms without). The other cells keep the button's width so
+        // nothing reflows when the pointer arrives.
+        base.id(("cell", id))
+            .on_hover(cx.listener(move |table, hovering: &bool, _, cx| {
+                let delegate = table.delegate_mut();
+                if *hovering {
+                    delegate.hovered = Some((row_ix, col_ix));
+                } else if delegate.hovered == Some((row_ix, col_ix)) {
+                    delegate.hovered = None;
+                } else {
+                    return;
+                }
+                cx.notify();
+            }))
             .overflow_hidden()
             .child(
                 Label::new(text.clone())
@@ -351,24 +374,30 @@ impl TableDelegate for ResultTableDelegate {
                     .flex_1()
                     .min_w_0(),
             )
-            .child(
-                div()
-                    .id(("copy-wrapper", row_ix * MAX_ID_COLUMNS + col_ix))
-                    .opacity(0.)
-                    .group_hover(group_name, |style| style.opacity(1.))
-                    .flex_none()
-                    .on_click(|_, _, cx: &mut App| cx.stop_propagation())
-                    .child(
-                        Button::new(("copy-cell", row_ix * MAX_ID_COLUMNS + col_ix))
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Copy)
-                            .tooltip(tr("results.cell.copy"))
-                            .on_click(move |_, _, cx: &mut App| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
-                            }),
-                    ),
-            )
+            .when(!hovered, |this| {
+                // An icon-only `xsmall` button is `size_5`.
+                this.child(div().flex_none().w_5())
+            })
+            .when(hovered, |this| {
+                this.child(
+                    div()
+                        .id(("copy-wrapper", id))
+                        .flex_none()
+                        .on_click(|_, _, cx: &mut App| cx.stop_propagation())
+                        .child(
+                            Button::new(("copy-cell", id))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(tr("results.cell.copy"))
+                                .on_click(move |_, _, cx: &mut App| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        text.to_string(),
+                                    ));
+                                }),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }

@@ -50,6 +50,9 @@ hotpath = "0.28"
 hotpath = ["hotpath/hotpath"]
 hotpath-alloc = ["hotpath/hotpath-alloc"]
 hotpath-cpu = ["hotpath/hotpath-cpu"]
+# `ducklocal __scroll-bench`: scroll the results grid in a real window and
+# report GPUI's own frame timings. Never part of a release build.
+scroll-bench = []
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"
