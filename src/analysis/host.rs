@@ -214,9 +214,8 @@ pub fn query(sql: &str, limit: usize) -> anyhow::Result<HostValue> {
     let _in_flight = crate::app_export::capture::track_query();
     match crate::db::with_app_connection(|conn| run_cli_of(conn, sql, limit)) {
         Ok(result) => {
-            let value = query_value(&result);
             crate::app_export::capture::query(sql, limit, Ok(&result));
-            Ok(value)
+            Ok(query_value(result))
         }
         Err(error) => {
             // A statement that failed is worth recording: a report of an app
@@ -279,16 +278,18 @@ fn catalog_entry(database: &DatabaseInfo, table: &TableInfo) -> HostObject {
         .field("columns", columns)
 }
 
-fn query_value(result: &crate::query::CliResult) -> HostValue {
+/// Consumes the result: the cells move into the script values rather than
+/// being deep-copied, which for a 2M-cell result was most of the cost.
+fn query_value(result: crate::query::CliResult) -> HostValue {
     let columns = HostValue::Array(
         result
             .columns
-            .iter()
+            .into_iter()
             .map(|column| {
                 HostValue::from(
                     HostObject::new()
-                        .field("name", column.name.clone())
-                        .field("type", column.arrow_type.clone()),
+                        .field("name", column.name)
+                        .field("type", column.arrow_type),
                 )
             })
             .collect(),
@@ -296,10 +297,8 @@ fn query_value(result: &crate::query::CliResult) -> HostValue {
     let rows = HostValue::Array(
         result
             .rows
-            .iter()
-            .map(|row| {
-                HostValue::Array(row.iter().map(|cell| json_to_host(cell.clone())).collect())
-            })
+            .into_iter()
+            .map(|row| HostValue::Array(row.into_iter().map(json_to_host).collect()))
             .collect(),
     );
     HostValue::from(

@@ -42,6 +42,14 @@ getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 quick-xml = { version = "0.36", features = ["serialize"] }
 unicode-width = "0.2"
+# Profiler: every macro is a no-op and nothing is compiled in unless a
+# `hotpath*` feature is on (`cargo run --release --features hotpath,hotpath-alloc`).
+hotpath = "0.28"
+
+[features]
+hotpath = ["hotpath/hotpath"]
+hotpath-alloc = ["hotpath/hotpath-alloc"]
+hotpath-cpu = ["hotpath/hotpath-cpu"]
 
 [dev-dependencies]
 rust_xlsxwriter = "0.99"

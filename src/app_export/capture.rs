@@ -152,6 +152,11 @@ pub fn record(statement: Statement) {
 
 /// Record a `query()` call: the SQL, the limit, and the result or the failure.
 pub fn query(sql: &str, limit: usize, outcome: Result<&CliResult, String>) {
+    // Checked before the clone: a result is up to 2M cells, and outside an
+    // export nothing is recording, so the copy would be dropped unread.
+    if !RECORDING.load(Ordering::SeqCst) {
+        return;
+    }
     record(Statement::Query {
         sql: sql.to_string(),
         limit,

@@ -30,7 +30,13 @@ use crate::app::DuckLocalApp;
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    if let Some(code) = cli::dispatch(&args) {
+    // The guard prints the hotpath report when it drops, so it must drop
+    // before `process::exit`, which skips destructors.
+    let code = {
+        let _hotpath = hotpath::HotpathGuardBuilder::new("ducklocal::cli").build();
+        cli::dispatch(&args)
+    };
+    if let Some(code) = code {
         std::process::exit(code);
     }
 

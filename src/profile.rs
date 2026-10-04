@@ -171,6 +171,7 @@ fn branch(name: &str, data_type: &str, relation: &str) -> String {
 /// [`relation_of`] made of it. They are separate arguments because resolving a
 /// target is an argument question — a path that is not there is not a SQL
 /// error — and the caller answers that one before opening a connection.
+#[hotpath::measure]
 pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
     let started = std::time::Instant::now();
 

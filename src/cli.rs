@@ -490,6 +490,7 @@ pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+#[hotpath::measure]
 fn query(args: &[OsString]) -> Result<String, CliError> {
     let options = parse(args)?;
     let sql = match options.sql {
@@ -516,19 +517,28 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     let conn = open(options.database, options.read_write)?;
     let result = crate::query::run_cli_of(&conn, &sql, options.limit)
         .map_err(|e| CliError::failure("sql", e))?;
-    match options.format {
+    let output = match options.format {
         // Trailing newline is not part of the document; `dispatch` adds the
         // one line ending every output gets.
         Format::Markdown => Ok(crate::query::format_markdown(&result)
             .trim_end()
             .to_string()),
-        Format::Json => serde_json::to_string(&result).map_err(|e| CliError::failure("output", e)),
-    }
+        Format::Json => hotpath::measure_block!("cli::serialize_json", {
+            serde_json::to_string(&result)
+        })
+        .map_err(|e| CliError::failure("output", e)),
+    };
+    // The process exits right after printing. Freeing up to 2M cells one by
+    // one, each an object for a DECIMAL, DATE or TIMESTAMP, took as long as
+    // building them; the OS reclaims the memory at exit for free.
+    std::mem::forget(result);
+    output
 }
 
 /// The connection every subcommand runs on: its own, never the GUI's, with
 /// extension auto-installation off and a file database read-only unless the
 /// caller asked for writes.
+#[hotpath::measure]
 pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connection, CliError> {
     let config = Config::default()
         .with("autoinstall_known_extensions", "false")
