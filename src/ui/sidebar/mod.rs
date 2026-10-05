@@ -1,6 +1,7 @@
-//! Left sidebar: Schema / 查询历史 tabs. The schema page renders the catalog
-//! as a tree (数据库 → schema → 表/视图 → 列); the history page lists recent
-//! queries and refills the active editor on click.
+//! Left sidebar: Schema / 查询历史 / 扩展 tabs. The schema page renders the
+//! catalog as a tree (数据库 → schema → 表/视图 → 列); the history page lists
+//! recent queries and refills the active editor on click; the extensions
+//! page lists DuckDB's extensions and installs, loads or updates them.
 //!
 //! ```text
 //! src/ui/sidebar/model.rs    what each tree row is and can act on
@@ -8,9 +9,11 @@
 //! src/ui/sidebar/s3.rs       the lazy S3 browse tree and its async loads
 //! src/ui/sidebar/tree.rs     catalog + files + S3, as TreeItems
 //! src/ui/sidebar/actions.rs  refresh, remove-file, alter-type actions
+//! src/ui/sidebar/extensions.rs  the 扩展 page
 //! ```
 
 mod actions;
+mod extensions;
 mod model;
 mod s3;
 mod sql;
@@ -33,11 +36,12 @@ use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
 use crate::recents::{RecentDocument, RecentKind};
 use crate::state::{
-    format_rows, AppState, AttachedFilesChanged, CatalogChanged, HistoryChanged, RecentsChanged,
-    S3ConfigChanged,
+    format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged,
+    HistoryChanged, RecentsChanged, S3ConfigChanged,
 };
 use crate::ui::workspace::Workspace;
 
+use self::extensions::ExtensionList;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
 use self::sql::{select_column_sql, select_s3_file_sql, select_star_sql};
@@ -47,6 +51,7 @@ use self::tree::build_tree_items;
 enum SidebarTab {
     Schema,
     History,
+    Extensions,
 }
 
 const INDENT_PER_DEPTH: Pixels = px(16.);
@@ -64,6 +69,10 @@ pub struct Sidebar {
     /// A schema reload is in flight; the refresh button shows loading and
     /// repeat clicks are ignored until it finishes.
     refreshing_schema: bool,
+    extensions: ExtensionList,
+    /// The extension an install, load or update is running for; every
+    /// extension button waits while one is.
+    extension_busy: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -86,6 +95,14 @@ impl Sidebar {
                 cx.notify();
             }),
             cx.subscribe(&state, |_, _, _: &HistoryChanged, cx| cx.notify()),
+            // Another database is another engine instance, with its own
+            // loaded set.
+            cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
+                this.extensions = ExtensionList::NotLoaded;
+                if this.tab == SidebarTab::Extensions {
+                    this.reload_extensions(cx);
+                }
+            }),
             cx.subscribe(&state, |this, _, _: &AttachedFilesChanged, cx| {
                 this.rebuild_tree(cx);
                 cx.notify();
@@ -123,6 +140,8 @@ impl Sidebar {
             s3_browse,
             recents: Rc::new(crate::recents::list()),
             refreshing_schema: false,
+            extensions: ExtensionList::NotLoaded,
+            extension_busy: None,
             _subscriptions: subscriptions,
         }
     }
@@ -685,16 +704,22 @@ impl Render for Sidebar {
                         .selected_index(match self.tab {
                             SidebarTab::Schema => 0,
                             SidebarTab::History => 1,
+                            SidebarTab::Extensions => 2,
                         })
                         .on_click(cx.listener(|this, ix, _, cx| {
                             this.tab = match ix {
                                 0 => SidebarTab::Schema,
-                                _ => SidebarTab::History,
+                                1 => SidebarTab::History,
+                                _ => SidebarTab::Extensions,
                             };
+                            if this.tab == SidebarTab::Extensions {
+                                this.reload_extensions(cx);
+                            }
                             cx.notify();
                         }))
                         .child(Tab::new().label(tr("sidebar.tab.schema")))
-                        .child(Tab::new().label(tr("sidebar.tab.history"))),
+                        .child(Tab::new().label(tr("sidebar.tab.history")))
+                        .child(Tab::new().label(tr("sidebar.tab.extensions"))),
                 )
                 // The sidebar's own actions share the tabs' row, as borderless
                 // icon buttons: refresh while the schema is shown, and the
@@ -710,6 +735,17 @@ impl Render for Sidebar {
                             .loading(self.refreshing_schema)
                             .disabled(self.refreshing_schema)
                             .on_click(cx.listener(Self::refresh_schema)),
+                    )
+                })
+                .when(self.tab == SidebarTab::Extensions, |this| {
+                    this.child(
+                        Button::new("refresh-extensions")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::RotateCw)
+                            .tooltip(tr("sidebar.extensions.refresh"))
+                            .loading(matches!(self.extensions, ExtensionList::Loading))
+                            .on_click(cx.listener(|this, _, _, cx| this.reload_extensions(cx))),
                     )
                 })
                 .child(
@@ -729,6 +765,7 @@ impl Render for Sidebar {
             )
             .child(div().flex_1().min_h_0().child(match self.tab {
                 SidebarTab::Schema => self.render_schema(window, cx),
+                SidebarTab::Extensions => self.render_extensions(cx),
                 SidebarTab::History => {
                     if history.is_empty() {
                         v_flex()

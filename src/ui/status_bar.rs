@@ -5,6 +5,7 @@ use gpui_kit::component::separator::Separator;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{h_flex, ActiveTheme, Icon, IconName, Sizable};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
@@ -29,13 +30,25 @@ impl StatusBarView {
     }
 }
 
+/// The open file's storage format and creator, for the file label's tooltip.
+fn storage_note(server: &crate::db::ServerInfo) -> Option<String> {
+    let storage = server.storage.as_ref()?;
+    let mut note = trf("storage.tooltip", &[storage]);
+    if let Some(created_by) = &server.created_by {
+        note.push('\n');
+        note.push_str(&trf("storage.tooltip.created_by", &[created_by]));
+    }
+    Some(note)
+}
+
 impl Render for StatusBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (connected, target_label, version, last, opening, search_path) = {
+        let (connected, target_label, storage, version, last, opening, search_path) = {
             let state = self.state.read(cx);
             (
                 state.target.is_some(),
                 state.target.as_ref().and_then(|t| t.file_label()),
+                state.server.as_ref().and_then(storage_note),
                 state.server.as_ref().map(|s| s.version.clone()),
                 state.last_query.clone(),
                 state.is_opening(),
@@ -62,7 +75,19 @@ impl Render for StatusBarView {
                             .text_color(cx.theme().success),
                     )
                     .child(tr("status_bar.connected"))
-                    .children(target_label)
+                    .children(target_label.map(|label| {
+                        // Who else can read this file: what decides whether
+                        // it can be handed to a colleague on an older DuckDB.
+                        div()
+                            .id("database-file")
+                            .child(label)
+                            .when_some(storage, |this, note| {
+                                this.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(note.clone())
+                                        .build(window, cx)
+                                })
+                            })
+                    }))
                     .into_any_element()
             } else {
                 h_flex()

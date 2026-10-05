@@ -276,6 +276,7 @@ pub struct Workspace {
     next_tab_id: u64,
     running: bool,
     explaining: bool,
+    profiling: bool,
     /// Set once the user asks for the editor on a connection with no data yet,
     /// which is otherwise the first-run screen's job to keep out of the way.
     editor_shown: bool,
@@ -301,6 +302,7 @@ impl Workspace {
             next_tab_id: 1,
             running: false,
             explaining: false,
+            profiling: false,
             editor_shown: false,
             renaming: None,
             _rename_subscription: None,
@@ -990,7 +992,7 @@ impl Workspace {
     }
 
     pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.running || self.explaining {
+        if self.busy() {
             return;
         }
         let Some(query) = self.active_sql(cx) else {
@@ -1181,7 +1183,7 @@ impl Workspace {
     }
 
     fn explain_active(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.explaining || self.running {
+        if self.busy() {
             return;
         }
         let Some(query) = self.active_sql(cx) else {
@@ -1208,6 +1210,47 @@ impl Workspace {
                 }
                 query.results.update(cx, |results, cx| {
                     results.set_explain(result, window, cx);
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the window connection is already running something of ours.
+    fn busy(&self) -> bool {
+        self.running || self.explaining || self.profiling
+    }
+
+    fn profile_active(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() {
+            return;
+        }
+        let Some(query) = self.active_sql(cx) else {
+            return;
+        };
+        self.profiling = true;
+        query.squiggles.clear(cx);
+        query.fill.clear(cx);
+        query
+            .results
+            .update(cx, |results, cx| results.set_running(cx));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let profile_sql = query.sql.clone();
+            let result = smol::unblock(move || {
+                crate::db::with_connection(|conn| crate::query::profile_of(conn, &profile_sql))
+            })
+            .await;
+            this.update_in(cx, move |this, window, cx| {
+                this.profiling = false;
+                if let Err(error) = &result {
+                    Self::mark_sql_error(&query, 0..query.sql.len(), error, cx);
+                }
+                query.results.update(cx, |results, cx| {
+                    results.set_profile(result, window, cx);
                 });
                 cx.notify();
             })
@@ -1412,7 +1455,7 @@ impl Workspace {
             )
             // An accidental cross join can run for minutes; this ends it
             // rather than leaving the only way out to quit the app.
-            .when(self.running, |this| {
+            .when(self.running || self.profiling, |this| {
                 this.child(
                     Button::new("stop-query")
                         .outline()
@@ -1441,6 +1484,16 @@ impl Workspace {
                     .loading(self.explaining)
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
+            )
+            .child(
+                Button::new("profile-sql")
+                    .outline()
+                    .small()
+                    .icon(AssetIcon::Gauge)
+                    .label(tr("workspace.profile"))
+                    .loading(self.profiling)
+                    .tooltip(tr("workspace.profile.tooltip"))
+                    .on_click(cx.listener(Self::profile_active)),
             )
     }
 

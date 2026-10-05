@@ -667,6 +667,165 @@ pub fn explain_of(conn: &Connection, sql: &str) -> Result<(Vec<String>, u128)> {
     Ok((lines, started.elapsed().as_millis()))
 }
 
+/// One operator of a profiled plan, as `EXPLAIN ANALYZE` measured it.
+#[derive(Clone, Debug)]
+pub struct PlanNode {
+    pub name: String,
+    /// Time spent in this operator alone, in seconds — children excluded.
+    pub seconds: f64,
+    /// Rows the operator produced.
+    pub rows: u64,
+    /// The optimizer's guess at `rows`, where the plan states one. A guess
+    /// that is far off is the usual reason a join picked the wrong side.
+    pub estimated: Option<u64>,
+    /// The rest of DuckDB's `extra_info`: filters, projections, join keys.
+    pub details: Vec<(String, String)>,
+    pub children: Vec<PlanNode>,
+}
+
+/// A query run under `EXPLAIN ANALYZE`, its plan annotated with what each
+/// operator cost.
+#[derive(Clone, Debug)]
+pub struct QueryProfile {
+    /// Usually one tree; a plan whose root DuckDB does not name is split
+    /// into its children rather than shown as a nameless node.
+    pub roots: Vec<PlanNode>,
+    /// Sum of every operator's own time. Operators of one pipeline run
+    /// interleaved, so this is what the shares in the tree add up to, not
+    /// the wall clock.
+    pub operator_seconds: f64,
+    pub elapsed_ms: u128,
+}
+
+impl QueryProfile {
+    /// The operator that cost the most on its own.
+    pub fn hottest(&self) -> Option<&PlanNode> {
+        fn walk<'a>(node: &'a PlanNode, best: &mut Option<&'a PlanNode>) {
+            if best.is_none_or(|b| node.seconds > b.seconds) {
+                *best = Some(node);
+            }
+            for child in &node.children {
+                walk(child, best);
+            }
+        }
+        let mut best = None;
+        for root in &self.roots {
+            walk(root, &mut best);
+        }
+        best
+    }
+}
+
+/// Run `sql` under `EXPLAIN (ANALYZE, FORMAT JSON)` and read back the
+/// per-operator profile.
+///
+/// The statement really runs — that is how its operators get timed — so
+/// only statements that read are profiled: an `UPDATE` profiled to see why
+/// it is slow would also have updated.
+pub fn profile_of(conn: &Connection, sql: &str) -> Result<QueryProfile> {
+    let trimmed = sql.trim().trim_end_matches(';');
+    // `CALL` and `PRAGMA` return rows but may also change settings or data;
+    // `EXPLAIN` of an `EXPLAIN` profiles nothing the user wrote.
+    let keyword = keyword_of(trimmed);
+    if !returns_rows(trimmed) || matches!(keyword.as_str(), "call" | "pragma" | "explain") {
+        anyhow::bail!(crate::i18n::tr("query.profile.read_only"));
+    }
+    let started = Instant::now();
+    let mut stmt = conn.prepare(&format!("EXPLAIN (ANALYZE, FORMAT JSON) {trimmed}"))?;
+    let mut rows = stmt.query([])?;
+    let mut json = None;
+    while let Some(row) = rows.next()? {
+        // (explain_key, explain_value): the value holds the JSON profile.
+        if let Ok(text) = row.get::<_, String>(1) {
+            json = Some(text);
+        }
+    }
+    let elapsed_ms = started.elapsed().as_millis();
+    let json = json.ok_or_else(|| anyhow::anyhow!("EXPLAIN ANALYZE returned no profile"))?;
+    parse_profile(&json, elapsed_ms)
+}
+
+fn parse_profile(json: &str, elapsed_ms: u128) -> Result<QueryProfile> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let roots = plan_nodes(&value);
+    let operator_seconds = roots.iter().map(subtree_seconds).sum();
+    Ok(QueryProfile {
+        roots,
+        operator_seconds,
+        elapsed_ms,
+    })
+}
+
+fn subtree_seconds(node: &PlanNode) -> f64 {
+    node.seconds + node.children.iter().map(subtree_seconds).sum::<f64>()
+}
+
+/// The operators under `value`. The profile's root is the query itself and
+/// its first child the `EXPLAIN_ANALYZE` wrapper; neither is part of the
+/// plan the user wrote, so both give way to their children.
+fn plan_nodes(value: &serde_json::Value) -> Vec<PlanNode> {
+    let children = || -> Vec<PlanNode> {
+        value
+            .get("children")
+            .and_then(|c| c.as_array())
+            .map(|c| c.iter().flat_map(plan_nodes).collect())
+            .unwrap_or_default()
+    };
+    let name = value
+        .get("operator_name")
+        .or_else(|| value.get("operator_type"))
+        .and_then(|n| n.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if name.is_empty() || name == "EXPLAIN_ANALYZE" {
+        return children();
+    }
+    let number = |key: &str| value.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let mut estimated = None;
+    let mut details = Vec::new();
+    if let Some(extra) = value.get("extra_info").and_then(|e| e.as_object()) {
+        for (key, item) in extra {
+            let text = match item {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|i| {
+                        i.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| i.to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                other => other.to_string(),
+            };
+            if key == "Estimated Cardinality" {
+                estimated = text.trim().parse().ok();
+            } else if !text.is_empty() {
+                details.push((key.clone(), text));
+            }
+        }
+    }
+    vec![PlanNode {
+        name: name.to_string(),
+        seconds: number("operator_timing"),
+        rows: number("operator_cardinality") as u64,
+        estimated,
+        details,
+        children: children(),
+    }]
+}
+
+/// Format an operator's time, which is often well under a millisecond.
+pub fn format_seconds(seconds: f64) -> String {
+    if seconds < 0.001 {
+        format!("{:.0} µs", seconds * 1_000_000.0)
+    } else if seconds < 1.0 {
+        format!("{:.1} ms", seconds * 1000.0)
+    } else {
+        format!("{seconds:.2} s")
+    }
+}
+
 /// Export a query as CSV or Parquet via DuckDB `COPY`.
 pub fn export(sql: &str, path: &str, format: ExportFormat) -> Result<()> {
     crate::db::with_connection(|conn| export_of(conn, sql, path, format))
@@ -713,20 +872,8 @@ pub fn export_of(conn: &Connection, sql: &str, path: &str, format: ExportFormat)
 /// DuckDB returns a `Count` column for DDL/DML run through `query`, so we
 /// decide by the leading keyword instead (leading line comments skipped).
 fn returns_rows(sql: &str) -> bool {
-    let mut rest = sql.trim_start();
-    while let Some(after) = rest.strip_prefix("--") {
-        rest = after
-            .find('\n')
-            .map(|ix| after[ix + 1..].trim_start())
-            .unwrap_or("");
-    }
-    let keyword: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_lowercase();
     matches!(
-        keyword.as_str(),
+        keyword_of(sql).as_str(),
         "select"
             | "with"
             | "show"
@@ -741,6 +888,21 @@ fn returns_rows(sql: &str) -> bool {
             | "pivot"
             | "call"
     )
+}
+
+/// The statement's leading keyword, lowercased, leading line comments skipped.
+fn keyword_of(sql: &str) -> String {
+    let mut rest = sql.trim_start();
+    while let Some(after) = rest.strip_prefix("--") {
+        rest = after
+            .find('\n')
+            .map(|ix| after[ix + 1..].trim_start())
+            .unwrap_or("");
+    }
+    rest.chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// Keywords whose presence means the statement may have changed what the
@@ -1069,6 +1231,80 @@ mod tests {
             error_byte_range("select 1", "Parser Error: ...\n\nLINE 9: select 1\n               ^"),
             None
         );
+    }
+
+    #[test]
+    fn profile_times_each_operator_of_the_plan() {
+        let conn = mem();
+        conn.execute_batch(
+            "CREATE TABLE t AS SELECT range AS i, range % 7 AS g FROM range(100000)",
+        )
+        .unwrap();
+        let profile = profile_of(
+            &conn,
+            "SELECT g, count(*) FROM t WHERE i > 10 GROUP BY g ORDER BY g;",
+        )
+        .unwrap();
+        // The query and EXPLAIN_ANALYZE wrappers are not part of the plan.
+        assert_eq!(profile.roots.len(), 1);
+        fn names(node: &PlanNode, out: &mut Vec<String>) {
+            out.push(node.name.clone());
+            node.children.iter().for_each(|c| names(c, out));
+        }
+        let mut all = Vec::new();
+        names(&profile.roots[0], &mut all);
+        assert!(!all.iter().any(|n| n == "EXPLAIN_ANALYZE"), "{all:?}");
+        assert!(all.iter().any(|n| n.contains("SCAN")), "{all:?}");
+        assert!(all.iter().any(|n| n.contains("GROUP_BY")), "{all:?}");
+        assert!(profile.operator_seconds > 0.0);
+        assert!(profile.hottest().is_some());
+        // The aggregate produces one row per group.
+        fn find<'a>(node: &'a PlanNode, name: &str) -> Option<&'a PlanNode> {
+            if node.name.contains(name) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|c| find(c, name))
+        }
+        assert_eq!(find(&profile.roots[0], "GROUP_BY").unwrap().rows, 7);
+    }
+
+    #[test]
+    fn profile_refuses_statements_that_write() {
+        let conn = mem();
+        conn.execute_batch("CREATE TABLE t(i INTEGER)").unwrap();
+        for sql in [
+            "INSERT INTO t VALUES (1)",
+            "DELETE FROM t",
+            "CALL pragma_version()",
+            "EXPLAIN SELECT 1",
+        ] {
+            assert!(profile_of(&conn, sql).is_err(), "{sql}");
+        }
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn profile_reads_estimates_and_details() {
+        let json = r#"{"children":[{"operator_name":"EXPLAIN_ANALYZE","children":[
+            {"operator_name":"FILTER","operator_timing":0.002,"operator_cardinality":5,
+             "extra_info":{"Expression":"(i > 10)","Estimated Cardinality":"400"},
+             "children":[{"operator_name":"TABLE_SCAN","operator_timing":0.01,
+             "operator_cardinality":400,"extra_info":{"Projections":["i","g"]},"children":[]}]}]}]}"#;
+        let profile = parse_profile(json, 3).unwrap();
+        let filter = &profile.roots[0];
+        assert_eq!(filter.name, "FILTER");
+        assert_eq!(filter.estimated, Some(400));
+        assert_eq!(
+            filter.details,
+            vec![("Expression".into(), "(i > 10)".into())]
+        );
+        let scan = &filter.children[0];
+        assert_eq!(scan.details, vec![("Projections".into(), "i, g".into())]);
+        assert!((profile.operator_seconds - 0.012).abs() < 1e-9);
+        assert_eq!(profile.hottest().unwrap().name, "TABLE_SCAN");
     }
 
     #[test]

@@ -22,7 +22,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
-use crate::query::{ColumnKind, ExportFormat, QueryOutcome, QueryResult};
+use crate::query::{ColumnKind, ExportFormat, PlanNode, QueryOutcome, QueryProfile, QueryResult};
 use crate::ui::chart::{ChartData, ChartKind, ChartPanel};
 use crate::ui::RUN_QUERY_KEYSTROKE;
 use gpui_kit::assets::IconName as AssetIconName;
@@ -46,6 +46,7 @@ enum ResultView {
         lines: Vec<String>,
         elapsed_ms: u128,
     },
+    Profile(Rc<QueryProfile>),
 }
 
 /// What one statement of a run script left to show.
@@ -457,6 +458,23 @@ impl ResultsPanel {
                 "plan": lines,
                 "elapsed_ms": elapsed_ms,
             }),
+            ResultView::Profile(profile) => {
+                fn node(n: &PlanNode) -> serde_json::Value {
+                    json!({
+                        "operator": n.name,
+                        "seconds": n.seconds,
+                        "rows": n.rows,
+                        "estimated": n.estimated,
+                        "children": n.children.iter().map(node).collect::<Vec<_>>(),
+                    })
+                }
+                json!({
+                    "status": "profile",
+                    "plan": profile.roots.iter().map(node).collect::<Vec<_>>(),
+                    "operator_seconds": profile.operator_seconds,
+                    "elapsed_ms": profile.elapsed_ms,
+                })
+            }
         };
         if let Some(sql) = &self.rows_sql {
             summary["sql"] = json!(sql);
@@ -670,6 +688,21 @@ impl ResultsPanel {
         self.chart_data = None;
         self.view = match result {
             Ok((lines, elapsed_ms)) => ResultView::Explain { lines, elapsed_ms },
+            Err(e) => ResultView::Failed(e.to_string()),
+        };
+        self.tab = ResultsTab::Table;
+        cx.notify();
+    }
+
+    pub fn set_profile(
+        &mut self,
+        result: anyhow::Result<QueryProfile>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.chart_data = None;
+        self.view = match result {
+            Ok(profile) => ResultView::Profile(Rc::new(profile)),
             Err(e) => ResultView::Failed(e.to_string()),
         };
         self.tab = ResultsTab::Table;
@@ -998,6 +1031,7 @@ impl ResultsPanel {
                         .into_any_element(),
                 )
                 .into_any_element(),
+            ResultView::Profile(profile) => render_profile(profile, cx),
         }
     }
 
@@ -1132,6 +1166,173 @@ fn shown_clone(shown: &Shown) -> Shown {
 }
 
 /// Shared "query running" placeholder, used by both the table and chart tabs.
+/// Widest a time bar gets: the operator that took every second of the query.
+const PROFILE_BAR_WIDTH: f32 = 96.;
+/// How far each level of the plan tree is indented.
+const PROFILE_INDENT: f32 = 16.;
+/// An estimate this many times off the real row count, either way, is
+/// flagged: that is the size of miss that makes a join build on the
+/// wrong side.
+const MISESTIMATE_FACTOR: f64 = 10.;
+
+/// The plan tree, one line per operator: its own time as a share of the
+/// query, the rows it produced against the optimizer's estimate, and what
+/// it did (filters, keys, projections) beneath.
+fn render_profile(profile: &QueryProfile, cx: &mut Context<ResultsPanel>) -> AnyElement {
+    let mut lines = Vec::new();
+    for root in &profile.roots {
+        flatten_plan(root, 0, &mut lines);
+    }
+    let total = profile.operator_seconds.max(f64::EPSILON);
+    let hottest = profile.hottest().map(|n| n as *const PlanNode);
+    let hottest_label = profile.hottest().map(|n| {
+        trf(
+            "results.profile.hottest",
+            &[&n.name, &crate::query::format_seconds(n.seconds)],
+        )
+    });
+
+    let rows = lines.into_iter().enumerate().map(|(ix, (depth, node))| {
+        let share = (node.seconds / total).clamp(0., 1.) as f32;
+        let is_hottest = hottest == Some(node as *const PlanNode);
+        let bar_color = if is_hottest {
+            cx.theme().danger
+        } else {
+            cx.theme().primary
+        };
+        let misestimated = node.estimated.is_some_and(|est| {
+            let (a, b) = (est.max(1) as f64, node.rows.max(1) as f64);
+            a / b > MISESTIMATE_FACTOR || b / a > MISESTIMATE_FACTOR
+        });
+        v_flex()
+            .id(("profile-node", ix))
+            .py_1()
+            .pl(px(depth as f32 * PROFILE_INDENT))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .w(px(PROFILE_BAR_WIDTH))
+                            .h(px(6.))
+                            .flex_none()
+                            .rounded_sm()
+                            .bg(cx.theme().border)
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_sm()
+                                    .w(px(PROFILE_BAR_WIDTH * share))
+                                    .bg(bar_color),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(64.))
+                            .flex_none()
+                            .text_right()
+                            .when(is_hottest, |d| d.text_color(cx.theme().danger))
+                            .child(crate::query::format_seconds(node.seconds)),
+                    )
+                    .child(
+                        div()
+                            .font_semibold()
+                            .when(is_hottest, |d| d.text_color(cx.theme().danger))
+                            .child(node.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(trf("results.profile.rows", &[&group_digits(node.rows)])),
+                    )
+                    .when_some(node.estimated, |row, est| {
+                        row.child(
+                            div()
+                                .id(("profile-est", ix))
+                                .text_color(if misestimated {
+                                    cx.theme().warning
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(trf("results.profile.estimated", &[&group_digits(est)]))
+                                .when(misestimated, |d| {
+                                    d.tooltip(|window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(tr(
+                                            "results.profile.misestimate",
+                                        ))
+                                        .build(window, cx)
+                                    })
+                                }),
+                        )
+                    }),
+            )
+            .children(node.details.iter().map(|(key, value)| {
+                div()
+                    .pl(px(PROFILE_BAR_WIDTH + 64. + 24.))
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(format!("{key}: {}", value.replace('\n', " ")))
+            }))
+    });
+
+    v_flex()
+        .size_full()
+        .child(
+            h_flex()
+                .px_3()
+                .py_2()
+                .gap_3()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(trf(
+                    "results.profile.summary",
+                    &[
+                        &crate::state::format_duration(profile.elapsed_ms as i64),
+                        &crate::query::format_seconds(profile.operator_seconds),
+                    ],
+                ))
+                .when_some(hottest_label, |row, label| {
+                    row.child(div().text_color(cx.theme().danger).child(label))
+                }),
+        )
+        .child(
+            v_flex()
+                .id("profile-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px_3()
+                .pb_3()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_xs()
+                .children(rows),
+        )
+        .into_any_element()
+}
+
+/// The plan in reading order, each operator with its depth in the tree.
+fn flatten_plan<'a>(node: &'a PlanNode, depth: usize, out: &mut Vec<(usize, &'a PlanNode)>) {
+    out.push((depth, node));
+    for child in &node.children {
+        flatten_plan(child, depth + 1, out);
+    }
+}
+
+/// `1234567` → `1,234,567`.
+fn group_digits(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (ix, ch) in digits.chars().enumerate() {
+        if ix > 0 && (digits.len() - ix).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn running_state(cx: &mut Context<ResultsPanel>) -> AnyElement {
     v_flex()
         .size_full()
@@ -1260,5 +1461,71 @@ mod tests {
         assert_eq!(fit_column_width("n", &rows, 1, 0.), MAX_FIT_WIDTH);
         // The header alone can widen a column of short values.
         assert!(fit_column_width("a_rather_long_header", &rows, 0, 0.) > MIN_FIT_WIDTH);
+    }
+}
+
+#[cfg(test)]
+mod profile_render_tests {
+    use gpui_kit::component::{Theme, ThemeMode};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{
+        px, size, AppContext, Bounds, Point, TestAppContext, WindowBounds, WindowOptions,
+    };
+
+    use super::ResultsPanel;
+
+    /// A real profile paints, and the panel's state summary — what
+    /// `ducklocal open --state` hands an agent — carries every operator.
+    #[gpui_kit::test]
+    fn a_profile_paints_and_reports_every_operator(cx: &mut TestAppContext) {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t AS SELECT range AS i, range % 7 AS g FROM range(50000)")
+            .unwrap();
+        let profile = crate::query::profile_of(
+            &conn,
+            "SELECT g, count(*) FROM t WHERE i > 10 GROUP BY g ORDER BY g",
+        )
+        .unwrap();
+        fn count(node: &crate::query::PlanNode) -> usize {
+            1 + node.children.iter().map(count).sum::<usize>()
+        }
+        let operators: usize = profile.roots.iter().map(count).sum();
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let (window, panel) = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1024.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| cx.new(|cx| ResultsPanel::new(window, cx)),
+                )
+            })
+            .expect("open test window");
+
+        cx.update_window(window, |_, window, cx| {
+            panel.update(cx, |panel, cx| panel.set_profile(Ok(profile), window, cx));
+            // Paints the tree: bars, estimates, details, the hottest line.
+            window.render_frame(cx);
+            let summary = panel.read(cx).summary();
+            assert_eq!(summary["status"], "profile");
+            fn count_json(node: &serde_json::Value) -> usize {
+                1 + node["children"]
+                    .as_array()
+                    .map_or(0, |c| c.iter().map(count_json).sum())
+            }
+            let plan = summary["plan"].as_array().unwrap();
+            assert_eq!(plan.iter().map(count_json).sum::<usize>(), operators);
+        })
+        .unwrap();
     }
 }

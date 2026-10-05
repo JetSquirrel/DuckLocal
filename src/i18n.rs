@@ -113,6 +113,12 @@ pub fn trf(key: &'static str, args: &[&str]) -> String {
     format_template(tr(key), args)
 }
 
+/// [`trf`] in a given language rather than the UI's: the CLI speaks English
+/// whatever the window does.
+pub fn trf_in(lang: Language, key: &'static str, args: &[&str]) -> String {
+    format_template(translate(lang, key), args)
+}
+
 fn format_template(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -138,6 +144,20 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/sidebar.rs ───────────────────────────────────────────────
     ("sidebar.tab.schema", "表结构", "Schema"),
     ("sidebar.tab.history", "查询历史", "History"),
+    ("sidebar.tab.extensions", "扩展", "Extensions"),
+    ("sidebar.extensions.refresh", "刷新扩展列表", "Refresh extensions"),
+    ("sidebar.extensions.loading", "正在读取扩展…", "Reading extensions…"),
+    ("sidebar.extensions.status.loaded", "已加载", "Loaded"),
+    ("sidebar.extensions.status.installed", "已安装", "Installed"),
+    ("sidebar.extensions.status.available", "未安装", "Not installed"),
+    ("sidebar.extensions.origin.builtin", "内置", "built in"),
+    ("sidebar.extensions.install", "安装", "Install"),
+    ("sidebar.extensions.load", "加载", "Load"),
+    ("sidebar.extensions.update", "更新", "Update"),
+    ("sidebar.extensions.installed_notice", "已安装 {}", "Installed {}"),
+    ("sidebar.extensions.loaded_notice", "已加载 {}", "Loaded {}"),
+    ("sidebar.extensions.updated_notice", "已更新 {}", "Updated {}"),
+    ("sidebar.extensions.failed", "{} 操作失败：{}", "{} failed: {}"),
     ("sidebar.refresh_schema", "刷新 Schema", "Refresh schema"),
     ("sidebar.collapse", "收起侧栏", "Hide sidebar"),
     ("sidebar.expand", "展开侧栏", "Show sidebar"),
@@ -200,6 +220,19 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("results.affected", "完成 · {} 行受影响 · 耗时 {}", "Done · {} rows affected · took {}"),
     ("results.failed.title", "查询失败", "Query failed"),
     ("results.explain.elapsed", "EXPLAIN · 耗时 {}", "EXPLAIN · took {}"),
+    (
+        "results.profile.summary",
+        "性能分析 · 总耗时 {} · 算子合计 {}",
+        "Profile · took {} · operators {}",
+    ),
+    ("results.profile.hottest", "最耗时：{}（{}）", "Hottest: {} ({})"),
+    ("results.profile.rows", "{} 行", "{} rows"),
+    ("results.profile.estimated", "预估 {}", "est. {}"),
+    (
+        "results.profile.misestimate",
+        "预估与实际相差超过 10 倍",
+        "Estimate off by more than 10×",
+    ),
     ("results.empty.title", "运行查询以查看结果", "Run a query to see results"),
     ("results.script.count", "{} 条语句", "{} statements"),
     ("results.script.rows", "{} 行", "{} rows"),
@@ -413,6 +446,17 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
+    ("workspace.profile", "性能分析", "Profile"),
+    (
+        "workspace.profile.tooltip",
+        "运行查询并查看每个算子的耗时（EXPLAIN ANALYZE）",
+        "Run the query and see what each operator cost (EXPLAIN ANALYZE)",
+    ),
+    (
+        "query.profile.read_only",
+        "只能分析读取数据的语句（SELECT、WITH、FROM 等）：分析会真正执行语句。",
+        "Only statements that read can be profiled (SELECT, WITH, FROM…): profiling runs the statement.",
+    ),
     ("workspace.rename.tooltip", "双击重命名", "Double-click to rename"),
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
     (
@@ -518,6 +562,33 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("script.dot.no_args", "{} 不接受参数", "{} takes no arguments"),
     ("script.dot.too_many_args", "{} 最多接受一个模式参数", "{} takes at most one pattern"),
 
+    // ── src/storage.rs ──────────────────────────────────────────────────
+    (
+        "storage.too_new",
+        "这个数据库文件由 DuckDB {} 创建，用的存储格式比 DuckLocal 内置的 DuckDB {} 更新，所以打不开。\n\n用创建它的那个版本的 DuckDB 把它复制成兼容格式，再打开新文件：\n\nATTACH {} AS src (READ_ONLY);\nATTACH 'compat.duckdb' AS dst (STORAGE_VERSION '{}');\nCOPY FROM DATABASE src TO dst;",
+        "This database was created by DuckDB {}, in a storage format newer than DuckLocal's built-in DuckDB {} can read.\n\nCopy it into a compatible format with the DuckDB that created it, then open the copy:\n\nATTACH {} AS src (READ_ONLY);\nATTACH 'compat.duckdb' AS dst (STORAGE_VERSION '{}');\nCOPY FROM DATABASE src TO dst;",
+    ),
+    (
+        "storage.too_old",
+        "这个数据库文件来自 DuckDB v0.9 或更早的版本，DuckDB {} 已经读不了这种存储格式。\n\n用原来的 DuckDB 版本执行 EXPORT DATABASE 'dir'，再在这里用 IMPORT DATABASE 'dir' 导入。",
+        "This database comes from DuckDB v0.9 or earlier, a storage format DuckDB {} no longer reads.\n\nRun EXPORT DATABASE 'dir' with the DuckDB that wrote it, then IMPORT DATABASE 'dir' here.",
+    ),
+    (
+        "storage.sqlite",
+        "这是 SQLite 数据库，不是 DuckDB 文件。可以在查询里附加它来读取：\n\nINSTALL sqlite;\nATTACH {} (TYPE sqlite);",
+        "This is a SQLite database, not a DuckDB file. Attach it in a query to read it:\n\nINSTALL sqlite;\nATTACH {} (TYPE sqlite);",
+    ),
+    (
+        "storage.not_duckdb",
+        "这个文件不是 DuckDB 数据库文件。CSV、Parquet、JSON、Excel 文件请用“打开数据”作为数据文件附加。",
+        "This file is not a DuckDB database. Open CSV, Parquet, JSON or Excel files as data files instead.",
+    ),
+    (
+        "storage.tooltip",
+        "存储格式：DuckDB {} 可读",
+        "Storage format: readable by DuckDB {}",
+    ),
+    ("storage.tooltip.created_by", "由 DuckDB {} 创建", "Created by DuckDB {}"),
     // ── src/ui/status_bar.rs ────────────────────────────────────────────
     ("status_bar.connected", "已连接", "Connected"),
     (

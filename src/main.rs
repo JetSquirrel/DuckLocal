@@ -5,6 +5,7 @@ mod assets;
 mod cli;
 mod db;
 mod excel;
+mod extensions;
 mod history;
 mod i18n;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod setup;
 mod sources;
 mod spec;
 mod state;
+mod storage;
 mod ui;
 
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};

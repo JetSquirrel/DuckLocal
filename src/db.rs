@@ -128,7 +128,14 @@ pub fn open_file(path: &str) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    replace(Some(Connection::open(&expanded)?))
+    let connection = Connection::open(&expanded).map_err(|e| {
+        anyhow!(crate::storage::explain_error(
+            &expanded,
+            e,
+            crate::i18n::current()
+        ))
+    })?;
+    replace(Some(connection))
 }
 
 /// Open an in-memory database, replacing any current connection.
@@ -227,11 +234,35 @@ pub(crate) fn connection_guard() -> std::sync::MutexGuard<'static, ()> {
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
     pub version: String,
+    /// For a file database: the oldest DuckDB that reads it (`v1.0.0+`).
+    pub storage: Option<String>,
+    /// For a file database: the DuckDB that created it, where its header
+    /// says.
+    pub created_by: Option<String>,
 }
 
 pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
     let version: String = conn.query_row("SELECT version()", [], |r| r.get(0))?;
-    Ok(ServerInfo { version })
+    let (path, storage): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT path, tags['storage_version'] FROM duckdb_databases() \
+             WHERE database_name = current_database()",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
+    let created_by = path
+        .and_then(|path| crate::storage::file_kind(&path))
+        .and_then(|kind| match kind {
+            crate::storage::FileKind::Duckdb { created_by, .. } => created_by,
+            _ => None,
+        });
+    Ok(ServerInfo {
+        version,
+        storage,
+        created_by,
+    })
 }
 
 pub fn server_info() -> Result<ServerInfo> {
