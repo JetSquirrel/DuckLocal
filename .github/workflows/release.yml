@@ -78,6 +78,9 @@ jobs:
         env:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          # The Quick Look engine builds for the same target as the app
+          # above, so it reuses that DuckDB build.
+          RUST_TARGET: aarch64-apple-darwin
         run: |
           VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           scripts/package-macos.sh \

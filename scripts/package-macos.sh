@@ -125,8 +125,10 @@ plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
 # hardened runtime's library validation rejects any library not signed by
 # the same team. See scripts/entitlements.plist.
 #
-# Inside out, and no `--deep`: Apple discourages it, and the only nested
-# code here is the main executable.
+# Inside out, and no `--deep`: Apple discourages it. The nested code is the
+# main executable and the Quick Look extension, which build-quicklook.sh
+# signs with its own sandbox entitlements — never this file's: an app
+# extension must be sandboxed, and the app itself is not.
 # ---------------------------------------------------------------------------
 
 sign() {
@@ -140,6 +142,7 @@ sign_app() {
     --sign "$MACOS_SIGN_IDENTITY" "$1"
 }
 
+scripts/build-quicklook.sh "$APP" "$MACOS_SIGN_IDENTITY"
 sign_app "$APP/Contents/MacOS/$EXECUTABLE"
 sign_app "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"

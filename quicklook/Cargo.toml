@@ -1,0 +1,16 @@
+[package]
+name = "ducklocal-quicklook"
+version = "0.1.0"
+edition = "2021"
+description = "The Finder Quick Look preview for DuckLocal: a data file's first rows, as HTML"
+license = "Apache-2.0"
+publish = false
+
+# A static library for the Swift preview extension to link: the extension is
+# its own sandboxed process and cannot call into the app.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# The same DuckDB as the app, from the same lockfile, so it is built once.
+duckdb = { version = "1", features = ["bundled", "json", "parquet"] }

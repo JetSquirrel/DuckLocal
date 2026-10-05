@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- What Xcode writes into every bundle it builds. ExtensionFoundation
+	     reads the platform keys when it connects to the extension, and an
+	     extension without them is not launched. -->
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>DTPlatformName</key>
+	<string>macosx</string>
+	<key>CFBundleName</key>
+	<string>DuckLocal Preview</string>
+	<key>CFBundleDisplayName</key>
+	<string>DuckLocal Preview</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.ducklocal.app.preview</string>
+	<key>CFBundleExecutable</key>
+	<string>DuckLocalPreview</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.quicklook.preview</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>DuckLocalPreview.PreviewProvider</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>QLIsDataBasedPreview</key>
+			<true/>
+			<key>QLSupportsSearchableItems</key>
+			<false/>
+			<!-- Parquet and DuckDB files have no preview on a Mac without
+			     this; CSV, TSV and JSON Lines get a table instead of raw
+			     text. Plain JSON is left alone: most of it is configuration,
+			     not rows. The two DuckLocal-declared types come from the
+			     host app's Info.plist. -->
+			<key>QLSupportedContentTypes</key>
+			<array>
+				<string>org.apache.parquet</string>
+				<string>org.duckdb.database</string>
+				<string>public.comma-separated-values-text</string>
+				<string>public.tab-separated-values-text</string>
+				<string>org.jsonlines</string>
+			</array>
+		</dict>
+	</dict>
+</dict>
+</plist>

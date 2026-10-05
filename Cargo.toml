@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["duckdb", "sql", "parquet", "csv", "analytics"]
 categories = ["database", "gui"]
 
+# The Quick Look preview's engine lives beside the app, sharing its lockfile
+# and build cache; a plain `cargo build` still builds only the app.
+[workspace]
+members = ["quicklook"]
+
 [dependencies]
 # One dependency graph: the UI toolkit, the scriptable-shell runtime and the
 # component catalog all come from the same release tag. Mixing the

@@ -26,8 +26,10 @@ jobs:
       - name: Check dependency pinning
         run: ./scripts/check-deps.sh
 
+      # --workspace: the Quick Look engine (quicklook/) is a crate of its
+      # own, and a plain `cargo test` covers only the app.
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked --workspace
 
   build:
     # The release ships Linux and Windows builds too; nothing else compiles
