@@ -200,6 +200,19 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("results.affected", "完成 · {} 行受影响 · 耗时 {}", "Done · {} rows affected · took {}"),
     ("results.failed.title", "查询失败", "Query failed"),
     ("results.explain.elapsed", "EXPLAIN · 耗时 {}", "EXPLAIN · took {}"),
+    (
+        "results.profile.summary",
+        "性能分析 · 总耗时 {} · 算子合计 {}",
+        "Profile · took {} · operators {}",
+    ),
+    ("results.profile.hottest", "最耗时：{}（{}）", "Hottest: {} ({})"),
+    ("results.profile.rows", "{} 行", "{} rows"),
+    ("results.profile.estimated", "预估 {}", "est. {}"),
+    (
+        "results.profile.misestimate",
+        "预估与实际相差超过 10 倍",
+        "Estimate off by more than 10×",
+    ),
     ("results.empty.title", "运行查询以查看结果", "Run a query to see results"),
     ("results.script.count", "{} 条语句", "{} statements"),
     ("results.script.rows", "{} 行", "{} rows"),
@@ -413,6 +426,17 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
+    ("workspace.profile", "性能分析", "Profile"),
+    (
+        "workspace.profile.tooltip",
+        "运行查询并查看每个算子的耗时（EXPLAIN ANALYZE）",
+        "Run the query and see what each operator cost (EXPLAIN ANALYZE)",
+    ),
+    (
+        "query.profile.read_only",
+        "只能分析读取数据的语句（SELECT、WITH、FROM 等）：分析会真正执行语句。",
+        "Only statements that read can be profiled (SELECT, WITH, FROM…): profiling runs the statement.",
+    ),
     ("workspace.rename.tooltip", "双击重命名", "Double-click to rename"),
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
     (
