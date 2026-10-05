@@ -20,6 +20,11 @@ impl Sidebar {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.refresh_catalog(cx);
+    }
+
+    /// Reload the catalog and the registered files from the database.
+    pub(super) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
         if self.refreshing_schema {
             return;
         }

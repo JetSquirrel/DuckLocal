@@ -5,6 +5,7 @@ mod assets;
 mod cli;
 mod db;
 mod excel;
+mod extensions;
 mod history;
 mod i18n;
 #[cfg(test)]
