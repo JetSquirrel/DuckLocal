@@ -22,6 +22,7 @@ mod setup;
 mod sources;
 mod spec;
 mod state;
+mod storage;
 mod ui;
 
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};

@@ -113,6 +113,12 @@ pub fn trf(key: &'static str, args: &[&str]) -> String {
     format_template(tr(key), args)
 }
 
+/// [`trf`] in a given language rather than the UI's: the CLI speaks English
+/// whatever the window does.
+pub fn trf_in(lang: Language, key: &'static str, args: &[&str]) -> String {
+    format_template(translate(lang, key), args)
+}
+
 fn format_template(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -556,6 +562,33 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("script.dot.no_args", "{} 不接受参数", "{} takes no arguments"),
     ("script.dot.too_many_args", "{} 最多接受一个模式参数", "{} takes at most one pattern"),
 
+    // ── src/storage.rs ──────────────────────────────────────────────────
+    (
+        "storage.too_new",
+        "这个数据库文件由 DuckDB {} 创建，用的存储格式比 DuckLocal 内置的 DuckDB {} 更新，所以打不开。\n\n用创建它的那个版本的 DuckDB 把它复制成兼容格式，再打开新文件：\n\nATTACH {} AS src (READ_ONLY);\nATTACH 'compat.duckdb' AS dst (STORAGE_VERSION '{}');\nCOPY FROM DATABASE src TO dst;",
+        "This database was created by DuckDB {}, in a storage format newer than DuckLocal's built-in DuckDB {} can read.\n\nCopy it into a compatible format with the DuckDB that created it, then open the copy:\n\nATTACH {} AS src (READ_ONLY);\nATTACH 'compat.duckdb' AS dst (STORAGE_VERSION '{}');\nCOPY FROM DATABASE src TO dst;",
+    ),
+    (
+        "storage.too_old",
+        "这个数据库文件来自 DuckDB v0.9 或更早的版本，DuckDB {} 已经读不了这种存储格式。\n\n用原来的 DuckDB 版本执行 EXPORT DATABASE 'dir'，再在这里用 IMPORT DATABASE 'dir' 导入。",
+        "This database comes from DuckDB v0.9 or earlier, a storage format DuckDB {} no longer reads.\n\nRun EXPORT DATABASE 'dir' with the DuckDB that wrote it, then IMPORT DATABASE 'dir' here.",
+    ),
+    (
+        "storage.sqlite",
+        "这是 SQLite 数据库，不是 DuckDB 文件。可以在查询里附加它来读取：\n\nINSTALL sqlite;\nATTACH {} (TYPE sqlite);",
+        "This is a SQLite database, not a DuckDB file. Attach it in a query to read it:\n\nINSTALL sqlite;\nATTACH {} (TYPE sqlite);",
+    ),
+    (
+        "storage.not_duckdb",
+        "这个文件不是 DuckDB 数据库文件。CSV、Parquet、JSON、Excel 文件请用“打开数据”作为数据文件附加。",
+        "This file is not a DuckDB database. Open CSV, Parquet, JSON or Excel files as data files instead.",
+    ),
+    (
+        "storage.tooltip",
+        "存储格式：DuckDB {} 可读",
+        "Storage format: readable by DuckDB {}",
+    ),
+    ("storage.tooltip.created_by", "由 DuckDB {} 创建", "Created by DuckDB {}"),
     // ── src/ui/status_bar.rs ────────────────────────────────────────────
     ("status_bar.connected", "已连接", "Connected"),
     (

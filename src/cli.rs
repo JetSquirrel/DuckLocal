@@ -549,16 +549,21 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
         } else {
             AccessMode::ReadOnly
         };
-        Connection::open_with_flags(
-            path,
-            config
-                .access_mode(mode)
-                .map_err(|e| CliError::failure("database", e))?,
-        )
-    } else {
-        Connection::open_in_memory_with_flags(config)
+        let config = config
+            .access_mode(mode)
+            .map_err(|e| CliError::failure("database", e))?;
+        return Connection::open_with_flags(&path, config).map_err(|e| {
+            CliError::failure(
+                "database",
+                crate::storage::explain_error(
+                    &path.to_string_lossy(),
+                    e,
+                    crate::i18n::Language::En,
+                ),
+            )
+        });
     }
-    .map_err(|e| CliError::failure("database", e))
+    Connection::open_in_memory_with_flags(config).map_err(|e| CliError::failure("database", e))
 }
 
 /// `ducklocal profile TARGET [--database PATH]`: the deprecated spelling of
