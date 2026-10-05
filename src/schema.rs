@@ -37,6 +37,11 @@ pub struct TableInfo {
 #[derive(Clone, Debug)]
 pub struct DatabaseInfo {
     pub name: String,
+    /// The file behind it; `None` in memory.
+    pub path: Option<String>,
+    /// `duckdb`, or the extension type an attach named (`sqlite`, `postgres`).
+    pub kind: String,
+    pub read_only: bool,
     pub tables: Vec<TableInfo>,
 }
 
@@ -45,6 +50,27 @@ pub fn load_catalog() -> Result<Vec<DatabaseInfo>> {
 }
 
 pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
+    // Every user database, in the order it was attached, whether or not it
+    // holds anything yet: a database attached a moment ago is empty, and
+    // it should show that rather than not show at all.
+    let mut db_stmt = conn.prepare(
+        "SELECT database_name, path, type, readonly
+         FROM duckdb_databases()
+         WHERE NOT internal
+         ORDER BY database_oid",
+    )?;
+    let mut databases: Vec<DatabaseInfo> = db_stmt
+        .query_map([], |row| {
+            Ok(DatabaseInfo {
+                name: row.get(0)?,
+                path: row.get(1)?,
+                kind: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                read_only: row.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                tables: Vec::new(),
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+
     let mut stmt = conn.prepare(
         "SELECT database_name, schema_name, table_name, estimated_size, comment
          FROM duckdb_tables()
@@ -86,7 +112,6 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
     // load time once a database has more than a handful of tables.
     let mut columns_by_table = columns_by_table(conn)?;
 
-    let mut databases: Vec<DatabaseInfo> = Vec::new();
     let mut push_table = |database: String,
                           schema: String,
                           name: String,
@@ -101,6 +126,9 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
             None => {
                 databases.push(DatabaseInfo {
                     name: database.clone(),
+                    path: None,
+                    kind: String::new(),
+                    read_only: false,
                     tables: Vec::new(),
                 });
                 databases.last_mut().unwrap()

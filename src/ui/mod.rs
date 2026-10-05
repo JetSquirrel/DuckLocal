@@ -174,6 +174,76 @@ pub fn open_dialog_path(state: Entity<AppState>, path: String, window: &mut Wind
     run_open_request(state, move || state::open_dialog_path(&path), window, cx);
 }
 
+/// Attach the database at `path` beside the open one, then reload the catalog.
+pub fn attach_database(
+    state: Entity<AppState>,
+    path: String,
+    read_only: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    change_databases(
+        state,
+        move || state::attach_database(&path, read_only),
+        "notify.database.attached",
+        "notify.database.attach_failed",
+        window,
+        cx,
+    );
+}
+
+/// Detach a database and forget it, then reload the catalog.
+pub fn detach_database(state: Entity<AppState>, alias: String, window: &mut Window, cx: &mut App) {
+    change_databases(
+        state,
+        move || state::detach_database(&alias).map(|()| alias),
+        "notify.database.detached",
+        "notify.database.detach_failed",
+        window,
+        cx,
+    );
+}
+
+/// Run an attach or detach off the UI thread and show what it did. `change`
+/// answers the alias it acted on, for the notification.
+fn change_databases(
+    state: Entity<AppState>,
+    change: impl FnOnce() -> anyhow::Result<String> + Send + 'static,
+    done: &'static str,
+    failed: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    state.update(cx, |state, cx| state.begin_open(cx));
+    window
+        .spawn(cx, async move |cx| {
+            let (result, catalog, search_path) = smol::unblock(move || {
+                let result = change();
+                let catalog = crate::schema::load_catalog().unwrap_or_default();
+                // A detach can move the session off the database it used.
+                let search_path =
+                    crate::db::with_connection(|conn| Ok(crate::script::search_path_of(conn)))
+                        .unwrap_or(None);
+                (result, catalog, search_path)
+            })
+            .await;
+            cx.update(move |window, cx| {
+                state.update(cx, |state, cx| {
+                    state.end_open(cx);
+                    state.set_catalog(catalog, cx);
+                    state.set_search_path(search_path, cx);
+                });
+                match result {
+                    Ok(alias) => window.push_notification(trf(done, &[&alias]), cx),
+                    Err(e) => window
+                        .push_notification(Notification::error(trf(failed, &[&e.to_string()])), cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+}
+
 /// Open the in-memory connection, re-attaching the registered files: the way
 /// back from a database connection that is no longer wanted.
 pub fn open_memory(state: Entity<AppState>, window: &mut Window, cx: &mut App) {

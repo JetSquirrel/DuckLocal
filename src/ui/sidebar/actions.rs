@@ -52,6 +52,33 @@ impl Sidebar {
         .detach();
     }
 
+    /// Make `name` the database unqualified names resolve in, as `USE` does.
+    pub(super) fn use_database(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let result = smol::unblock(move || {
+                crate::db::with_connection(|conn| {
+                    conn.execute_batch(&format!("USE \"{}\"", name.replace('"', "\"\"")))?;
+                    Ok(crate::script::search_path_of(conn))
+                })
+            })
+            .await;
+            cx.update(|window, cx| match result {
+                Ok(search_path) => {
+                    state.update(cx, |state, cx| state.set_search_path(search_path, cx));
+                }
+                Err(e) => window.push_notification(Notification::error(e.to_string()), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(super) fn confirm_remove_file(
         &mut self,
         file: FileRef,
