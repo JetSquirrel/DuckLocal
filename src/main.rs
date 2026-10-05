@@ -8,6 +8,7 @@ mod excel;
 mod extensions;
 mod history;
 mod i18n;
+mod overview;
 #[cfg(test)]
 mod perf_probe;
 mod profile;

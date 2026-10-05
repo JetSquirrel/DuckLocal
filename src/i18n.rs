@@ -186,6 +186,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.menu.copy_name", "复制名称", "Copy name"),
     ("sidebar.menu.remove_recent", "从列表移除", "Remove from list"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
+    ("sidebar.menu.overview", "列概览", "Column overview"),
     (
         "sidebar.recent.remove",
         "从列表移除（文件不受影响）",
@@ -212,6 +213,28 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/results.rs ───────────────────────────────────────────────
     ("results.tab.table", "结果", "Results"),
     ("results.tab.chart", "图表", "Chart"),
+    ("results.tab.overview", "概览", "Overview"),
+    (
+        "results.overview.summary",
+        "{} · {} 行 · {} 列 · 耗时 {}",
+        "{} · {} rows · {} columns · took {}",
+    ),
+    ("results.overview.query", "当前查询结果", "Current result"),
+    ("results.overview.running", "正在统计每一列…", "Summarizing every column…"),
+    (
+        "results.overview.empty",
+        "运行一个查询，或在侧栏右键表、视图、文件选择“列概览”",
+        "Run a query, or right-click a table, view or file in the sidebar and choose Column overview",
+    ),
+    (
+        "results.overview.not_query",
+        "只有 SELECT / WITH / FROM 这类查询的结果可以概览：概览会把查询再运行一次。",
+        "Only the result of a query (SELECT, WITH, FROM…) can be summarized: the overview runs it again.",
+    ),
+    ("results.overview.nulls", "空值 {}", "{} null"),
+    ("results.overview.distinct", "约 {} 个不同值", "~{} distinct"),
+    ("results.overview.median", "中位数 {}", "median {}"),
+    ("results.overview.estimated", "高频值（估算）", "Common values (estimated)"),
     ("results.summary", "{} 行 · {} 列", "{} rows · {} columns"),
     ("results.export_csv", "导出 CSV", "Export CSV"),
     ("results.export_parquet", "导出 Parquet", "Export Parquet"),

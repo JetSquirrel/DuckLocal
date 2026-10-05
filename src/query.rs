@@ -890,6 +890,16 @@ fn returns_rows(sql: &str) -> bool {
     )
 }
 
+/// Whether `sql` is a query that can sit in a `FROM ( … )` and be run again
+/// without doing anything but read: what a column overview of a result
+/// re-runs. `CALL`, `PRAGMA` and `SHOW` return rows too, but are neither.
+pub fn is_subquery(sql: &str) -> bool {
+    matches!(
+        keyword_of(sql).as_str(),
+        "select" | "with" | "from" | "values" | "table" | "pivot" | "unpivot"
+    )
+}
+
 /// The statement's leading keyword, lowercased, leading line comments skipped.
 fn keyword_of(sql: &str) -> String {
     let mut rest = sql.trim_start();
@@ -1266,6 +1276,26 @@ mod tests {
             node.children.iter().find_map(|c| find(c, name))
         }
         assert_eq!(find(&profile.roots[0], "GROUP_BY").unwrap().rows, 7);
+    }
+
+    #[test]
+    fn only_queries_count_as_subqueries() {
+        for sql in [
+            "SELECT 1",
+            "-- c\nwith x as (select 1) from x",
+            "FROM t",
+            "VALUES (1)",
+        ] {
+            assert!(is_subquery(sql), "{sql}");
+        }
+        for sql in [
+            "CALL pragma_version()",
+            "PRAGMA version",
+            "SHOW TABLES",
+            "INSERT INTO t VALUES (1)",
+        ] {
+            assert!(!is_subquery(sql), "{sql}");
+        }
     }
 
     #[test]

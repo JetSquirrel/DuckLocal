@@ -568,6 +568,17 @@ impl Workspace {
         self.focus_active_editor(window, cx);
     }
 
+    /// Put `sql` in the editor, run it, and show its column overview rather
+    /// than its rows.
+    pub fn run_for_overview(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.fill_active_editor(sql, window, cx);
+        if let Some(tab) = self.tabs.get(self.active).and_then(WorkspaceTab::as_query) {
+            tab.results
+                .update(cx, |results, cx| results.expect_overview(cx));
+        }
+        self.run_active(window, cx);
+    }
+
     /// The editor inserts `"\n" + indent` before emitting `PressEnter`; the
     /// cursor then sits right after the insertion. Delete exactly that
     /// insertion — walk back over the indent, then require a newline, and do

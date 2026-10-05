@@ -19,6 +19,12 @@ pub(super) fn select_star_sql(table: &TableRef, path: Option<&SearchPath>) -> St
     )
 }
 
+/// The whole relation, for a column overview: a `LIMIT` would summarize the
+/// first rows instead of the table.
+pub(super) fn overview_sql(table: &TableRef, path: Option<&SearchPath>) -> String {
+    format!("FROM {};", qualified_table_name(table, path))
+}
+
 pub(super) fn select_column_sql(column: &ColumnRef, path: Option<&SearchPath>) -> String {
     format!(
         "SELECT {}\nFROM {}\nLIMIT 100;",

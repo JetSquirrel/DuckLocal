@@ -44,7 +44,7 @@ use crate::ui::workspace::Workspace;
 use self::extensions::ExtensionList;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
-use self::sql::{select_column_sql, select_s3_file_sql, select_star_sql};
+use self::sql::{overview_sql, select_column_sql, select_s3_file_sql, select_star_sql};
 use self::tree::build_tree_items;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -612,6 +612,19 @@ impl RowMenu {
                             (None, None) => return,
                         };
                         workspace.update(cx, |ws, cx| ws.fill_active_editor(sql, window, cx));
+                    }),
+            );
+        }
+        if let Some(table) = meta.table.clone() {
+            let workspace = self.workspace.clone();
+            let state = self.state.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.menu.overview"))
+                    .icon(gpui_kit::assets::IconName::ChartColumn)
+                    .on_click(move |_, window, cx| {
+                        let path = state.read(cx).search_path.clone();
+                        let sql = overview_sql(&table, path.as_ref());
+                        workspace.update(cx, |ws, cx| ws.run_for_overview(sql, window, cx));
                     }),
             );
         }
