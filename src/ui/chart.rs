@@ -110,6 +110,39 @@ pub struct ChartData {
     notice: Option<String>,
 }
 
+type RawPlotRow = (usize, SharedString, Vec<f64>);
+
+/// Validate every row for an accurate notice, retaining only drawable rows.
+pub(crate) fn collect_plot_rows(
+    result: &QueryResult,
+    value_ixes: &[usize],
+    limit: usize,
+) -> (Vec<RawPlotRow>, usize) {
+    let mut raw = Vec::new();
+    let mut total = 0;
+    for (ix, row) in result.rows.iter().enumerate() {
+        let Some(band) = row.first() else { continue };
+        if raw.len() >= limit {
+            if value_ixes
+                .iter()
+                .all(|&col| row.get(col).and_then(|v| parse_number(v)).is_some())
+            {
+                total += 1;
+            }
+            continue;
+        }
+        let values: Option<Vec<f64>> = value_ixes
+            .iter()
+            .map(|&col| row.get(col).and_then(|v| parse_number(v)))
+            .collect();
+        if let Some(values) = values {
+            raw.push((ix, band.clone().into(), values));
+            total += 1;
+        }
+    }
+    (raw, total)
+}
+
 impl ChartData {
     pub fn prepare(result: &QueryResult) -> Self {
         let geo = GeoData::detect(result).map(Arc::new);
@@ -149,21 +182,9 @@ impl ChartData {
         }
 
         // `(source row index, band, one value per series)`.
-        let raw: Vec<(usize, SharedString, Vec<f64>)> = result
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, row)| {
-                let band = row.first()?;
-                let values: Option<Vec<f64>> = value_ixes
-                    .iter()
-                    .map(|&col_ix| parse_number(row.get(col_ix)?))
-                    .collect();
-                Some((ix, band.clone().into(), values?))
-            })
-            .collect();
-
         let is_time_series = result.columns[0].kind == ColumnKind::Temporal;
+        let limit = if is_time_series { usize::MAX } else { MAX_BARS };
+        let (raw, source_bars) = collect_plot_rows(result, &value_ixes, limit);
         let plotted = if is_time_series {
             let source_points = raw.len();
             let reduced = bucket_average(raw, MAX_POINTS);
@@ -180,16 +201,13 @@ impl ChartData {
             }
             reduced
         } else {
-            let source_bars = raw.len();
-            let mut bars = raw;
             if source_bars > MAX_BARS {
-                bars.truncate(MAX_BARS);
                 notices.push(trf(
                     "chart.notice.bars_capped",
                     &[&MAX_BARS.to_string(), &source_bars.to_string()],
                 ));
             }
-            bars
+            raw
         };
 
         let rows: Vec<Arc<PlotPoint>> = plotted
@@ -534,7 +552,9 @@ fn chart_frame(
                 .when_some(notice, |this, notice| {
                     this.child(div().text_xs().text_color(muted).child(notice))
                 })
-                .when(!legend.is_empty(), |this| this.child(legend_row(legend, cx))),
+                .when(!legend.is_empty(), |this| {
+                    this.child(legend_row(legend, cx))
+                }),
         )
         .child(div().flex_1().min_h_0().child(chart))
         .into_any_element()
@@ -560,7 +580,10 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
         notices.push(trf("chart.map.sized_by", &[name]));
     }
     if geo.size_missing > 0 {
-        notices.push(trf("chart.map.notice.unsized", &[&geo.size_missing.to_string()]));
+        notices.push(trf(
+            "chart.map.notice.unsized",
+            &[&geo.size_missing.to_string()],
+        ));
     }
     let legend = geo
         .categories
@@ -894,6 +917,30 @@ mod tests {
         // Truncated, so every band is still a real one from the result.
         assert_eq!(data.rows[super::MAX_BARS - 1].band, "city-199");
         assert!(data.notice.is_some());
+    }
+
+    #[test]
+    fn capped_rows_count_only_valid_values_and_keep_source_indices() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![
+                vec!["missing".into()],
+                vec!["null".into(), "NULL".into()],
+                vec!["first".into(), "1".into()],
+                vec!["invalid".into(), "text".into()],
+                vec!["second".into(), "2".into()],
+                vec!["infinite".into(), "inf".into()],
+            ],
+            elapsed_ms: 0,
+            truncated: false,
+        };
+        let (rows, count) = super::collect_plot_rows(&result, &[1], 1);
+        // parse_number accepts infinity, as the existing chart path does.
+        assert_eq!(count, 3);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 2);
+        assert_eq!(rows[0].1, "first");
+        assert_eq!(rows[0].2, vec![1.]);
     }
 
     #[test]

@@ -54,6 +54,13 @@ hotpath-cpu = ["hotpath/hotpath-cpu"]
 # report GPUI's own frame timings. Never part of a release build.
 scroll-bench = []
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console"] }
+
+[build-dependencies]
+# Also supports cross-compiling to Windows; resources are required, not optional.
+embed-resource = "3.0.11"
+
 [dev-dependencies]
 rust_xlsxwriter = "0.99"
 # Same release tag as the build dependency (see above); the extra feature only
@@ -76,6 +83,15 @@ lto = true               # Link-time optimization
 strip = true             # Strip symbols
 panic = "abort"          # Smaller panic handling
 codegen-units = 1        # Better optimization
+
+# Optional smaller distribution, without compiling DuckDB's hot C++ loops
+# for size. The normal release remains the performance-oriented default.
+[profile.compact]
+inherits = "release"
+opt-level = "s"
+
+[profile.compact.package.libduckdb-sys]
+opt-level = 3
 
 [profile.dev.package."*"]
 opt-level = 3

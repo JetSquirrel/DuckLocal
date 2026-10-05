@@ -1,0 +1,2 @@
+// GPUI loads icon resource 1 for the window/taskbar. Explorer uses it too.
+1 ICON "AppIcon.ico"
