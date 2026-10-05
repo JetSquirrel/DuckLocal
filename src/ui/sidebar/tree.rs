@@ -201,10 +201,9 @@ fn file_tree_item(
     meta: &mut HashMap<SharedString, SchemaNodeMeta>,
 ) -> TreeItem {
     let file_id: SharedString = format!("file:{}", file.id).into();
-    let detail: SharedString = file
-        .row_count
-        .map(|n| format_rows(n).into())
-        .unwrap_or_else(|| "—".into());
+    // An unknown count shows nothing: a dash in the count column reads as a
+    // value, and says less than leaving the space empty.
+    let detail: Option<SharedString> = file.row_count.map(|n| format_rows(n).into());
     let table = catalog
         .iter()
         .flat_map(|db| db.tables.iter())
@@ -219,7 +218,7 @@ fn file_tree_item(
         file_id.clone(),
         SchemaNodeMeta {
             kind: SchemaNodeKind::File,
-            detail: Some(detail),
+            detail,
             file: Some(FileRef {
                 id: file.id,
                 view_name: file.view_name.clone(),

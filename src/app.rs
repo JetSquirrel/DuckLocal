@@ -363,8 +363,16 @@ impl Render for DuckLocalApp {
                         h_resizable("main-split")
                             .child(
                                 resizable_panel()
-                                    .size(px(280.))
-                                    .size_range(px(220.)..px(420.))
+                                    // Scaled with the interface size: at a
+                                    // larger size a fixed 220px is narrower
+                                    // than the sidebar's own tab row, and the
+                                    // whole sidebar lays out wider than its
+                                    // panel and is clipped at the edge.
+                                    .size(crate::ui::scale::design(280.))
+                                    .size_range(
+                                        crate::ui::scale::design(220.)
+                                            ..crate::ui::scale::design(420.),
+                                    )
                                     // Cached: the sidebar re-renders when it
                                     // is notified (its state events, hover,
                                     // clicks) or the window refreshes (theme,

@@ -1479,7 +1479,7 @@ impl Workspace {
             })
             .child(
                 Button::new("format-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::WandSparkles)
                     .label(tr("workspace.format"))
@@ -1488,17 +1488,17 @@ impl Workspace {
             )
             .child(
                 Button::new("explain-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::ListTree)
-                    .label("EXPLAIN")
+                    .label(tr("workspace.explain"))
                     .loading(self.explaining)
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
             )
             .child(
                 Button::new("profile-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::Gauge)
                     .label(tr("workspace.profile"))

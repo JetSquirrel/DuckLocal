@@ -950,77 +950,77 @@ impl ResultsPanel {
             )
         });
 
-        h_flex()
+        // The tab bar is the whole header, so its own bottom line runs the
+        // panel's width and the selected tab's underline sits on it; a border
+        // on a row around it drew a second line a few pixels lower.
+        TabBar::new("results-tabs")
+            .underline()
+            .small()
             .w_full()
             .px_3()
-            .gap_3()
-            .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                TabBar::new("results-tabs")
-                    .underline()
-                    .small()
-                    .selected_index(match self.tab {
-                        ResultsTab::Table => 0,
-                        ResultsTab::Chart => 1,
-                        ResultsTab::Overview => 2,
-                    })
-                    .on_click(cx.listener(|this, ix, _, cx| {
-                        this.tab = match ix {
-                            0 => ResultsTab::Table,
-                            1 => ResultsTab::Chart,
-                            _ => ResultsTab::Overview,
-                        };
-                        if this.tab == ResultsTab::Overview {
-                            this.load_overview(cx);
-                        }
-                        cx.notify();
-                    }))
-                    .child(Tab::new().label(tr("results.tab.table")))
-                    .child(Tab::new().label(tr("results.tab.chart")))
-                    .child(Tab::new().label(tr("results.tab.overview"))),
-            )
-            .child(div().flex_1())
-            .when_some(summary, |this, summary| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(summary),
-                )
+            .selected_index(match self.tab {
+                ResultsTab::Table => 0,
+                ResultsTab::Chart => 1,
+                ResultsTab::Overview => 2,
             })
-            .child(
-                // A real toolbar, not an h_flex: roving arrow-key focus and
-                // the compact ghost treatment come with it.
-                Toolbar::new("results-export-toolbar")
-                    .xsmall()
-                    // Hidden, not greyed, without rows to export: two dead
-                    // buttons over an empty panel only add noise. Hidden
-                    // rather than removed, so the header keeps its height.
-                    .when(!has_rows, |this| this.invisible())
-                    .child(
-                        ToolbarGroup::new("results-export-group")
-                            .gap_1()
-                            .child(
-                                Button::new("export-csv")
-                                    .icon(gpui_kit::assets::IconName::Download)
-                                    .label(tr("results.export_csv"))
-                                    .disabled(!has_rows)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_export_dialog(ExportFormat::Csv, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("export-parquet")
-                                    .icon(gpui_kit::assets::IconName::Download)
-                                    .label(tr("results.export_parquet"))
-                                    .disabled(!has_rows)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_export_dialog(ExportFormat::Parquet, window, cx);
-                                    })),
-                            ),
-                    ),
+            .on_click(cx.listener(|this, ix, _, cx| {
+                this.tab = match ix {
+                    0 => ResultsTab::Table,
+                    1 => ResultsTab::Chart,
+                    _ => ResultsTab::Overview,
+                };
+                if this.tab == ResultsTab::Overview {
+                    this.load_overview(cx);
+                }
+                cx.notify();
+            }))
+            .child(Tab::new().label(tr("results.tab.table")))
+            .child(Tab::new().label(tr("results.tab.chart")))
+            .child(Tab::new().label(tr("results.tab.overview")))
+            .suffix(
+                h_flex()
+                .gap_3()
+                .items_center()
+                .when_some(summary, |this, summary| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    )
+                })
+                .child(
+                    // A real toolbar, not an h_flex: roving arrow-key focus and
+                    // the compact ghost treatment come with it.
+                    Toolbar::new("results-export-toolbar")
+                        .xsmall()
+                        // Hidden, not greyed, without rows to export: two dead
+                        // buttons over an empty panel only add noise. Hidden
+                        // rather than removed, so the header keeps its height.
+                        .when(!has_rows, |this| this.invisible())
+                        .child(
+                            ToolbarGroup::new("results-export-group")
+                                .gap_1()
+                                .child(
+                                    Button::new("export-csv")
+                                        .icon(gpui_kit::assets::IconName::Download)
+                                        .label(tr("results.export_csv"))
+                                        .disabled(!has_rows)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_export_dialog(ExportFormat::Csv, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("export-parquet")
+                                        .icon(gpui_kit::assets::IconName::Download)
+                                        .label(tr("results.export_parquet"))
+                                        .disabled(!has_rows)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_export_dialog(ExportFormat::Parquet, window, cx);
+                                        })),
+                                ),
+                        ),
+                ),
             )
     }
 
@@ -1178,7 +1178,7 @@ impl ResultsPanel {
                         h_flex().px_4().pt_3().child(
                             TabBar::new("chart-kinds")
                                 .segmented()
-                                .xsmall()
+                                .with_size(crate::ui::scale::compact_control())
                                 .selected_index(selected)
                                 .on_click(cx.listener(move |this, ix: &usize, _, cx| {
                                     if let Some(kind) = picker_kinds.get(*ix) {

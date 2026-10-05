@@ -26,6 +26,17 @@ pub fn design(pixels: f32) -> Pixels {
     px(pixels * f32::from(current().font_size()) / f32::from(UiSize::Default.font_size()))
 }
 
+/// The size for a compact control whose library heights are fixed pixels —
+/// a segmented tab bar's 20px bar and 16px pill — while its text scales with
+/// the interface. At the larger sizes the text fills the pill edge to edge,
+/// so such a control steps up one size there.
+pub fn compact_control() -> gpui_kit::component::Size {
+    match current() {
+        UiSize::Small | UiSize::Default => gpui_kit::component::Size::XSmall,
+        UiSize::Large | UiSize::ExtraLarge => gpui_kit::component::Size::Small,
+    }
+}
+
 /// The `settings` key the choice lives under.
 const SETTING: &str = "ui_size";
 
