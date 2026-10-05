@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{anyhow, Result};
 use duckdb::{Connection, OptionalExt};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 static HISTORY_CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
@@ -33,6 +33,15 @@ pub struct AttachedFile {
     pub path: String,
     pub view_name: String,
     pub sheet: Option<String>,
+}
+
+/// A database attached beside the open one, under `alias`. Like a
+/// registered file, it is attached again into every new connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachedDatabase {
+    pub path: String,
+    pub alias: String,
+    pub read_only: bool,
 }
 
 fn history_path() -> Result<PathBuf> {
@@ -130,6 +139,22 @@ fn prepare_schema(conn: &Connection) -> Result<()> {
     }
     if version < 4 {
         conn.execute_batch("ALTER TABLE attached_files ADD COLUMN sheet VARCHAR;")?;
+        conn.execute(
+            "INSERT INTO schema_version(version) VALUES (?1)",
+            [SCHEMA_VERSION],
+        )?;
+    }
+    if version < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS attached_databases(
+                id BIGINT PRIMARY KEY,
+                path VARCHAR NOT NULL,
+                alias VARCHAR NOT NULL UNIQUE,
+                read_only BOOLEAN NOT NULL,
+                attached_at VARCHAR NOT NULL
+            );
+            CREATE SEQUENCE IF NOT EXISTS attached_databases_id START 1;",
+        )?;
         conn.execute(
             "INSERT INTO schema_version(version) VALUES (?1)",
             [SCHEMA_VERSION],
@@ -277,6 +302,59 @@ pub fn remove_attached_file_of(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Register a database to attach into every connection, replacing any
+/// earlier registration under the same alias or of the same path.
+pub fn register_attached_database(database: &AttachedDatabase) -> Result<()> {
+    with_connection(|conn| register_attached_database_to(conn, database))
+}
+
+pub fn register_attached_database_to(conn: &Connection, database: &AttachedDatabase) -> Result<()> {
+    conn.execute(
+        "DELETE FROM attached_databases WHERE alias = ?1 OR path = ?2",
+        [&database.alias, &database.path],
+    )?;
+    conn.execute(
+        "INSERT INTO attached_databases(id, path, alias, read_only, attached_at)
+         VALUES (nextval('attached_databases_id'), ?1, ?2, ?3, ?4)",
+        duckdb::params![
+            database.path,
+            database.alias,
+            database.read_only,
+            now_timestamp()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Registration order, oldest first: the order they are attached in.
+pub fn attached_databases() -> Result<Vec<AttachedDatabase>> {
+    with_connection(attached_databases_of)
+}
+
+pub fn attached_databases_of(conn: &Connection) -> Result<Vec<AttachedDatabase>> {
+    let mut stmt =
+        conn.prepare("SELECT path, alias, read_only FROM attached_databases ORDER BY id")?;
+    let databases = stmt
+        .query_map([], |row| {
+            Ok(AttachedDatabase {
+                path: row.get(0)?,
+                alias: row.get(1)?,
+                read_only: row.get(2)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(databases)
+}
+
+pub fn remove_attached_database(alias: &str) -> Result<()> {
+    with_connection(|conn| remove_attached_database_of(conn, alias))
+}
+
+pub fn remove_attached_database_of(conn: &Connection, alias: &str) -> Result<()> {
+    conn.execute("DELETE FROM attached_databases WHERE alias = ?1", [alias])?;
+    Ok(())
+}
+
 /// Read a persisted setting (`None` when the key was never set).
 pub fn get_setting(key: &str) -> Result<Option<String>> {
     with_connection(|conn| get_setting_of(conn, key))
@@ -401,6 +479,46 @@ mod tests {
         let files = attached_files_of(&conn).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].sheet, None);
+    }
+
+    #[test]
+    fn attached_databases_register_by_alias_and_path() {
+        let conn = Connection::open_in_memory().unwrap();
+        prepare_schema(&conn).unwrap();
+        let db = |path: &str, alias: &str| AttachedDatabase {
+            path: path.into(),
+            alias: alias.into(),
+            read_only: false,
+        };
+        register_attached_database_to(&conn, &db("/a/logs.duckdb", "logs")).unwrap();
+        register_attached_database_to(&conn, &db("/a/metrics.duckdb", "metrics")).unwrap();
+        // The same path again, read-only now: replaced, not duplicated.
+        register_attached_database_to(
+            &conn,
+            &AttachedDatabase {
+                read_only: true,
+                ..db("/a/logs.duckdb", "logs")
+            },
+        )
+        .unwrap();
+        let all = attached_databases_of(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].alias, "metrics");
+        assert!(all[1].read_only);
+        remove_attached_database_of(&conn, "metrics").unwrap();
+        assert_eq!(attached_databases_of(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_v4_registry_migrates_to_v5() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version(version BIGINT NOT NULL);
+             INSERT INTO schema_version(version) VALUES (1), (2), (3), (4);",
+        )
+        .unwrap();
+        prepare_schema(&conn).unwrap();
+        assert!(attached_databases_of(&conn).unwrap().is_empty());
     }
 
     #[test]

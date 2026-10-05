@@ -29,6 +29,8 @@ icon_assets!(
         CircleDashed,
         Gauge,
         ChartColumn
+        DatabasePlus,
+        DatabaseX
     ]
 );
 

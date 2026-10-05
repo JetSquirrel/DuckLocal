@@ -187,6 +187,9 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.menu.remove_recent", "从列表移除", "Remove from list"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
     ("sidebar.menu.overview", "列概览", "Column overview"),
+    ("sidebar.database.read_only", "只读", "read-only"),
+    ("sidebar.database.use", "设为默认数据库", "Use as default database"),
+    ("sidebar.database.detach", "分离数据库", "Detach database"),
     (
         "sidebar.recent.remove",
         "从列表移除（文件不受影响）",
@@ -286,6 +289,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("title_bar.open.files", "打开文件", "Open files"),
     ("title_bar.open.folder", "打开文件夹", "Open folder"),
     ("title_bar.open.path", "输入路径或通配符", "Enter a path or glob"),
+    ("title_bar.open.attach_database", "附加数据库…", "Attach database…"),
     ("title_bar.open.s3", "连接 S3", "Connect S3"),
     ("title_bar.open.memory", "新建内存数据库", "New in-memory database"),
     ("title_bar.configure_s3", "配置 S3 数据源（httpfs）", "Configure S3 source (httpfs)"),
@@ -323,6 +327,19 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     ("notify.s3.failed", "S3 配置失败：{}", "Failed to configure S3: {}"),
     ("dialog.open_source.title", "打开数据", "Open data"),
+    ("dialog.attach_database.title", "附加数据库", "Attach database"),
+    (
+        "dialog.attach_database.description",
+        "把另一个 DuckDB 或 SQLite 数据库文件和当前数据库一起打开，用 名称.表 跨库查询。下次启动会自动重新附加。",
+        "Open another DuckDB or SQLite database beside the current one and query across them as name.table. It is attached again on every launch.",
+    ),
+    (
+        "dialog.attach_database.picker_prompt",
+        "选择数据库文件",
+        "Choose a database file",
+    ),
+    ("dialog.attach_database.read_only", "只读", "Read-only"),
+    ("dialog.attach_database.attach", "附加", "Attach"),
     (
         "dialog.open_source.description",
         "输入路径，或浏览选择数据文件、文件夹或 .duckdb 数据库。数据文件会作为视图加入当前连接，文件夹会递归展开。输入新的 .duckdb 路径可创建数据库及其父目录。",
@@ -342,6 +359,20 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("notify.attach.truncated", "文件过多，只导入了前 {} 个。", "Too many files; imported the first {}."),
     ("notify.attach.more_failed", "另有 {} 个文件导入失败。", "{} more files could not be imported."),
     ("notify.attach.failed", "无法导入数据文件：{}", "Could not import data file: {}"),
+    (
+        "error.database_already_attached",
+        "这个数据库已经打开了，名为 {}。",
+        "This database is already open, as {}.",
+    ),
+    (
+        "error.database_alias_taken",
+        "无法附加 {}：名称 {} 已被当前数据库占用。",
+        "Could not attach {}: the name {} is taken in the open database.",
+    ),
+    ("notify.database.attached", "已附加数据库 {}", "Attached database {}"),
+    ("notify.database.attach_failed", "无法附加数据库：{}", "Could not attach database: {}"),
+    ("notify.database.detached", "已分离数据库 {}", "Detached database {}"),
+    ("notify.database.detach_failed", "无法分离数据库：{}", "Could not detach database: {}"),
     (
         "error.relative_attachment",
         "无法恢复相对路径 {}：原工作目录未知。请移除该记录并重新打开文件。",

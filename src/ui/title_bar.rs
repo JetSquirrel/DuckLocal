@@ -2,6 +2,7 @@
 //! and the "打开数据库…" dialog.
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -360,6 +361,118 @@ impl TitleBarView {
 }
 
 impl TitleBarView {
+    /// The "附加数据库" dialog: a database file to attach beside the open one,
+    /// read-only by default — a snapshot to analyse is not one to change.
+    pub fn attach_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("~/snapshots/2026-10-05.duckdb"));
+        let read_only = std::rc::Rc::new(std::cell::Cell::new(true));
+        let state = self.state.clone();
+
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let attach_state = state.clone();
+            let toggle = read_only.clone();
+            dialog
+                .title(tr("dialog.attach_database.title"))
+                .w(crate::ui::scale::design(DIALOG_WIDTH))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(tr("dialog.attach_database.description")),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .items_center()
+                                .child(div().flex_1().min_w_0().child(Input::new(&input)))
+                                .child(
+                                    Button::new("attach-browse")
+                                        .outline()
+                                        .label(tr("dialog.open_source.browse"))
+                                        .on_click({
+                                            let input = input.clone();
+                                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                                let rx = cx.prompt_for_paths(PathPromptOptions {
+                                                    files: true,
+                                                    directories: false,
+                                                    multiple: false,
+                                                    prompt: Some(
+                                                        tr("dialog.attach_database.picker_prompt")
+                                                            .into(),
+                                                    ),
+                                                });
+                                                let input = input.clone();
+                                                window
+                                                    .spawn(cx, async move |cx| {
+                                                        if let Ok(Ok(Some(paths))) = rx.await {
+                                                            if let Some(path) = paths.first() {
+                                                                let value =
+                                                                    path.to_string_lossy().to_string();
+                                                                input
+                                                                    .update_in(cx, |state, window, cx| {
+                                                                        state.set_value(value, window, cx);
+                                                                    })
+                                                                    .ok();
+                                                            }
+                                                        }
+                                                    })
+                                                    .detach();
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(
+                            Checkbox::new("attach-read-only")
+                                .label(tr("dialog.attach_database.read_only"))
+                                .checked(read_only.get())
+                                .on_click(move |checked, window, _| {
+                                    toggle.set(*checked);
+                                    window.refresh();
+                                }),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .gap_2()
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("cancel")
+                                .outline()
+                                .label(tr("common.cancel"))
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("attach-database")
+                                .primary()
+                                .label(tr("dialog.attach_database.attach"))
+                                .on_click({
+                                    let input = input.clone();
+                                    let read_only = read_only.clone();
+                                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                        let path = input.read(cx).value().trim().to_string();
+                                        if path.is_empty() {
+                                            return;
+                                        }
+                                        window.close_dialog(cx);
+                                        crate::ui::attach_database(
+                                            attach_state.clone(),
+                                            path,
+                                            read_only.get(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
     fn render_open_menu(&self, opening: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity().downgrade();
         let state = self.state.clone();
@@ -375,7 +488,7 @@ impl TitleBarView {
             .dropdown_menu(move |menu, _, _| {
                 let (files_state, folder_state, memory_state) =
                     (state.clone(), state.clone(), state.clone());
-                let (path_view, s3_view) = (view.clone(), view.clone());
+                let (path_view, s3_view, attach_view) = (view.clone(), view.clone(), view.clone());
                 menu.item(
                     PopupMenuItem::new(tr("title_bar.open.files"))
                         .icon(IconName::File)
@@ -408,6 +521,15 @@ impl TitleBarView {
                         .on_click(move |_, window, cx| {
                             if let Some(view) = path_view.upgrade() {
                                 view.update(cx, |this, cx| this.open_data(window, cx));
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(tr("title_bar.open.attach_database"))
+                        .icon(gpui_kit::assets::IconName::DatabasePlus)
+                        .on_click(move |_, window, cx| {
+                            if let Some(view) = attach_view.upgrade() {
+                                view.update(cx, |this, cx| this.attach_database(window, cx));
                             }
                         }),
                 )

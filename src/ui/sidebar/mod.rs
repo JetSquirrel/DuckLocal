@@ -234,7 +234,7 @@ impl Sidebar {
         let recents = self.recents.clone();
         let has_items = {
             let state = self.state.read(cx);
-            !state.catalog.is_empty()
+            state.catalog_has_content()
                 || !state.attached_files.is_empty()
                 || state.s3_config.is_some()
                 || !recents.is_empty()
@@ -602,7 +602,7 @@ impl Sidebar {
         // Every hover button on a row is a shortcut to an entry here: the
         // buttons only show under the pointer, and a command that can only
         // be found by hovering is not one a keyboard or a new user finds.
-        .context_menu(move |_, entry, popup, _, _| menu.build(&entry.item().id, popup))
+        .context_menu(move |_, entry, popup, _, cx| menu.build(&entry.item().id, popup, cx))
         .into_any_element()
     }
 }
@@ -617,7 +617,7 @@ struct RowMenu {
 }
 
 impl RowMenu {
-    fn build(&self, id: &SharedString, mut menu: PopupMenu) -> PopupMenu {
+    fn build(&self, id: &SharedString, mut menu: PopupMenu, cx: &App) -> PopupMenu {
         let Some(meta) = self.meta.get(id) else {
             return menu;
         };
@@ -682,6 +682,44 @@ impl RowMenu {
                         }
                     }),
             );
+        }
+        if let Some(database) = meta.database.clone() {
+            // Where unqualified names resolve now; unknown until a Run
+            // reports it, when the open database is the safe guess.
+            let in_use = match &self.state.read(cx).search_path {
+                Some(path) => path.database.eq_ignore_ascii_case(&database.name),
+                None => database.is_main,
+            };
+            if !in_use {
+                let sidebar = self.sidebar.clone();
+                let name = database.name.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(tr("sidebar.database.use"))
+                        .icon(IconName::CircleCheck)
+                        .on_click(move |_, window, cx| {
+                            if let Some(sidebar) = sidebar.upgrade() {
+                                sidebar.update(cx, |this, cx| {
+                                    this.use_database(name.clone(), window, cx)
+                                });
+                            }
+                        }),
+                );
+            }
+            if !database.is_main {
+                let state = self.state.clone();
+                menu = menu.separator().item(
+                    PopupMenuItem::new(tr("sidebar.database.detach"))
+                        .icon(gpui_kit::assets::IconName::DatabaseX)
+                        .on_click(move |_, window, cx| {
+                            crate::ui::detach_database(
+                                state.clone(),
+                                database.name.clone(),
+                                window,
+                                cx,
+                            );
+                        }),
+                );
+            }
         }
         if meta.kind == SchemaNodeKind::S3Status {
             let sidebar = self.sidebar.clone();
