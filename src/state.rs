@@ -151,7 +151,14 @@ impl AppState {
     /// table or view in the current connection. Drives the workspace's
     /// first-run screen.
     pub fn has_data(&self) -> bool {
-        !self.attached_files.is_empty() || !self.catalog.is_empty()
+        !self.attached_files.is_empty() || self.catalog_has_content()
+    }
+
+    /// Whether the catalog shows anything: a table or view anywhere, or a
+    /// database attached beside the open one. The open database is always
+    /// listed, so an empty catalog is never literally empty.
+    pub fn catalog_has_content(&self) -> bool {
+        self.catalog.len() > 1 || self.catalog.iter().any(|db| !db.tables.is_empty())
     }
 
     /// Whether an open/attach request is in flight.
@@ -269,6 +276,108 @@ pub fn reload_workspace() -> (Vec<DatabaseInfo>, Vec<HistoryEntry>, Vec<Attached
 /// the file comes back).
 pub fn reattach_registered_files() -> Vec<String> {
     reattach_files(&crate::history::attached_files().unwrap_or_default())
+}
+
+/// Blocking: attach the database at `path` beside the open one, registering
+/// it so every later connection attaches it too. Answers its alias.
+pub fn attach_database(path: &str, read_only: bool) -> anyhow::Result<String> {
+    let expanded = crate::db::expand_tilde(path.trim());
+    // A database that does not exist yet is created by the attach, so it has
+    // no canonical path to resolve; it still needs an absolute one, or the
+    // registration would mean another file from another working directory.
+    let path = crate::sources::canonical_file_path(&expanded)
+        .or_else(|_| std::path::absolute(&expanded).map(|p| p.to_string_lossy().into_owned()))?;
+    let registered = crate::history::attached_databases().unwrap_or_default();
+    let attachment = crate::db::with_connection(|conn| {
+        if let Some(alias) = database_at(conn, &path)? {
+            anyhow::bail!(trf("error.database_already_attached", &[&alias]));
+        }
+        // Keep the alias it had, so SQL written against it still runs.
+        let alias = match registered.iter().find(|d| d.path == path) {
+            Some(known) if !database_named(conn, &known.alias)? => known.alias.clone(),
+            _ => crate::db::database_alias_of(conn, &path)?,
+        };
+        let attachment = crate::db::DatabaseAttachment {
+            path: path.clone(),
+            alias,
+            read_only,
+        };
+        crate::db::attach_database_of(conn, &attachment)?;
+        Ok(attachment)
+    })?;
+    crate::history::register_attached_database(&crate::history::AttachedDatabase {
+        path: attachment.path,
+        alias: attachment.alias.clone(),
+        read_only: attachment.read_only,
+    })?;
+    Ok(attachment.alias)
+}
+
+/// Blocking: detach a database and forget its registration, so it does not
+/// come back with the next connection.
+pub fn detach_database(alias: &str) -> anyhow::Result<()> {
+    crate::db::with_connection(|conn| crate::db::detach_database_of(conn, alias))?;
+    crate::history::remove_attached_database(alias)?;
+    Ok(())
+}
+
+/// Blocking: attach every registered database into the current connection.
+/// One whose file is gone is skipped quietly and keeps its registration —
+/// attaching it would create an empty database in its place — and so is one
+/// that is already open, as the main database or otherwise.
+pub fn reattach_registered_databases() -> Vec<String> {
+    let registered = crate::history::attached_databases().unwrap_or_default();
+    let mut problems = Vec::new();
+    for database in registered {
+        let attached = crate::db::with_connection(|conn| {
+            let path = registered_path(&database.path)?;
+            if !std::path::Path::new(&path).exists() || database_at(conn, &path)?.is_some() {
+                return Ok(());
+            }
+            if database_named(conn, &database.alias)? {
+                anyhow::bail!(trf(
+                    "error.database_alias_taken",
+                    &[&database.path, &database.alias]
+                ));
+            }
+            crate::db::attach_database_of(
+                conn,
+                &crate::db::DatabaseAttachment {
+                    path,
+                    alias: database.alias.clone(),
+                    read_only: database.read_only,
+                },
+            )
+        });
+        if let Err(e) = attached {
+            problems.push(e.to_string());
+        }
+    }
+    problems
+}
+
+/// The database already open on the file at `path`, if any.
+fn database_at(conn: &duckdb::Connection, path: &str) -> anyhow::Result<Option<String>> {
+    let canonical = crate::sources::canonical_file_path(path).unwrap_or_else(|_| path.into());
+    let mut stmt =
+        conn.prepare("SELECT database_name, path FROM duckdb_databases() WHERE path IS NOT NULL")?;
+    let found = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(|row| row.ok())
+        .find(|(_, open)| {
+            crate::sources::canonical_file_path(open).unwrap_or_else(|_| open.clone()) == canonical
+        })
+        .map(|(name, _)| name);
+    Ok(found)
+}
+
+fn database_named(conn: &duckdb::Connection, alias: &str) -> anyhow::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM duckdb_databases() WHERE lower(database_name) = lower(?1)",
+        [alias],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
 }
 
 /// A registration whose path is relative was recorded against a working
@@ -459,7 +568,8 @@ fn open_sources(
         Err(e) => return Err(e),
     };
 
-    let problems = reattach_registered_files();
+    let mut problems = reattach_registered_databases();
+    problems.extend(reattach_registered_files());
     let server = crate::db::server_info()?;
     let mut attach = attach_outcome(&sources);
     attach.report.problems.extend(problems);
@@ -597,6 +707,54 @@ mod tests {
             .iter()
             .flat_map(|database| database.tables.iter().map(|table| table.name.clone()))
             .collect()
+    }
+
+    #[test]
+    fn an_attached_database_comes_back_with_every_connection_until_detached() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let dir = std::env::temp_dir().join("ducklocal_state_attach_db");
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            let logs = dir.join("logs.duckdb").to_string_lossy().to_string();
+            let base = dir.join("base.duckdb").to_string_lossy().to_string();
+
+            crate::db::open_memory().unwrap();
+            // A path that does not exist yet becomes a new database.
+            let alias = attach_database(&logs, false).unwrap();
+            assert_eq!(alias, "logs");
+            crate::db::with_connection(|conn| {
+                conn.execute_batch("CREATE TABLE logs.events AS SELECT 1 AS id")?;
+                Ok(())
+            })
+            .unwrap();
+            // Twice is refused, not attached under a second name.
+            assert!(attach_database(&logs, false).is_err());
+
+            // Another main database: the attachment follows it, read-only
+            // or not as it was registered.
+            crate::db::open_file(&base).unwrap();
+            assert!(reattach_registered_databases().is_empty());
+            let catalog = crate::schema::load_catalog().unwrap();
+            let names: Vec<&str> = catalog.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(names, ["base", "logs"]);
+            assert_eq!(catalog[1].tables[0].name, "events");
+            assert!(!catalog[1].read_only);
+
+            // Opening the attached file as the main database does not try to
+            // attach it a second time.
+            crate::db::open_file(&logs).unwrap();
+            assert!(reattach_registered_databases().is_empty());
+
+            crate::db::open_memory().unwrap();
+            assert!(reattach_registered_databases().is_empty());
+            detach_database("logs").unwrap();
+            assert!(crate::history::attached_databases().unwrap().is_empty());
+            crate::db::open_memory().unwrap();
+            assert!(reattach_registered_databases().is_empty());
+            assert_eq!(crate::schema::load_catalog().unwrap().len(), 1);
+            std::fs::remove_dir_all(&dir).ok();
+        });
     }
 
     #[test]

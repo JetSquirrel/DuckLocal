@@ -481,8 +481,147 @@ fn relation_names_of(conn: &Connection) -> Result<HashSet<String>> {
     Ok(names)
 }
 
+/// A database attached beside the open one: its alias and how it was opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseAttachment {
+    pub path: String,
+    pub alias: String,
+    pub read_only: bool,
+}
+
+/// An alias for the database at `path`: its file stem as a plain identifier
+/// (`2026-10 logs.duckdb` → `db_2026_10_logs`), with a numeric suffix when
+/// the connection already has a database by that name.
+pub fn database_alias_of(conn: &Connection, path: &str) -> Result<String> {
+    let stem = view_name_for(path)?;
+    let mut alias: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if !alias.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        alias = format!("db_{alias}");
+    }
+    let mut stmt = conn.prepare("SELECT lower(database_name) FROM duckdb_databases()")?;
+    let taken: HashSet<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    // `main` is not a database but names the default schema; an alias by
+    // that name would make `main.t` mean two things.
+    let free = |name: &str| !taken.contains(&name.to_lowercase()) && name != "main";
+    if free(&alias) {
+        return Ok(alias);
+    }
+    Ok((2..)
+        .map(|n| format!("{alias}_{n}"))
+        .find(|name| free(name))
+        .expect("an unbounded range has a free name"))
+}
+
+/// `ATTACH` the database at `path` under `alias`. A SQLite file is attached
+/// through the sqlite extension; anything else is taken for DuckDB, which
+/// creates the file when it does not exist yet (and refuses to, read-only).
+pub fn attach_database_of(conn: &Connection, attachment: &DatabaseAttachment) -> Result<()> {
+    let expanded = expand_tilde(&attachment.path);
+    let mut options = Vec::new();
+    if crate::storage::file_kind(&expanded) == Some(crate::storage::FileKind::Sqlite) {
+        options.push("TYPE sqlite");
+    }
+    if attachment.read_only {
+        options.push("READ_ONLY");
+    }
+    let options = if options.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", options.join(", "))
+    };
+    let sql = format!(
+        "ATTACH '{}' AS \"{}\"{options}",
+        expanded.replace('\'', "''"),
+        attachment.alias.replace('"', "\"\""),
+    );
+    conn.execute_batch(&sql).map_err(|e| {
+        anyhow!(crate::storage::explain_error(
+            &expanded,
+            e,
+            crate::i18n::current()
+        ))
+    })
+}
+
+/// `DETACH` a database. If it is where unqualified names resolve, the session
+/// moves back to the open database first: DuckDB will not detach the
+/// database in use.
+pub fn detach_database_of(conn: &Connection, alias: &str) -> Result<()> {
+    let (current, default): (String, Option<String>) = conn.query_row(
+        "SELECT current_database(),
+                (SELECT database_name FROM duckdb_databases()
+                 WHERE NOT internal AND database_name != ?1
+                 ORDER BY database_oid LIMIT 1)",
+        [alias],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let quoted = alias.replace('"', "\"\"");
+    if current.eq_ignore_ascii_case(alias) {
+        let default = default.ok_or_else(|| anyhow!("No other database to switch to"))?;
+        conn.execute_batch(&format!("USE \"{}\"", default.replace('"', "\"\"")))?;
+    }
+    conn.execute_batch(&format!("DETACH \"{quoted}\""))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn databases_attach_under_a_free_alias_and_detach() {
+        let conn = Connection::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join("ducklocal_attach_databases");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2026-10 logs.duckdb");
+        let path = path.to_str().unwrap();
+
+        let alias = database_alias_of(&conn, path).unwrap();
+        assert_eq!(alias, "db_2026_10_logs");
+        let attachment = DatabaseAttachment {
+            path: path.to_string(),
+            alias: alias.clone(),
+            read_only: false,
+        };
+        attach_database_of(&conn, &attachment).unwrap();
+        conn.execute_batch(&format!("CREATE TABLE {alias}.events AS SELECT 1 AS id"))
+            .unwrap();
+        // Taken now: the next one gets a suffix.
+        assert_eq!(database_alias_of(&conn, path).unwrap(), "db_2026_10_logs_2");
+
+        // Detaching the database in use moves the session off it first.
+        conn.execute_batch(&format!("USE {alias}")).unwrap();
+        detach_database_of(&conn, &alias).unwrap();
+        let current: String = conn
+            .query_row("SELECT current_database()", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(current, "memory");
+
+        // Read-only, it reads and refuses writes.
+        attach_database_of(
+            &conn,
+            &DatabaseAttachment {
+                read_only: true,
+                ..attachment
+            },
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {alias}.events"), [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(conn
+            .execute_batch(&format!("INSERT INTO {alias}.events VALUES (2)"))
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

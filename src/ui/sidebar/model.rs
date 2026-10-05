@@ -32,6 +32,15 @@ pub(super) struct FileRef {
     pub(super) view_name: String,
 }
 
+/// A database row: what its menu can switch to or detach.
+#[derive(Clone)]
+pub(super) struct DatabaseRef {
+    pub(super) name: String,
+    /// The database the window opened, as opposed to one attached beside
+    /// it: it cannot be detached.
+    pub(super) is_main: bool,
+}
+
 /// A catalog table or view a tree node can act on (generate queries, alter).
 #[derive(Clone)]
 pub(super) struct TableRef {
@@ -54,6 +63,7 @@ pub(super) struct SchemaNodeMeta {
     pub(super) kind: SchemaNodeKind,
     pub(super) detail: Option<SharedString>,
     pub(super) file: Option<FileRef>,
+    pub(super) database: Option<DatabaseRef>,
     pub(super) table: Option<TableRef>,
     pub(super) column: Option<ColumnRef>,
     /// `s3://bucket/key` on S3 file rows, for generating the SELECT query.
@@ -73,6 +83,7 @@ impl SchemaNodeMeta {
             kind,
             detail,
             file: None,
+            database: None,
             table: None,
             column: None,
             s3_uri: None,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use gpui_kit::component::tree::TreeItem;
 use gpui_kit::SharedString;
 
-use super::model::{ColumnRef, FileRef, SchemaNodeKind, SchemaNodeMeta, TableRef};
+use super::model::{ColumnRef, DatabaseRef, FileRef, SchemaNodeKind, SchemaNodeMeta, TableRef};
 use super::s3::{s3_children_items, S3Browse};
 use crate::i18n::tr;
 use crate::recents::{RecentDocument, RecentKind};
@@ -79,15 +79,29 @@ pub(super) fn build_tree_items(
         );
     }
 
-    for db in catalog {
+    for (ix, db) in catalog.iter().enumerate() {
+        // The catalog lists the open database first. Empty, it is the
+        // first-run state, which the sidebar shows as such rather than as an
+        // empty `memory` row; an attached database shows even when empty.
+        let is_main = ix == 0;
+        if is_main && db.tables.is_empty() {
+            continue;
+        }
         let db_id: SharedString = format!("db:{}", db.name).into();
-        meta.insert(
-            db_id.clone(),
-            SchemaNodeMeta::new(
-                SchemaNodeKind::Database,
-                Some(db.tables.len().to_string().into()),
-            ),
+        let mut db_meta = SchemaNodeMeta::new(
+            SchemaNodeKind::Database,
+            Some(db.tables.len().to_string().into()),
         );
+        db_meta.database = Some(DatabaseRef {
+            name: db.name.clone(),
+            is_main,
+        });
+        db_meta.hint = database_hint(db);
+        db_meta.tooltip = db
+            .path
+            .as_deref()
+            .map(|path| crate::db::compact_home(path).into());
+        meta.insert(db_id.clone(), db_meta);
 
         let mut schemas: Vec<(String, Vec<&TableInfo>)> = Vec::new();
         for table in &db.tables {
@@ -224,6 +238,7 @@ fn file_tree_item(
                 id: file.id,
                 view_name: file.view_name.clone(),
             }),
+            database: None,
             table: table_ref.clone(),
             column: None,
             s3_uri: None,
@@ -341,6 +356,19 @@ fn sort_documents(documents: &mut [&RecentDocument]) {
 /// The muted text after a file row's view name: the file name when its stem is
 /// not the view name (`sales_2` from `sales.csv`, a sheet's table from its
 /// workbook), and the folder when another file shares the view name.
+/// What sets a database row apart: read-only, and an engine other than
+/// DuckDB behind it (`sqlite`).
+fn database_hint(db: &DatabaseInfo) -> Option<SharedString> {
+    let mut parts = Vec::new();
+    if !db.kind.is_empty() && !db.kind.eq_ignore_ascii_case("duckdb") {
+        parts.push(db.kind.to_lowercase());
+    }
+    if db.read_only {
+        parts.push(tr("sidebar.database.read_only").to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · ").into())
+}
+
 fn file_hint(path: &str, view_name: &str, duplicate: bool) -> Option<SharedString> {
     let path = std::path::Path::new(path);
     let mut parts = Vec::new();

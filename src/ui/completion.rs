@@ -507,6 +507,9 @@ mod tests {
     fn catalog(table_count: usize) -> Vec<DatabaseInfo> {
         Vec::from([DatabaseInfo {
             name: "memory".into(),
+            path: None,
+            kind: "duckdb".into(),
+            read_only: false,
             tables: (0..table_count)
                 .map(|ix| TableInfo {
                     database: "memory".into(),
