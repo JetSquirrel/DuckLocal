@@ -854,7 +854,11 @@ plot "stats"  { type = "table" query = query.shape x = column_name width = 6 }
     assert_eq!(out["sources"][0]["name"], "orders");
     assert_eq!(out["sources"][0]["path"], "exports/orders-*.csv");
     let resolved = out["sources"][0]["resolved"].as_str().unwrap();
-    assert!(resolved.ends_with("dash/exports/orders-*.csv"), "{resolved}");
+    // A native path: `\` on Windows.
+    assert!(
+        resolved.replace('\\', "/").ends_with("dash/exports/orders-*.csv"),
+        "{resolved}"
+    );
     assert!(std::path::Path::new(resolved).is_absolute(), "{resolved}");
     let total = &out["queries"][0]["columns"];
     assert_eq!(total[0]["name"], "total");
@@ -1233,15 +1237,20 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     let out = s.object(&["schema", "data"]);
     assert_eq!(out["detail"], "full");
     let relations = out["relations"].as_array().unwrap();
-    let names: Vec<&str> = relations.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    // Names are native relative paths, `\`-separated on Windows.
+    let names: Vec<String> = relations
+        .iter()
+        .map(|r| r["name"].as_str().unwrap().replace('\\', "/"))
+        .collect();
     assert_eq!(names, ["data/ids.parquet", "data/nested/notes.txt", "data/orders.csv"]);
     // Parquet knows its row count; a CSV would need a scan.
     assert_eq!(relations[0]["rows"], 7);
     assert!(relations[2]["rows"].is_null());
-    assert_eq!(relations[2]["from"], "'data/orders.csv'");
+    let from = |ix: usize| relations[ix]["from"].as_str().unwrap().replace('\\', "/");
+    assert_eq!(from(2), "'data/orders.csv'");
     assert_eq!(relations[2]["columns"][1]["name"], "amount");
     // A .txt is read as CSV only when asked to.
-    assert_eq!(relations[1]["from"], "read_csv_auto('data/nested/notes.txt')");
+    assert_eq!(from(1), "read_csv_auto('data/nested/notes.txt')");
     // `from` is SQL that works as given.
     let rows = s.success(&[
         "query",
