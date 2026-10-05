@@ -12,6 +12,7 @@ pub mod scale;
 pub mod setup_dialog;
 pub mod sidebar;
 pub mod status_bar;
+pub mod theme;
 pub mod tiles;
 pub mod title_bar;
 pub mod workspace;

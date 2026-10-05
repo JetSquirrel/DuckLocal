@@ -568,6 +568,17 @@ impl Workspace {
         self.focus_active_editor(window, cx);
     }
 
+    /// Put `sql` in the editor, run it, and show its column overview rather
+    /// than its rows.
+    pub fn run_for_overview(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.fill_active_editor(sql, window, cx);
+        if let Some(tab) = self.tabs.get(self.active).and_then(WorkspaceTab::as_query) {
+            tab.results
+                .update(cx, |results, cx| results.expect_overview(cx));
+        }
+        self.run_active(window, cx);
+    }
+
     /// The editor inserts `"\n" + indent` before emitting `PressEnter`; the
     /// cursor then sits right after the insertion. Delete exactly that
     /// insertion — walk back over the indent, then require a newline, and do
@@ -1468,7 +1479,7 @@ impl Workspace {
             })
             .child(
                 Button::new("format-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::WandSparkles)
                     .label(tr("workspace.format"))
@@ -1477,17 +1488,17 @@ impl Workspace {
             )
             .child(
                 Button::new("explain-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::ListTree)
-                    .label("EXPLAIN")
+                    .label(tr("workspace.explain"))
                     .loading(self.explaining)
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
             )
             .child(
                 Button::new("profile-sql")
-                    .outline()
+                    .ghost()
                     .small()
                     .icon(AssetIcon::Gauge)
                     .label(tr("workspace.profile"))

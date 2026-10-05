@@ -150,3 +150,55 @@ fn pressing_toggle_language_does_not_bubble_to_ancestors(cx: &mut TestAppContext
 
     crate::i18n::set_current(Language::Zh);
 }
+
+/// The title bar's dropdowns are kept out of the Windows caption hit-test;
+/// doing that on the trigger button itself hid the popover's trigger area and
+/// a click opened nothing.
+#[gpui_kit::test]
+fn clicking_open_opens_its_menu(cx: &mut TestAppContext) {
+    clicking_opens_a_menu("open-data", cx);
+}
+
+#[gpui_kit::test]
+fn clicking_ui_size_opens_its_menu(cx: &mut TestAppContext) {
+    clicking_opens_a_menu("ui-size", cx);
+}
+
+fn clicking_opens_a_menu(trigger: &'static str, cx: &mut TestAppContext) {
+    let _guard = language_guard();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::ui::init(cx);
+        Theme::change(ThemeMode::Light, None, cx);
+    });
+    let (window, _view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: Point::default(),
+                        size: size(px(1024.), px(200.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |_, cx| {
+                    let state = cx.new(AppState::new);
+                    cx.new(|cx| TitleBarView::new(state, cx))
+                },
+            )
+        })
+        .expect("open test window");
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_none());
+        window.click(trigger, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("popup-menu").is_some(),
+            "clicking {trigger} shows its menu"
+        );
+    })
+    .unwrap();
+}

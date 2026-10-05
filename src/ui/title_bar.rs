@@ -485,8 +485,6 @@ impl TitleBarView {
             .dropdown_caret(true)
             .loading(opening)
             .disabled(opening)
-            // Out of the Windows caption hit-test, like "expand-sidebar".
-            .occlude()
             .dropdown_menu(move |menu, _, _| {
                 let (files_state, folder_state, memory_state) =
                     (state.clone(), state.clone(), state.clone());
@@ -577,36 +575,42 @@ impl Render for TitleBarView {
                 .child(
                     ToolbarGroup::new("title-bar-sources")
                         .gap_1()
-                        // With the sidebar put away, the way back sits where
-                        // the sidebar would begin.
-                        .when(sidebar_collapsed, |this| {
-                            this.child(
-                                Button::new("expand-sidebar")
-                                    .icon(IconName::PanelLeftOpen)
-                                    .tooltip_with_action(
-                                        tr("sidebar.expand"),
-                                        &crate::ui::ToggleSidebar,
-                                        None,
-                                    )
-                                    // The TitleBar marks its whole content
-                                    // strip as a native drag area; on Windows
-                                    // that answers HTCAPTION for every child
-                                    // and swallows its clicks. Occluding keeps
-                                    // this button out of the caption hit-test.
-                                    .occlude()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state
-                                            .update(cx, |state, cx| state.toggle_sidebar(cx));
-                                    })),
-                            )
-                        })
+                        // The sidebar toggle stays in one place whether the
+                        // sidebar is shown or not, so neither it nor the Open
+                        // menu beside it moves when it is clicked.
+                        .child(
+                            Button::new("toggle-sidebar")
+                                .icon(if sidebar_collapsed {
+                                    IconName::PanelLeftOpen
+                                } else {
+                                    IconName::PanelLeftClose
+                                })
+                                .tooltip_with_action(
+                                    tr(if sidebar_collapsed {
+                                        "sidebar.expand"
+                                    } else {
+                                        "sidebar.collapse"
+                                    }),
+                                    &crate::ui::ToggleSidebar,
+                                    None,
+                                )
+                                // The TitleBar marks its whole content
+                                // strip as a native drag area; on Windows
+                                // that answers HTCAPTION for every child
+                                // and swallows its clicks. Occluding keeps
+                                // this button out of the caption hit-test.
+                                .occlude()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
+                                })),
+                        )
                         // Every way data comes in, behind one short label: a
                         // long "Open data…" read as cut off in the compact
                         // bar, and S3 is a source like the others.
                         // `dropdown_menu` wraps the Button in a popover that
                         // is not `Sizable`, so this trigger goes in as content
                         // and carries the toolbar's ghost/compact look by hand.
-                        .content(self.render_open_menu(opening, cx)),
+                        .content(caption_exempt(self.render_open_menu(opening, cx))),
                 )
                 .content(div().flex_1())
                 .content(
@@ -638,7 +642,7 @@ impl Render for TitleBarView {
                                 .icon(IconName::Bot)
                                 .tooltip(tr("setup.title"))
                                 // Out of the Windows caption hit-test, like
-                                // "expand-sidebar".
+                                // "toggle-sidebar".
                                 .occlude()
                                 .on_click(|_, window, cx| {
                                     crate::ui::setup_dialog::open(window, cx)
@@ -668,16 +672,13 @@ impl Render for TitleBarView {
                         // `dropdown_menu` wraps the Button in a popover that is
                         // not `Sizable`, so this trigger goes in as content and
                         // carries the toolbar's ghost/compact look by hand.
-                        .content(
+                        .content(caption_exempt(
                             Button::new("ui-size")
                                 .ghost()
                                 .compact()
                                 .xsmall()
                                 .icon(IconName::ALargeSmall)
                                 .tooltip(tr("title_bar.ui_size"))
-                                // Out of the Windows caption hit-test, like
-                                // "expand-sidebar".
-                                .occlude()
                                 .dropdown_menu(|menu, _, _| {
                                     let current = crate::ui::scale::current();
                                     crate::ui::scale::UiSize::ALL.into_iter().fold(
@@ -693,19 +694,28 @@ impl Render for TitleBarView {
                                         },
                                     )
                                 }),
-                        )
+                        ))
                         .child(
                             Button::new("toggle-theme")
                                 .icon(if dark { IconName::Sun } else { IconName::Moon })
                                 .tooltip(tr("title_bar.toggle_theme"))
                                 // Out of the Windows caption hit-test, like
-                                // "expand-sidebar".
+                                // "toggle-sidebar".
                                 .occlude()
                                 .on_click(Self::toggle_theme),
                         ),
                 ),
         )
     }
+}
+
+/// Keeps a dropdown trigger out of the Windows caption hit-test (see
+/// "toggle-sidebar") without breaking it. The occluding hitbox goes on a
+/// wrapper rather than on the trigger button: on the button it hides the
+/// popover's own trigger area, which sits behind the button and opens the
+/// menu on mouse-down, so the menu never opened.
+fn caption_exempt(dropdown: impl IntoElement) -> impl IntoElement {
+    div().occlude().child(dropdown)
 }
 
 /// Form row: a muted label above the control.

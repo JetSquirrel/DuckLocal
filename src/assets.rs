@@ -28,6 +28,7 @@ icon_assets!(
         CircleStop,
         CircleDashed,
         Gauge,
+        ChartColumn
         DatabasePlus,
         DatabaseX
     ]

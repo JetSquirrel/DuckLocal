@@ -44,7 +44,7 @@ use crate::ui::workspace::Workspace;
 use self::extensions::ExtensionList;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
-use self::sql::{select_column_sql, select_s3_file_sql, select_star_sql};
+use self::sql::{overview_sql, select_column_sql, select_s3_file_sql, select_star_sql};
 use self::tree::build_tree_items;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -308,7 +308,11 @@ impl Sidebar {
             });
 
             let group_name = item.id.clone();
-            let is_section = node_meta.is_some_and(|m| m.kind.is_section());
+            // Sections and databases head what is under them: the same size
+            // as their rows, set apart by weight rather than by shrinking.
+            let is_heading = node_meta.is_some_and(|m| {
+                m.kind.is_section() || m.kind == SchemaNodeKind::Database
+            });
             let hint = node_meta.and_then(|m| m.hint.clone());
             let tooltip: Option<SharedString> = match node_meta.map(|m| m.kind) {
                 Some(SchemaNodeKind::S3Status) => s3_endpoint.clone().map(Into::into),
@@ -322,6 +326,12 @@ impl Sidebar {
             let removable_doc = doc.clone();
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
+            let has_actions = is_s3_root
+                || table.is_some()
+                || editable_column.is_some()
+                || removable_doc.is_some()
+                || file.is_some();
+            let detail = node_meta.and_then(|m| m.detail.clone());
             ListItem::new(ix)
                 .selected(selected)
                 .pl(INDENT_PER_DEPTH * entry.depth() + px(12.))
@@ -347,13 +357,9 @@ impl Sidebar {
                                 .gap_1p5()
                                 .items_baseline()
                                 .map(|this| {
-                                    if is_section {
-                                        this.text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(cx.theme().muted_foreground)
-                                    } else {
-                                        this.text_sm()
-                                    }
+                                    this.text_sm().when(is_heading, |this| {
+                                        this.font_weight(FontWeight::SEMIBOLD)
+                                    })
                                 })
                                 // The name keeps most of the row; the muted
                                 // hint that tells same-named rows apart gives
@@ -448,129 +454,149 @@ impl Sidebar {
                                         })
                                 }),
                         )
-                        .when_some(node_meta.and_then(|m| m.detail.clone()), |this, detail| {
-                            this.child(
-                                div()
-                                    .ml_auto()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(detail),
-                            )
-                        })
-                        .child(
+                        // The count and the hover actions share one slot at the
+                        // row's end: the count steps aside while the pointer is
+                        // on the row, so no row keeps an empty column for
+                        // buttons it is not showing.
+                        .when(detail.is_some() || has_actions, |this| this.child(
                             h_flex()
-                                .id(("row-actions", ix))
-                                .w(crate::ui::scale::design(44.))
+                                .relative()
                                 .flex_shrink_0()
                                 .justify_end()
-                                .gap_1()
-                                .opacity(0.)
-                                .group_hover(group_name, |style| style.opacity(1.))
-                                .on_click(|_, _, cx: &mut App| cx.stop_propagation())
-                                .when(is_s3_root, |this| {
-                                    let sidebar = sidebar.clone();
+                                .when(has_actions, |this| {
+                                    this.min_w(crate::ui::scale::design(44.))
+                                })
+                                .when_some(detail, |this, detail| {
                                     this.child(
-                                        Button::new(("refresh-s3", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::RotateCw)
-                                            .tooltip(tr("sidebar.s3.refresh_buckets"))
-                                            .on_click(move |_, _, cx| {
-                                                if let Some(sidebar) = sidebar.upgrade() {
-                                                    sidebar.update(cx, |this, cx| {
-                                                        this.refresh_s3(cx);
-                                                    });
-                                                }
-                                            }),
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .when(has_actions, |this| {
+                                                this.group_hover(group_name.clone(), |style| {
+                                                    style.opacity(0.)
+                                                })
+                                            })
+                                            .child(detail),
                                     )
                                 })
-                                .when_some(table, |this, table| {
-                                    let workspace = workspace.clone();
-                                    let state = state.clone();
-                                    this.child(
-                                        Button::new(("generate-query", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::Play)
-                                            .tooltip(tr("sidebar.table.generate_select"))
-                                            .on_click(move |_, window, cx| {
-                                                let path = state.read(cx).search_path.clone();
-                                                workspace.update(cx, |ws, cx| {
-                                                    ws.fill_active_editor(
-                                                        select_star_sql(&table, path.as_ref()),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    )
-                                })
-                                .when_some(editable_column, |this, column| {
-                                    this.child(
-                                        Button::new(("edit-column-type", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(gpui_kit::assets::IconName::CaseSensitive)
-                                            .tooltip(tr("sidebar.column.edit_type"))
-                                            .on_click({
-                                                let sidebar = sidebar.clone();
-                                                move |_, window, cx| {
-                                                    if let Some(sidebar) = sidebar.upgrade() {
-                                                        sidebar.update(cx, |this, cx| {
-                                                            this.open_alter_type_dialog(
-                                                                column.clone(),
+                                .when(has_actions, |this| this.child(
+                                    h_flex()
+                                        .id(("row-actions", ix))
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .right_0()
+                                        .items_center()
+                                        .justify_end()
+                                        .gap_1()
+                                        .opacity(0.)
+                                        .group_hover(group_name, |style| style.opacity(1.))
+                                        .on_click(|_, _, cx: &mut App| cx.stop_propagation())
+                                        .when(is_s3_root, |this| {
+                                            let sidebar = sidebar.clone();
+                                            this.child(
+                                                Button::new(("refresh-s3", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::RotateCw)
+                                                    .tooltip(tr("sidebar.s3.refresh_buckets"))
+                                                    .on_click(move |_, _, cx| {
+                                                        if let Some(sidebar) = sidebar.upgrade() {
+                                                            sidebar.update(cx, |this, cx| {
+                                                                this.refresh_s3(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                        })
+                                        .when_some(table, |this, table| {
+                                            let workspace = workspace.clone();
+                                            let state = state.clone();
+                                            this.child(
+                                                Button::new(("generate-query", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Play)
+                                                    .tooltip(tr("sidebar.table.generate_select"))
+                                                    .on_click(move |_, window, cx| {
+                                                        let path = state.read(cx).search_path.clone();
+                                                        workspace.update(cx, |ws, cx| {
+                                                            ws.fill_active_editor(
+                                                                select_star_sql(&table, path.as_ref()),
                                                                 window,
                                                                 cx,
                                                             );
                                                         });
-                                                    }
-                                                }
-                                            }),
-                                    )
-                                })
-                                // A recent app or dashboard leaves the list —
-                                // only the list: its files and any open tab
-                                // stay, so there is nothing to confirm.
-                                .when_some(removable_doc, |this, doc| {
-                                    let state = state.clone();
-                                    this.child(
-                                        Button::new(("remove-recent", ix))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::Close)
-                                            .tooltip(tr("sidebar.recent.remove"))
-                                            .on_click(move |_, _, cx| {
-                                                crate::recents::remove(&doc.path);
-                                                state.update(cx, |_, cx| {
-                                                    cx.emit(RecentsChanged);
-                                                });
-                                            }),
-                                    )
-                                })
-                                .when_some(file, |this, file| {
-                                    this.child(
-                                        Button::new(("remove-file", file.id as usize))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::Close)
-                                            .tooltip(tr("sidebar.file.remove"))
-                                            .on_click({
-                                                let sidebar = sidebar.clone();
-                                                move |_, window, cx| {
-                                                    if let Some(sidebar) = sidebar.upgrade() {
-                                                        sidebar.update(cx, |this, cx| {
-                                                            this.confirm_remove_file(
-                                                                file.clone(),
-                                                                window,
-                                                                cx,
-                                                            );
+                                                    }),
+                                            )
+                                        })
+                                        .when_some(editable_column, |this, column| {
+                                            this.child(
+                                                Button::new(("edit-column-type", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(gpui_kit::assets::IconName::CaseSensitive)
+                                                    .tooltip(tr("sidebar.column.edit_type"))
+                                                    .on_click({
+                                                        let sidebar = sidebar.clone();
+                                                        move |_, window, cx| {
+                                                            if let Some(sidebar) = sidebar.upgrade() {
+                                                                sidebar.update(cx, |this, cx| {
+                                                                    this.open_alter_type_dialog(
+                                                                        column.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                });
+                                                            }
+                                                        }
+                                                    }),
+                                            )
+                                        })
+                                        // A recent app or dashboard leaves the list —
+                                        // only the list: its files and any open tab
+                                        // stay, so there is nothing to confirm.
+                                        .when_some(removable_doc, |this, doc| {
+                                            let state = state.clone();
+                                            this.child(
+                                                Button::new(("remove-recent", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Close)
+                                                    .tooltip(tr("sidebar.recent.remove"))
+                                                    .on_click(move |_, _, cx| {
+                                                        crate::recents::remove(&doc.path);
+                                                        state.update(cx, |_, cx| {
+                                                            cx.emit(RecentsChanged);
                                                         });
-                                                    }
-                                                }
-                                            }),
-                                    )
-                                }),
-                        ),
+                                                    }),
+                                            )
+                                        })
+                                        .when_some(file, |this, file| {
+                                            this.child(
+                                                Button::new(("remove-file", file.id as usize))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Close)
+                                                    .tooltip(tr("sidebar.file.remove"))
+                                                    .on_click({
+                                                        let sidebar = sidebar.clone();
+                                                        move |_, window, cx| {
+                                                            if let Some(sidebar) = sidebar.upgrade() {
+                                                                sidebar.update(cx, |this, cx| {
+                                                                    this.confirm_remove_file(
+                                                                        file.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                });
+                                                            }
+                                                        }
+                                                    }),
+                                            )
+                                        }),
+                                ))
+                        ))
                 )
         })
         // Every hover button on a row is a shortcut to an entry here: the
@@ -612,6 +638,19 @@ impl RowMenu {
                             (None, None) => return,
                         };
                         workspace.update(cx, |ws, cx| ws.fill_active_editor(sql, window, cx));
+                    }),
+            );
+        }
+        if let Some(table) = meta.table.clone() {
+            let workspace = self.workspace.clone();
+            let state = self.state.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.menu.overview"))
+                    .icon(gpui_kit::assets::IconName::ChartColumn)
+                    .on_click(move |_, window, cx| {
+                        let path = state.read(cx).search_path.clone();
+                        let sql = overview_sql(&table, path.as_ref());
+                        workspace.update(cx, |ws, cx| ws.run_for_overview(sql, window, cx));
                     }),
             );
         }
@@ -735,71 +774,61 @@ impl Render for Sidebar {
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
             .child(
-                h_flex().p_2().gap_1().items_center().child(
-                    TabBar::new("sidebar-tabs")
-                        .segmented()
-                        .xsmall()
-                        .selected_index(match self.tab {
-                            SidebarTab::Schema => 0,
-                            SidebarTab::History => 1,
-                            SidebarTab::Extensions => 2,
-                        })
-                        .on_click(cx.listener(|this, ix, _, cx| {
-                            this.tab = match ix {
-                                0 => SidebarTab::Schema,
-                                1 => SidebarTab::History,
-                                _ => SidebarTab::Extensions,
-                            };
-                            if this.tab == SidebarTab::Extensions {
-                                this.reload_extensions(cx);
-                            }
-                            cx.notify();
-                        }))
-                        .child(Tab::new().label(tr("sidebar.tab.schema")))
-                        .child(Tab::new().label(tr("sidebar.tab.history")))
-                        .child(Tab::new().label(tr("sidebar.tab.extensions"))),
-                )
-                // The sidebar's own actions share the tabs' row, as borderless
-                // icon buttons: refresh while the schema is shown, and the
-                // button that puts the whole sidebar away.
-                .child(div().flex_1())
-                .when(self.tab == SidebarTab::Schema, |this| {
-                    this.child(
-                        Button::new("refresh-schema")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::RotateCw)
-                            .tooltip(tr("sidebar.refresh_schema"))
-                            .loading(self.refreshing_schema)
-                            .disabled(self.refreshing_schema)
-                            .on_click(cx.listener(Self::refresh_schema)),
+                h_flex()
+                    .p_2()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        TabBar::new("sidebar-tabs")
+                            .segmented()
+                            .with_size(crate::ui::scale::compact_control())
+                            .selected_index(match self.tab {
+                                SidebarTab::Schema => 0,
+                                SidebarTab::History => 1,
+                                SidebarTab::Extensions => 2,
+                            })
+                            .on_click(cx.listener(|this, ix, _, cx| {
+                                this.tab = match ix {
+                                    0 => SidebarTab::Schema,
+                                    1 => SidebarTab::History,
+                                    _ => SidebarTab::Extensions,
+                                };
+                                if this.tab == SidebarTab::Extensions {
+                                    this.reload_extensions(cx);
+                                }
+                                cx.notify();
+                            }))
+                            .child(Tab::new().label(tr("sidebar.tab.schema")))
+                            .child(Tab::new().label(tr("sidebar.tab.history")))
+                            .child(Tab::new().label(tr("sidebar.tab.extensions"))),
                     )
-                })
-                .when(self.tab == SidebarTab::Extensions, |this| {
-                    this.child(
-                        Button::new("refresh-extensions")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::RotateCw)
-                            .tooltip(tr("sidebar.extensions.refresh"))
-                            .loading(matches!(self.extensions, ExtensionList::Loading))
-                            .on_click(cx.listener(|this, _, _, cx| this.reload_extensions(cx))),
-                    )
-                })
-                .child(
-                    Button::new("collapse-sidebar")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::PanelLeftClose)
-                        .tooltip_with_action(
-                            tr("sidebar.collapse"),
-                            &crate::ui::ToggleSidebar,
-                            None,
+                    // The sidebar's own actions share the tabs' row, as borderless
+                    // icon buttons. Putting the sidebar away is the title bar's
+                    // toggle, which stays put whether the sidebar is shown or not.
+                    .child(div().flex_1())
+                    .when(self.tab == SidebarTab::Schema, |this| {
+                        this.child(
+                            Button::new("refresh-schema")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::RotateCw)
+                                .tooltip(tr("sidebar.refresh_schema"))
+                                .loading(self.refreshing_schema)
+                                .disabled(self.refreshing_schema)
+                                .on_click(cx.listener(Self::refresh_schema)),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |state, cx| state.toggle_sidebar(cx));
-                        })),
-                ),
+                    })
+                    .when(self.tab == SidebarTab::Extensions, |this| {
+                        this.child(
+                            Button::new("refresh-extensions")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::RotateCw)
+                                .tooltip(tr("sidebar.extensions.refresh"))
+                                .loading(matches!(self.extensions, ExtensionList::Loading))
+                                .on_click(cx.listener(|this, _, _, cx| this.reload_extensions(cx))),
+                        )
+                    }),
             )
             .child(div().flex_1().min_h_0().child(match self.tab {
                 SidebarTab::Schema => self.render_schema(window, cx),

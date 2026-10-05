@@ -31,6 +31,17 @@ use gpui_kit::assets::IconName as AssetIconName;
 enum ResultsTab {
     Table,
     Chart,
+    Overview,
+}
+
+/// The overview tab's content. It summarizes the current result's query,
+/// computed when the tab is shown and dropped when the result changes.
+enum OverviewState {
+    /// Not computed for the current result.
+    Idle,
+    Loading,
+    Ready(Rc<crate::overview::Overview>),
+    Failed(String),
 }
 
 enum ResultView {
@@ -409,6 +420,10 @@ pub struct ResultsPanel {
     table: Entity<TableState<ResultTableDelegate>>,
     /// SQL that produced the current row set, kept for export.
     rows_sql: Option<String>,
+    overview: OverviewState,
+    /// Bumped by every overview request, so an answer that arrives after a
+    /// newer request — or a new result — is dropped rather than shown.
+    overview_request: u64,
     /// Chart rows derived from the current result. Built on first use of the
     /// chart tab and reused across frames; `None` means not yet derived.
     chart_data: Option<Rc<ChartData>>,
@@ -502,6 +517,8 @@ impl ResultsPanel {
         Self {
             view: ResultView::Empty,
             tab: ResultsTab::Table,
+            overview: OverviewState::Idle,
+            overview_request: 0,
             table,
             rows_sql: None,
             chart_data: None,
@@ -527,6 +544,8 @@ impl ResultsPanel {
 
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
         self.view = ResultView::Running;
+        self.overview = OverviewState::Idle;
+        self.overview_request += 1;
         self.script.clear();
         cx.notify();
     }
@@ -594,6 +613,8 @@ impl ResultsPanel {
 
     fn show(&mut self, shown: &Shown, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.chart_data = None;
+        self.overview = OverviewState::Idle;
+        self.overview_request += 1;
         match shown {
             Shown::Rows(result) => {
                 self.table.update(cx, |table, cx| {
@@ -616,7 +637,63 @@ impl ResultsPanel {
                 self.view = ResultView::Failed(message.clone());
             }
         }
+        if self.tab == ResultsTab::Overview {
+            self.load_overview(cx);
+        }
         cx.notify();
+    }
+
+    /// Show the overview tab for the next result: the sidebar's "Column
+    /// overview" runs a query and wants its columns, not its rows.
+    pub fn expect_overview(&mut self, cx: &mut Context<Self>) {
+        self.tab = ResultsTab::Overview;
+        cx.notify();
+    }
+
+    /// Summarize the current result's columns, unless that is done or under
+    /// way. The query runs again, whole: the overview describes the result,
+    /// not the rows the grid kept.
+    fn load_overview(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.overview, OverviewState::Idle) {
+            return;
+        }
+        let Some(sql) = self
+            .rows_sql
+            .clone()
+            .filter(|_| matches!(self.view, ResultView::Rows(_)))
+        else {
+            return;
+        };
+        if !crate::query::is_subquery(&sql) {
+            self.overview = OverviewState::Failed(tr("results.overview.not_query").to_string());
+            return;
+        }
+        let relation = format!("({})", sql.trim().trim_end_matches(';'));
+        self.overview_request += 1;
+        let request = self.overview_request;
+        self.overview = OverviewState::Loading;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let label = tr("results.overview.query");
+            let result = smol::unblock(move || {
+                crate::db::with_connection(|conn| {
+                    crate::overview::overview_of(conn, &relation, label)
+                })
+            })
+            .await;
+            this.update(cx, |this, cx| {
+                if this.overview_request != request {
+                    return;
+                }
+                this.overview = match result {
+                    Ok(overview) => OverviewState::Ready(Rc::new(overview)),
+                    Err(e) => OverviewState::Failed(e.to_string()),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The strip of a script's statements: one chip each, marked done,
@@ -873,71 +950,77 @@ impl ResultsPanel {
             )
         });
 
-        h_flex()
+        // The tab bar is the whole header, so its own bottom line runs the
+        // panel's width and the selected tab's underline sits on it; a border
+        // on a row around it drew a second line a few pixels lower.
+        TabBar::new("results-tabs")
+            .underline()
+            .small()
             .w_full()
             .px_3()
-            .gap_3()
-            .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                TabBar::new("results-tabs")
-                    .underline()
-                    .small()
-                    .selected_index(match self.tab {
-                        ResultsTab::Table => 0,
-                        ResultsTab::Chart => 1,
-                    })
-                    .on_click(cx.listener(|this, ix, _, cx| {
-                        this.tab = match ix {
-                            0 => ResultsTab::Table,
-                            _ => ResultsTab::Chart,
-                        };
-                        cx.notify();
-                    }))
-                    .child(Tab::new().label(tr("results.tab.table")))
-                    .child(Tab::new().label(tr("results.tab.chart"))),
-            )
-            .child(div().flex_1())
-            .when_some(summary, |this, summary| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(summary),
-                )
+            .selected_index(match self.tab {
+                ResultsTab::Table => 0,
+                ResultsTab::Chart => 1,
+                ResultsTab::Overview => 2,
             })
-            .child(
-                // A real toolbar, not an h_flex: roving arrow-key focus and
-                // the compact ghost treatment come with it.
-                Toolbar::new("results-export-toolbar")
-                    .xsmall()
-                    // Hidden, not greyed, without rows to export: two dead
-                    // buttons over an empty panel only add noise. Hidden
-                    // rather than removed, so the header keeps its height.
-                    .when(!has_rows, |this| this.invisible())
-                    .child(
-                        ToolbarGroup::new("results-export-group")
-                            .gap_1()
-                            .child(
-                                Button::new("export-csv")
-                                    .icon(gpui_kit::assets::IconName::Download)
-                                    .label(tr("results.export_csv"))
-                                    .disabled(!has_rows)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_export_dialog(ExportFormat::Csv, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("export-parquet")
-                                    .icon(gpui_kit::assets::IconName::Download)
-                                    .label(tr("results.export_parquet"))
-                                    .disabled(!has_rows)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_export_dialog(ExportFormat::Parquet, window, cx);
-                                    })),
-                            ),
-                    ),
+            .on_click(cx.listener(|this, ix, _, cx| {
+                this.tab = match ix {
+                    0 => ResultsTab::Table,
+                    1 => ResultsTab::Chart,
+                    _ => ResultsTab::Overview,
+                };
+                if this.tab == ResultsTab::Overview {
+                    this.load_overview(cx);
+                }
+                cx.notify();
+            }))
+            .child(Tab::new().label(tr("results.tab.table")))
+            .child(Tab::new().label(tr("results.tab.chart")))
+            .child(Tab::new().label(tr("results.tab.overview")))
+            .suffix(
+                h_flex()
+                .gap_3()
+                .items_center()
+                .when_some(summary, |this, summary| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(summary),
+                    )
+                })
+                .child(
+                    // A real toolbar, not an h_flex: roving arrow-key focus and
+                    // the compact ghost treatment come with it.
+                    Toolbar::new("results-export-toolbar")
+                        .xsmall()
+                        // Hidden, not greyed, without rows to export: two dead
+                        // buttons over an empty panel only add noise. Hidden
+                        // rather than removed, so the header keeps its height.
+                        .when(!has_rows, |this| this.invisible())
+                        .child(
+                            ToolbarGroup::new("results-export-group")
+                                .gap_1()
+                                .child(
+                                    Button::new("export-csv")
+                                        .icon(gpui_kit::assets::IconName::Download)
+                                        .label(tr("results.export_csv"))
+                                        .disabled(!has_rows)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_export_dialog(ExportFormat::Csv, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("export-parquet")
+                                        .icon(gpui_kit::assets::IconName::Download)
+                                        .label(tr("results.export_parquet"))
+                                        .disabled(!has_rows)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_export_dialog(ExportFormat::Parquet, window, cx);
+                                        })),
+                                ),
+                        ),
+                ),
             )
     }
 
@@ -1035,6 +1118,38 @@ impl ResultsPanel {
         }
     }
 
+    fn render_overview_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        match (&self.view, &self.overview) {
+            (ResultView::Running, _) | (_, OverviewState::Loading) => v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(
+                    Icon::new(IconName::LoaderCircle)
+                        .large()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr("results.overview.running")),
+                )
+                .into_any_element(),
+            (_, OverviewState::Failed(message)) => div()
+                .size_full()
+                .p_3()
+                .child(
+                    Alert::error("overview-error", message.clone())
+                        .title(tr("results.failed.title")),
+                )
+                .into_any_element(),
+            (_, OverviewState::Ready(overview)) => render_overview(overview, cx),
+            (_, OverviewState::Idle) => empty_state(tr("results.overview.empty"), None, cx),
+        }
+    }
+
     fn render_chart_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
         match &self.view {
             ResultView::Rows(result) => {
@@ -1063,7 +1178,7 @@ impl ResultsPanel {
                         h_flex().px_4().pt_3().child(
                             TabBar::new("chart-kinds")
                                 .segmented()
-                                .xsmall()
+                                .with_size(crate::ui::scale::compact_control())
                                 .selected_index(selected)
                                 .on_click(cx.listener(move |this, ix: &usize, _, cx| {
                                     if let Some(kind) = picker_kinds.get(*ix) {
@@ -1141,6 +1256,7 @@ impl Render for ResultsPanel {
             .child(div().flex_1().min_h_0().child(match self.tab {
                 ResultsTab::Table => self.render_table_content(cx),
                 ResultsTab::Chart => self.render_chart_content(cx),
+                ResultsTab::Overview => self.render_overview_content(cx),
             }))
     }
 }
@@ -1166,6 +1282,235 @@ fn shown_clone(shown: &Shown) -> Shown {
 }
 
 /// Shared "query running" placeholder, used by both the table and chart tabs.
+/// Width of an overview row's name column, and of its distribution.
+const OVERVIEW_NAME_WIDTH: f32 = 180.;
+const OVERVIEW_CHART_WIDTH: f32 = 168.;
+const OVERVIEW_CHART_HEIGHT: f32 = 28.;
+
+/// Every column of a result, one row each: its name and type, how much of it
+/// is NULL, how many values it takes, its range, and its shape.
+fn render_overview(
+    overview: &crate::overview::Overview,
+    cx: &mut Context<ResultsPanel>,
+) -> AnyElement {
+    let rows = overview.row_count.max(0) as u64;
+    let lines = overview
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(ix, column)| render_overview_column(ix, column, rows, cx))
+        .collect::<Vec<_>>();
+    v_flex()
+        .size_full()
+        .child(
+            h_flex().px_3().py_2().child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(trf(
+                        "results.overview.summary",
+                        &[
+                            &overview.label,
+                            &group_digits(rows),
+                            &overview.columns.len().to_string(),
+                            &crate::state::format_duration(overview.elapsed_ms as i64),
+                        ],
+                    )),
+            ),
+        )
+        .child(
+            v_flex()
+                .id("overview-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px_3()
+                .pb_3()
+                .children(lines),
+        )
+        .into_any_element()
+}
+
+fn render_overview_column(
+    ix: usize,
+    column: &crate::overview::ColumnOverview,
+    rows: u64,
+    cx: &mut Context<ResultsPanel>,
+) -> impl IntoElement {
+    use crate::overview::Distribution;
+    let mono = cx.theme().mono_font_family.clone();
+    let muted = cx.theme().muted_foreground;
+    let null_pct = (column.null_fraction * 100.0).clamp(0.0, 100.0);
+    let range = match (&column.min, &column.max) {
+        (Some(min), Some(max)) if min != max => Some(format!("{min} – {max}")),
+        (Some(min), _) => Some(min.clone()),
+        _ => None,
+    };
+
+    let distribution = match &column.distribution {
+        Distribution::Bins(bins) => {
+            let peak = bins.iter().map(|(_, n)| *n).max().unwrap_or(0).max(1) as f32;
+            let width = (OVERVIEW_CHART_WIDTH / bins.len().max(1) as f32 - 1.).max(1.);
+            h_flex()
+                .w(px(OVERVIEW_CHART_WIDTH))
+                .h(px(OVERVIEW_CHART_HEIGHT))
+                .flex_none()
+                .items_end()
+                .gap(px(1.))
+                .children(bins.iter().map(|(_, n)| {
+                    div()
+                        .w(px(width))
+                        // A bin with rows stays visible, however small.
+                        .h(px(if *n == 0 {
+                            0.
+                        } else {
+                            (OVERVIEW_CHART_HEIGHT * *n as f32 / peak).max(2.)
+                        }))
+                        .bg(cx.theme().primary.opacity(0.7))
+                }))
+                .into_any_element()
+        }
+        Distribution::Top(values) => {
+            let estimated = values.iter().all(|(_, n)| n.is_none());
+            v_flex()
+                .w(px(OVERVIEW_CHART_WIDTH))
+                .flex_none()
+                .gap(px(2.))
+                .when(estimated, |this| {
+                    this.child(
+                        div()
+                            .text_color(muted)
+                            .child(tr("results.overview.estimated")),
+                    )
+                })
+                .children(values.iter().enumerate().map(|(rank, (value, n))| {
+                    let share = n.map(|n| n as f32 / rows.max(1) as f32).unwrap_or(0.);
+                    h_flex()
+                        .id(("overview-top", ix * 16 + rank))
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .relative()
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .bottom_0()
+                                        .left_0()
+                                        .w(relative(share))
+                                        .bg(cx.theme().primary.opacity(0.15)),
+                                )
+                                .child(div().px_1().truncate().child(value.clone())),
+                        )
+                        .when_some(*n, |this, n| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(muted)
+                                    .child(format!("{:.0}%", share * 100.)),
+                            )
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(group_digits(n))
+                                    .build(window, cx)
+                            })
+                        })
+                }))
+                .into_any_element()
+        }
+        Distribution::None => div()
+            .w(px(OVERVIEW_CHART_WIDTH))
+            .flex_none()
+            .into_any_element(),
+    };
+
+    h_flex()
+        .id(("overview-column", ix))
+        .w_full()
+        .py_2()
+        .gap_4()
+        .items_center()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .text_xs()
+        .child(
+            v_flex()
+                .w(px(OVERVIEW_NAME_WIDTH))
+                .flex_none()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .truncate()
+                        .child(column.name.clone()),
+                )
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_color(muted)
+                        .truncate()
+                        .child(column.data_type.clone()),
+                ),
+        )
+        .child(
+            v_flex()
+                .w(px(96.))
+                .flex_none()
+                .gap_1()
+                .child(
+                    div()
+                        .when(null_pct > 0., |d| d.text_color(cx.theme().warning))
+                        .when(null_pct == 0., |d| d.text_color(muted))
+                        .child(trf("results.overview.nulls", &[&format!("{null_pct:.1}%")])),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(4.))
+                        .rounded_sm()
+                        .bg(cx.theme().border)
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_sm()
+                                .w(relative((null_pct / 100.) as f32))
+                                .bg(cx.theme().warning),
+                        ),
+                ),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .text_color(muted)
+                .child(div().child(trf(
+                    "results.overview.distinct",
+                    &[&group_digits(column.approx_unique.max(0) as u64)],
+                )))
+                .when_some(range, |this, range| {
+                    this.child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_color(cx.theme().foreground)
+                            .truncate()
+                            .child(range),
+                    )
+                })
+                .when_some(column.median.clone(), |this, median| {
+                    this.child(
+                        div()
+                            .font_family(mono.clone())
+                            .truncate()
+                            .child(trf("results.overview.median", &[&median])),
+                    )
+                }),
+        )
+        .child(distribution)
+}
+
 /// Widest a time bar gets: the operator that took every second of the query.
 const PROFILE_BAR_WIDTH: f32 = 96.;
 /// How far each level of the plan tree is indented.
@@ -1525,6 +1870,51 @@ mod profile_render_tests {
             }
             let plan = summary["plan"].as_array().unwrap();
             assert_eq!(plan.iter().map(count_json).sum::<usize>(), operators);
+        })
+        .unwrap();
+    }
+
+    /// A real overview paints every shape of column: bins, counted and
+    /// estimated common values, and a nested column with nothing to draw.
+    #[gpui_kit::test]
+    fn an_overview_paints_every_kind_of_column(cx: &mut TestAppContext) {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t AS SELECT range AS id, range % 3 = 0 AS flag, \
+             ['a', 'b'][range % 2 + 1] AS s, [range] AS l, \
+             CASE WHEN range % 5 = 0 THEN NULL ELSE DATE '2026-01-01' + CAST(range AS INTEGER) END AS d \
+             FROM range(20000)",
+        )
+        .unwrap();
+        let overview = crate::overview::overview_of(&conn, "t", "t").unwrap();
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let (window, panel) = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1024.), px(600.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| cx.new(|cx| ResultsPanel::new(window, cx)),
+                )
+            })
+            .expect("open test window");
+        cx.update_window(window, |_, window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.tab = super::ResultsTab::Overview;
+                panel.overview = super::OverviewState::Ready(std::rc::Rc::new(overview));
+                cx.notify();
+            });
+            window.render_frame(cx);
         })
         .unwrap();
     }

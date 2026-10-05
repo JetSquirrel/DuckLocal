@@ -8,6 +8,7 @@ mod excel;
 mod extensions;
 mod history;
 mod i18n;
+mod overview;
 #[cfg(test)]
 mod perf_probe;
 mod profile;
@@ -25,7 +26,7 @@ mod state;
 mod storage;
 mod ui;
 
-use gpui_kit::component::{Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{ThemeMode, TitleBar};
 use gpui_kit::*;
 
 use crate::app::DuckLocalApp;
@@ -85,7 +86,7 @@ fn main() {
     application.run(move |cx| {
             gpui_kit::init(cx);
             ui::init(cx);
-            Theme::change(ThemeMode::Light, None, cx);
+            ui::theme::install(ThemeMode::Light, cx);
             // The interface size is the rem base; it must be re-applied after
             // every Theme::change, which resets the theme to stock defaults.
             ui::scale::apply(cx);
