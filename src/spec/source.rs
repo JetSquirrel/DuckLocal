@@ -149,6 +149,18 @@ fn leading_word(text: &str) -> (&str, &str) {
 mod tests {
     use super::*;
 
+    // Fully absolute fixtures on both platforms, independent of the runner's drive.
+    fn root() -> &'static Path {
+        #[cfg(windows)]
+        {
+            Path::new(r"C:\")
+        }
+        #[cfg(not(windows))]
+        {
+            Path::new("/")
+        }
+    }
+
     fn source(name: &str, path: &str) -> Source {
         Source {
             name: name.into(),
@@ -162,62 +174,73 @@ mod tests {
     fn a_query_that_names_no_source_runs_as_written() {
         let sources = [source("orders", "orders.csv")];
         let sql = "SELECT * FROM customers";
-        assert_eq!(expand(sql, &sources, Path::new("/data")), sql);
+        assert_eq!(expand(sql, &sources, &root().join("data")), sql);
         // Part of a longer word is not the name.
         let sql = "SELECT * FROM orders_2026";
-        assert_eq!(expand(sql, &sources, Path::new("/data")), sql);
+        assert_eq!(expand(sql, &sources, &root().join("data")), sql);
     }
 
     #[test]
     fn a_named_source_becomes_a_cte_read_from_the_specs_folder() {
+        let base = root().join("data").join("dash");
+        let path = base.join("exports").join("o*.csv");
         let sources = [source("orders", "exports/o*.csv"), source("unused", "u.parquet")];
         let sql = expand(
             "SELECT channel FROM ORDERS GROUP BY 1",
             &sources,
-            Path::new("/data/dash"),
+            &base,
         );
         assert_eq!(
             sql,
-            "WITH \"orders\" AS (SELECT * FROM read_csv_auto('/data/dash/exports/o*.csv'))\nSELECT channel FROM ORDERS GROUP BY 1"
+            format!("WITH \"orders\" AS (SELECT * FROM read_csv_auto('{}'))\nSELECT channel FROM ORDERS GROUP BY 1", path.display())
         );
         assert!(!sql.contains("unused"), "{sql}");
     }
 
     #[test]
     fn a_query_with_its_own_ctes_keeps_them() {
-        let sources = [source("orders", "/abs/o.parquet")];
-        let base = Path::new("/ignored");
+        let path = root().join("abs").join("o.parquet");
+        let sources = [source("orders", &path.to_string_lossy())];
+        let base = root().join("ignored");
         assert_eq!(
-            expand("-- note\nWITH t AS (FROM orders) SELECT * FROM t", &sources, base),
-            "WITH \"orders\" AS (SELECT * FROM read_parquet('/abs/o.parquet')),\nt AS (FROM orders) SELECT * FROM t"
+            expand("-- note\nWITH t AS (FROM orders) SELECT * FROM t", &sources, &base),
+            format!("WITH \"orders\" AS (SELECT * FROM read_parquet('{}')),\nt AS (FROM orders) SELECT * FROM t", path.display())
         );
         assert_eq!(
-            expand("with recursive t AS (FROM orders) FROM t", &sources, base),
-            "WITH RECURSIVE \"orders\" AS (SELECT * FROM read_parquet('/abs/o.parquet')),\nt AS (FROM orders) FROM t"
+            expand("with recursive t AS (FROM orders) FROM t", &sources, &base),
+            format!("WITH RECURSIVE \"orders\" AS (SELECT * FROM read_parquet('{}')),\nt AS (FROM orders) FROM t", path.display())
         );
     }
 
     #[test]
     fn statements_a_cte_cannot_lead_are_wrapped() {
-        let sources = [source("orders", "/abs/o.json")];
+        let path = root().join("abs").join("o.json");
+        let sources = [source("orders", &path.to_string_lossy())];
         assert_eq!(
-            expand("SUMMARIZE orders; -- all of it", &sources, Path::new("/")),
-            "WITH \"orders\" AS (SELECT * FROM read_json_auto('/abs/o.json'))\nSELECT * FROM (\nSUMMARIZE orders; -- all of it\n)"
+            expand("SUMMARIZE orders; -- all of it", &sources, root()),
+            format!("WITH \"orders\" AS (SELECT * FROM read_json_auto('{}'))\nSELECT * FROM (\nSUMMARIZE orders; -- all of it\n)", path.display())
         );
     }
 
     #[test]
     fn quotes_in_a_path_stay_inside_the_literal() {
         let sources = [source("o", "it's.csv")];
-        let sql = expand("FROM o", &sources, Path::new("/d"));
-        assert!(sql.contains("('/d/it''s.csv')"), "{sql}");
+        let base = root().join("d");
+        let sql = expand("FROM o", &sources, &base);
+        let escaped = base.join("it''s.csv");
+        assert_eq!(
+            sql,
+            format!("WITH \"o\" AS (SELECT * FROM read_csv_auto('{}'))\nFROM o", escaped.display())
+        );
     }
 
     #[test]
     fn relative_paths_follow_the_spec_and_absolute_ones_stay() {
-        assert_eq!(resolve("a/b.csv", Path::new("/x/y")), PathBuf::from("/x/y/a/b.csv"));
-        assert_eq!(resolve("/abs.csv", Path::new("/x/y")), PathBuf::from("/abs.csv"));
-        assert_eq!(base_of(Path::new("/x/y/d.dash")), PathBuf::from("/x/y"));
+        let base = root().join("x").join("y");
+        let absolute = root().join("abs.csv");
+        assert_eq!(resolve("a/b.csv", &base), base.join("a").join("b.csv"));
+        assert_eq!(resolve(&absolute.to_string_lossy(), &base), absolute);
+        assert_eq!(base_of(&base.join("d.dash")), base);
     }
 
     #[test]
