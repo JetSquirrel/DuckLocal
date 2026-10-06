@@ -57,7 +57,6 @@ fn file_url_path(url: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-use crate::analysis::apps;
 use crate::i18n::{tr, trf};
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
@@ -93,23 +92,17 @@ impl DuckLocalApp {
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || {
                 crate::history::init().ok();
-                // A `.dash` file is a dashboard, not data; a directory with the
-                // app entry file in it is an app, not a folder of data. Both
-                // open as tabs, and the rest of the command line keeps the
-                // behaviour it had.
-                let (from_command_line, rest) = apps::split_paths(&paths);
-                let (dashboards, data) = crate::spec::tabs::split(rest);
+                // A `.dash` file is a dashboard, not data: it opens as a tab,
+                // and the rest of the command line keeps the behaviour it had.
+                let (dashboards, data) = crate::spec::tabs::split(paths);
                 let outcome = state::open_request(&data, true)?;
                 // Read here rather than in the workspace: this is the one place
                 // in the app that is already off the UI thread and has the
                 // history store open.
-                let remembered = apps::restore();
                 let remembered_dashboards = crate::spec::tabs::restore();
                 let offer_setup = crate::setup::offer_once();
                 Ok::<_, anyhow::Error>((
-                    from_command_line,
                     dashboards,
-                    remembered,
                     remembered_dashboards,
                     outcome,
                     offer_setup,
@@ -119,23 +112,13 @@ impl DuckLocalApp {
 
             this.update_in(cx, |this, window, cx| match result {
                 Ok((
-                    from_command_line,
                     dashboards,
-                    remembered,
                     remembered_dashboards,
                     outcome,
                     offer_setup,
                 )) => {
                     apply_open_outcome(open_state, outcome, window, cx);
                     this.workspace.update(cx, |ws, cx| {
-                        let mut directories = from_command_line;
-                        directories.extend(
-                            remembered
-                                .apps
-                                .iter()
-                                .map(|app| std::path::PathBuf::from(&app.path)),
-                        );
-                        ws.open_apps(directories, window, cx);
                         for path in dashboards {
                             ws.open_dashboard(path, window, cx);
                         }
@@ -144,13 +127,9 @@ impl DuckLocalApp {
                         }
                         ws.focus_active_editor(window, cx);
                     });
-                    // A remembered app or dashboard that is gone, or is no
-                    // longer one, is named rather than silently dropped.
-                    for problem in remembered
-                        .problems
-                        .into_iter()
-                        .chain(remembered_dashboards.problems)
-                    {
+                    // A remembered dashboard that is gone, or is no longer
+                    // one, is named rather than silently dropped.
+                    for problem in remembered_dashboards.problems {
                         window.push_notification(Notification::error(problem), cx);
                     }
                     // Installing the app does not put `ducklocal` on the PATH;
@@ -232,16 +211,11 @@ impl DuckLocalApp {
     }
 
     /// Paths from outside the app — a drop on the window, or a document
-    /// Finder opens with it: an app directory opens an app tab, a `.dash`
-    /// file a dashboard tab, and everything else is the same request the
+    /// Finder opens with it: a `.dash` file opens a dashboard tab, and
+    /// everything else is the same request the
     /// command line and the pickers make.
     fn open_external(&mut self, requested: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let (directories, rest) = apps::split_paths(&requested);
-        for directory in directories {
-            self.workspace
-                .update(cx, |ws, cx| ws.open_app(directory, window, cx));
-        }
-        let (dashboards, data) = crate::spec::tabs::split(rest);
+        let (dashboards, data) = crate::spec::tabs::split(requested);
         for path in dashboards {
             self.workspace
                 .update(cx, |ws, cx| ws.open_dashboard(path, window, cx));

@@ -1,15 +1,32 @@
 //! Which dashboard specs are open, remembered between launches.
 //!
-//! The same deal apps get (`src/analysis/apps.rs`): a dashboard tab is a
-//! document, so the set of open ones is one `settings` value, written when the
-//! set changes. A remembered file that is gone is dropped with a reason rather
-//! than reopened as an empty tab. The entry shape is the apps' `OpenApp` —
-//! a path and a title is all either kind needs.
+//! A dashboard tab is a document, so the set of open ones is one `settings`
+//! value, written when the set changes. A remembered file that is gone is
+//! dropped with a reason rather than reopened as an empty tab.
 
 use std::path::{Path, PathBuf};
 
-use crate::analysis::apps::OpenApp;
 use crate::i18n::trf;
+
+/// One remembered dashboard tab: a path and a title is all it needs.
+///
+/// The field names are the stored JSON's, so they must not change: a stored
+/// list this build cannot read would come back as no tabs at all.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpenDocument {
+    pub path: String,
+    /// The tab's title, kept so a renamed tab comes back renamed.
+    pub title: String,
+}
+
+impl OpenDocument {
+    pub fn new(path: PathBuf, title: impl Into<String>) -> Self {
+        Self {
+            path: path.to_string_lossy().to_string(),
+            title: title.into(),
+        }
+    }
+}
 
 /// The extension a dashboard spec carries.
 pub const EXTENSION: &str = "dash";
@@ -26,9 +43,6 @@ pub fn is_spec(path: &Path) -> bool {
 }
 
 /// Pull the dashboard specs out of a path list, leaving the rest in order.
-///
-/// Runs after the apps' split: a directory with a `main.js` never reaches
-/// here, and a `.dash` file inside one is the app's business, not a tab's.
 pub fn split(paths: Vec<String>) -> (Vec<PathBuf>, Vec<String>) {
     let mut specs = Vec::new();
     let mut rest = Vec::new();
@@ -54,22 +68,22 @@ pub fn title_for(path: &Path) -> String {
 /// and one message per one that is not.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Restored {
-    pub specs: Vec<OpenApp>,
+    pub specs: Vec<OpenDocument>,
     pub problems: Vec<String>,
 }
 
-pub fn to_json(specs: &[OpenApp]) -> String {
+pub fn to_json(specs: &[OpenDocument]) -> String {
     serde_json::to_string(specs).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// Read back a remembered list. A value this build cannot read is no
 /// dashboards rather than a launch that fails.
-pub fn from_json(json: &str) -> Vec<OpenApp> {
+pub fn from_json(json: &str) -> Vec<OpenDocument> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
 /// Drop the specs that are no longer there, saying which.
-pub fn keep_available(specs: Vec<OpenApp>) -> Restored {
+pub fn keep_available(specs: Vec<OpenDocument>) -> Restored {
     let mut restored = Restored::default();
     for spec in specs {
         let path = Path::new(&spec.path);
@@ -85,7 +99,7 @@ pub fn keep_available(specs: Vec<OpenApp>) -> Restored {
 }
 
 /// Write the open dashboards, replacing what was there.
-pub fn remember(specs: &[OpenApp]) {
+pub fn remember(specs: &[OpenDocument]) {
     if let Err(error) = crate::history::set_setting(SETTING, &to_json(specs)) {
         tracing::warn!("Could not remember the open dashboards: {error}");
     }
@@ -157,7 +171,7 @@ mod tests {
 
     #[test]
     fn the_remembered_list_survives_a_round_trip() {
-        let specs = vec![OpenApp::new(PathBuf::from("/dash/sales.dash"), "Sales")];
+        let specs = vec![OpenDocument::new(PathBuf::from("/dash/sales.dash"), "Sales")];
         assert_eq!(from_json(&to_json(&specs)), specs);
         assert_eq!(from_json("not json"), Vec::new());
     }
@@ -169,8 +183,8 @@ mod tests {
         let gone = directory.0.join("gone.dash");
 
         let restored = keep_available(vec![
-            OpenApp::new(present.clone(), "kept"),
-            OpenApp::new(gone.clone(), "dropped"),
+            OpenDocument::new(present.clone(), "kept"),
+            OpenDocument::new(gone.clone(), "dropped"),
         ]);
 
         assert_eq!(restored.specs.len(), 1);

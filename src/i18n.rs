@@ -174,7 +174,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.history.rows", "{} 行", "{} rows"),
     ("sidebar.history.failed", "失败", "Failed"),
     ("sidebar.group.local_files", "本地文件", "Local files"),
-    ("sidebar.group.apps", "应用", "Apps"),
     ("sidebar.group.dashboards", "仪表盘", "Dashboards"),
     ("sidebar.s3.configured", "已配置", "Configured"),
     ("sidebar.s3.loading", "加载中…", "Loading…"),
@@ -693,119 +692,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "S3 request failed (HTTP {}): {}",
     ),
 
-    // ── src/analysis/ ───────────────────────────────────────────────────
+    ("dashboard.reload", "重新加载", "Reload"),
     (
-        "analysis.empty.title",
-        "这个应用没有目录",
-        "This app has no folder",
-    ),
-    (
-        "analysis.empty.hint",
-        "应用是包含 main.js 的文件夹，里面的 JavaScript 会查询当前连接的数据。",
-        "An app is a folder with a main.js; its JavaScript queries the current connection.",
-    ),
-    (
-        "analysis.picker.prompt",
-        "选择分析应用目录（包含 main.js）",
-        "Choose an app folder (one with a main.js)",
-    ),
-    (
-        "analysis.loading",
-        "正在加载分析应用…",
-        "Loading the analysis app…",
-    ),
-    ("analysis.reload", "重新加载", "Reload"),
-    (
-        "analysis.reload.tooltip",
-        "重新加载应用；保存 .js 文件也会自动重新加载",
-        "Reload the app; saving a .js file reloads it too",
-    ),
-    (
-        "analysis.load_failed",
-        "分析应用加载失败",
-        "The analysis app could not be loaded",
-    ),
-    (
-        "analysis.load_failed.hint",
-        "修复目录中的 main.js 后点击「重新加载」。",
-        "Fix main.js in the folder and press Reload.",
-    ),
-    (
-        "analysis.no_runtime",
-        "脚本运行时不可用，无法加载应用。",
-        "The script runtime is unavailable, so the app cannot load.",
-    ),
-    (
-        "analysis.not_updated",
-        "应用未更新",
-        "App not updated",
-    ),
-    (
-        "analysis.rejected.not_a_folder",
-        "{} 不是文件夹。",
-        "{} is not a folder.",
-    ),
-    (
-        "analysis.rejected.no_entry",
-        "{} 里没有 main.js。",
-        "{} has no main.js.",
-    ),
-    (
-        "analysis.rejected.no_longer_there",
-        "{} 已不存在。",
-        "{} is no longer there.",
-    ),
-    (
-        "analysis.restore.not_a_folder",
-        "上次打开的应用 {}（{}）已不是文件夹，未重新打开。",
-        "The app {} ({}) is no longer a folder; it was not reopened.",
-    ),
-    (
-        "analysis.restore.no_entry",
-        "上次打开的应用 {}（{}）里没有 main.js，未重新打开。",
-        "The app {} ({}) has no main.js; it was not reopened.",
-    ),
-    (
-        "analysis.definition.show",
-        "视图定义",
-        "View definition",
-    ),
-    (
-        "analysis.definition.back",
-        "返回应用",
-        "Back to app",
-    ),
-    (
-        "analysis.definition.tooltip",
-        "读取这个应用的 JavaScript 源码",
-        "Read this app's JavaScript source",
-    ),
-    (
-        "analysis.definition.hint",
-        "应用是留在该目录里的一个 JavaScript 视图——由 agent 或你自己编写；保存文件即会重新加载。",
-        "An app is a JavaScript view left in that folder — by an agent, or by you. Saving the file reloads it.",
-    ),
-    (
-        "analysis.trust.title",
-        "要运行这个应用吗？",
-        "Run this app?",
-    ),
-    (
-        "analysis.trust.body",
-        "应用的 SQL 拥有与 SQL 编辑器相同的权限：可以读写当前数据库、读取本机上任何可读的文件、COPY 到文件、ATTACH 其他数据库。只运行你信任的来源。同意后，这个文件夹以后会直接运行。",
-        "An app's SQL has the SQL editor's privileges: it can read and change the open database, read any file this machine can, COPY to files and ATTACH other databases. Run only apps from a source you trust. Once you agree, this folder runs without asking.",
-    ),
-    ("analysis.trust.run", "信任并运行", "Trust and run"),
-    ("analysis.trust.view_source", "先看源码", "View source"),
-    (
-        "analysis.definition.unreadable",
-        "无法读取 {}：{}",
-        "Could not read {}: {}",
-    ),
-    (
-        "workspace.open_panel",
-        "打开分析应用",
-        "Open app",
+        "dashboard.not_updated",
+        "Dashboard 未更新",
+        "Dashboard not updated",
     ),
     ("workspace.open_dashboard", "打开 Dashboard", "Open dashboard"),
     ("dashboard.picker.prompt", "选择 .dash 文件", "Choose a .dash file"),
@@ -816,8 +707,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "workspace.add_tab.tooltip",
-        "新建查询，或打开一个分析应用",
-        "New query, or open an app",
+        "新建查询，或打开一个 Dashboard",
+        "New query, or open a dashboard",
     ),
 
     // ── src/spec/view.rs ──────────────────────────────────────────────────

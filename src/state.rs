@@ -39,8 +39,7 @@ pub struct OpenStateChanged;
 #[derive(Clone, Debug)]
 pub struct SidebarToggled;
 
-/// The recent-documents list gained an entry (an app or dashboard tab
-/// opened). The sidebar rebuilds its document groups on this.
+/// The recent-documents list gained an entry (a dashboard tab opened). The sidebar rebuilds its document groups on this.
 #[derive(Clone, Debug)]
 pub struct RecentsChanged;
 
@@ -749,7 +748,7 @@ mod tests {
 
             // Opening the attached file as the main database does not try to
             // attach it a second time.
-            crate::db::with_app_connection(|conn| {
+            crate::db::with_connection(|conn| {
                 conn.query_row("SELECT count(*) FROM logs.events", [], |row| {
                     row.get::<_, i64>(0)
                 })?;

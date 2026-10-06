@@ -1,11 +1,10 @@
-// The analysis_app panel's data as a dashboard spec: same orders.csv,
-// declared rather than scripted. Check it from anywhere:
+// A dashboard over orders.csv. Check it from anywhere:
 //
-//   ducklocal check examples/analysis_app/dashboard.dash
+//   ducklocal check examples/orders_dashboard/dashboard.dash
 //
 // or open it as a dashboard tab in the GUI:
 //
-//   ducklocal examples/analysis_app/dashboard.dash
+//   ducklocal examples/orders_dashboard/dashboard.dash
 //
 // The source's path is relative to this file, so the spec and its data move
 // together; the queries read it by name.

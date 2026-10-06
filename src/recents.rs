@@ -1,4 +1,4 @@
-//! Recently opened documents: analysis apps and `.dash` dashboards.
+//! Recently opened documents: `.dash` dashboards.
 //!
 //! The sidebar lists these so a document can be reopened the way a file is —
 //! click, and the tab is back. The list is not the session's open tabs (those
@@ -18,8 +18,6 @@ const MAX: usize = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RecentKind {
-    /// A folder with a main.js, opened as an app tab.
-    App,
     /// A `.dash` file, opened as a dashboard tab.
     Dashboard,
 }
@@ -60,9 +58,20 @@ pub fn add(path: &Path, kind: RecentKind, title: &str) {
 /// list rather than a sidebar that fails: recents are a convenience.
 pub fn list() -> Vec<RecentDocument> {
     match crate::history::get_setting(SETTING) {
-        Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+        Ok(Some(json)) => parse(&json),
         _ => Vec::new(),
     }
+}
+
+/// Read the stored list one entry at a time, so an entry of a kind this build
+/// no longer opens (the old `app` documents) is dropped rather than costing
+/// the whole list.
+fn parse(json: &str) -> Vec<RecentDocument> {
+    serde_json::from_str::<Vec<serde_json::Value>>(json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value(entry).ok())
+        .collect()
 }
 
 /// Drop one path — the document is gone, so offering it would be a broken
@@ -83,7 +92,7 @@ mod tests {
     fn document(path: &str) -> RecentDocument {
         RecentDocument {
             path: path.to_string(),
-            kind: RecentKind::App,
+            kind: RecentKind::Dashboard,
             title: path.to_string(),
         }
     }
@@ -105,5 +114,16 @@ mod tests {
         assert_eq!(documents.len(), MAX);
         assert_eq!(documents[0].path, format!("/{}", MAX + 4));
         assert!(documents.iter().all(|d| d.path != "/0"));
+    }
+
+    #[test]
+    fn an_entry_of_a_retired_kind_is_dropped_alone() {
+        let json = r#"[
+            {"path": "/apps/sales", "kind": "app", "title": "sales"},
+            {"path": "/d/usage.dash", "kind": "dashboard", "title": "usage"}
+        ]"#;
+        let paths: Vec<String> = parse(json).into_iter().map(|d| d.path).collect();
+        assert_eq!(paths, vec!["/d/usage.dash"]);
+        assert!(parse("not json").is_empty());
     }
 }

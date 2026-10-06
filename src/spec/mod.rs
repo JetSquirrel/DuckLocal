@@ -1,10 +1,8 @@
 //! Declarative dashboards: a `.dash` file of source, query and plot blocks.
 //!
-//! An analysis app (`src/analysis/`) is a script that draws itself; a `.dash`
-//! file is the same idea declared rather than scripted — queries as heredocs,
-//! plots as attributes, references between them (`query.latency`) instead of
-//! return values. The two formats coexist: the DSL covers query + standard
-//! plot, the script stays for bespoke layout and interaction.
+//! A `.dash` file declares a dashboard rather than scripting one — queries as
+//! heredocs, plots as attributes, references between them (`query.latency`)
+//! instead of return values.
 //!
 //! ```text
 //! src/spec/syntax.rs   the text as a tree: blocks, attributes, heredocs
@@ -17,6 +15,7 @@
 //! src/spec/highlight.rs  colours for the source editor, SQL heredocs included
 //! src/spec/view.rs     the view half: a `.dash` file as a workspace tab
 //! src/spec/tabs.rs     which specs are open, remembered between launches
+//! src/spec/watch.rs    noticing edits made to an open spec outside the window
 //! src/spec/lsp.rs      `ducklocal lsp`, the language server half
 //! ```
 //!
@@ -40,6 +39,7 @@ pub mod source;
 pub mod syntax;
 pub mod tabs;
 pub mod view;
+pub mod watch;
 mod wheel;
 
 use std::ffi::OsString;

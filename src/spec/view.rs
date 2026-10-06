@@ -62,7 +62,7 @@ use lsp_types::{
     TextEdit,
 };
 
-use crate::analysis::watch::{Debounce, FileStamp, POLL_INTERVAL};
+use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::complete::{self, CompletionKind};
@@ -1015,7 +1015,7 @@ impl Dashboard {
                     div()
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
-                        .child(tr("analysis.not_updated")),
+                        .child(tr("dashboard.not_updated")),
                 )
                 .child(
                     div()

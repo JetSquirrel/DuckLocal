@@ -1,10 +1,7 @@
 //! DuckDB connection management.
 //!
 //! One global connection behind a mutex: `duckdb::Connection` is `Send` but
-//! not `Sync`, so all access serializes through `with_connection`. Analysis
-//! apps take a second connection to the same database instead — see
-//! [`APP_CONNECTION`] — so an app's SQL and the window's do not wait on each
-//! other.
+//! not `Sync`, so all access serializes through `with_connection`.
 //! All functions here are blocking; UI code must call them via `smol::unblock`.
 
 use std::collections::HashSet;
@@ -17,27 +14,6 @@ use crate::i18n::trf;
 
 static CONNECTION: LazyLock<Arc<Mutex<Option<Connection>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
-
-/// The connection analysis apps run their SQL on.
-///
-/// A second connection to the same database, not a second database: DuckDB
-/// serves many connections from one instance, so an app sees the catalog
-/// the window sees — the views DuckLocal registers included — without
-/// taking the lock the window's own queries take. Sharing the one
-/// connection meant a dashboard refreshing six statements held that lock
-/// for as long as it ran, and the SQL editor was frozen for exactly that
-/// long.
-///
-/// What a second connection does not carry is connection-local state:
-/// `TEMP` tables and `SET` values belong to the connection they were made
-/// on. All apps share this one, so they still serialize among
-/// themselves — a host function is handed arguments, not a caller, so
-/// nothing at the moment a query runs says which app asked.
-///
-/// It is cloned on demand and dropped by [`replace`], which is what keeps a
-/// closed database closed: a clone left behind would answer queries against
-/// a database the window has let go of, and for a file would hold it open.
-static APP_CONNECTION: LazyLock<Mutex<Option<Connection>>> = LazyLock::new(|| Mutex::new(None));
 
 /// The window connection's interrupt handle, kept apart from [`CONNECTION`]:
 /// a running query holds that lock for as long as it runs, so a Stop button
@@ -147,7 +123,6 @@ pub fn open_file(path: &str) -> Result<()> {
 /// before opening it as primary. Keep the old primary alive until success.
 #[cfg(windows)]
 fn open_file_on_windows(path: &str) -> Result<Connection> {
-    let mut app = app_lock()?;
     let guard = lock()?;
     let Some(conn) = guard.as_ref() else {
         return Ok(Connection::open(path)?);
@@ -175,9 +150,6 @@ fn open_file_on_windows(path: &str) -> Result<Connection> {
         Some(ix) => {
             let attachment = &databases[ix];
             let current: String = conn.query_row("SELECT current_database()", [], |r| r.get(0))?;
-            // Wait for app queries (lock order: app, then window), and release
-            // their cloned connection before releasing the attached file.
-            *app = None;
             detach_database_of(conn, &attachment.alias)?;
             match Connection::open(path) {
                 Ok(opened) => Ok(opened),
@@ -204,25 +176,8 @@ pub fn close() -> Result<()> {
     replace(None)
 }
 
-/// Put an already-opened connection in place.
-///
-/// For a caller that opened its own — the CLI does, because it decides access
-/// mode, extension auto-installation and the existence check itself, and none
-/// of that belongs in a second implementation here.
-pub fn install(connection: Connection) -> Result<()> {
-    replace(Some(connection))
-}
-
 /// Put the process on `connection`, releasing whatever it was on.
-///
-/// The app connection is dropped first, and both locks are taken in that
-/// order everywhere — here and in [`with_app_connection`] — so the two never
-/// wait on each other in opposite directions. Opening another database while an
-/// app is mid-query therefore waits for that query: a connection cannot be
-/// released out from under a statement that is still running.
 fn replace(connection: Option<Connection>) -> Result<()> {
-    let mut app = app_lock()?;
-    *app = None;
     let handle = connection.as_ref().map(Connection::interrupt_handle);
     let mut guard = lock()?;
     *guard = connection;
@@ -246,36 +201,10 @@ pub fn with_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T>
     f(conn)
 }
 
-/// Run `f` on the connection analysis apps use, cloning one if there is none.
-///
-/// See [`APP_CONNECTION`] for why apps do not use [`with_connection`].
-/// Blocking, and the app lock is held for as long as `f` runs, so callers
-/// belong off the UI thread like every other caller here.
-pub fn with_app_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let mut app = app_lock()?;
-    if app.is_none() {
-        let guard = lock()?;
-        let conn = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("No database connected"))?;
-        *app = Some(conn.try_clone()?);
-    }
-    let conn = app
-        .as_ref()
-        .expect("an app connection was just cloned into place");
-    f(conn)
-}
-
 fn lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
     CONNECTION
         .lock()
         .map_err(|e| anyhow!("Database lock poisoned: {e}"))
-}
-
-fn app_lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
-    APP_CONNECTION
-        .lock()
-        .map_err(|e| anyhow!("App database lock poisoned: {e}"))
 }
 
 /// Serializes tests that use the process-global connection: `open_memory` and
