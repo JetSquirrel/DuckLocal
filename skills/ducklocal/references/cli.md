@@ -47,16 +47,6 @@ Read it before choosing how to present a column. `missing_days` above 0 means th
 
 Statistics are exact and scan the whole relation; `--limit` does not apply. It is a read, but a full one: on a very large file it costs a full pass.
 
-## Export an analysis app as a static HTML file
-
-```bash
-ducklocal export --html apps/sales
-ducklocal export --html --out report.html --database warehouse.duckdb apps/sales
-ducklocal export --html --timeout 60 apps/sales
-```
-
-Runs an analysis app once (hidden window, no visible UI) and writes the statements its `query()` calls issued, with their results, into one self-contained HTML file: `--html` is required, `--out` defaults to `./<app folder>.html`, an existing file is refused without `--force`. `--database`/`--read-write` behave as for `query`. `--timeout SECONDS` is a positive integer, default 15: the capture stops when the app has gone quiet, or at the deadline, whichever comes first. One JSON object on stdout names the file and counts `queries`, `rows` and `app_errors`; its `stop_reason` is `"settled"` when the app went quiet in time and `"deadline"` when the time limit cut the capture short — then the report may be missing statements, and the HTML carries a visible warning saying so. The report holds the app's data — tables, and a bar chart where a result is a name and a number per row — never its layout or interactive state. Exit 1 with kind `app` means the app failed; when it failed after loading, the report is still written and the message names it.
-
 ## Check a dashboard spec
 
 ```bash
@@ -75,7 +65,7 @@ ducklocal open ./data/ --sql-file analysis.sql
 echo "SELECT 42" | ducklocal open --sql-file - --no-launch
 ```
 
-Sends one request to the DuckLocal window that is already running and brings it forward: PATHs open as a drop on the window would (a `.dash` or app folder as a tab, data files/folders/patterns attached), then `--sql`/`--sql-file` opens in a new query tab titled `--title`; `--run` runs it once the PATHs have attached. Relative PATHs resolve against the command's directory. With no window running it starts one (up to 30s) unless `--no-launch` is given. Success prints `{"delivered": true, "launched": BOOL}` — delivery, not the query's result: it runs in the window's session (its connection, attached views and history), and any error appears there, not on stdout. Exit 2 for arguments, 1 with kind `not_running` (no window reachable), `refused` (the endpoint rejected the request) or `launch`.
+Sends one request to the DuckLocal window that is already running and brings it forward: PATHs open as a drop on the window would (a `.dash` spec as a tab, data files/folders/patterns attached), then `--sql`/`--sql-file` opens in a new query tab titled `--title`; `--run` runs it once the PATHs have attached. Relative PATHs resolve against the command's directory. With no window running it starts one (up to 30s) unless `--no-launch` is given. Success prints `{"delivered": true, "launched": BOOL}` — delivery, not the query's result: it runs in the window's session (its connection, attached views and history), and any error appears there, not on stdout. Exit 2 for arguments, 1 with kind `not_running` (no window reachable), `refused` (the endpoint rejected the request) or `launch`.
 
 ## Read what the window shows
 
@@ -152,4 +142,4 @@ Check exit status before parsing. Codes: 0 success, 2 arguments/statement count,
 
 `hint` is present when there is a known next step — a misspelled flag's likely meaning, `--read-write` for a write refused on a read-only database, `ducklocal schema` for a table that does not exist, `TRY_CAST` for a value that will not convert — and absent otherwise.
 
-Kinds: `argument`, `sql`, `database`, `io`, `output`, `app` for an app export whose app failed, `spec` for a `.dash` mistake, and `not_running`/`refused`/`timeout`/`launch` for `open`. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.
+Kinds: `argument`, `sql`, `database`, `io`, `output`, `spec` for a `.dash` mistake, and `not_running`/`refused`/`timeout`/`launch` for `open`. Help/version are plain text. A broken stdout pipe cannot guarantee a complete/empty stream. Errors may follow already-performed side effects; inspect before retrying. Never report a failed query as empty data or use truncated previews as complete statistics.

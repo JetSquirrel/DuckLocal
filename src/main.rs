@@ -1,9 +1,7 @@
 // A GUI executable must not allocate a console when opened from Explorer.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod analysis;
 mod app;
-mod app_export;
 mod assets;
 mod cli;
 mod db;

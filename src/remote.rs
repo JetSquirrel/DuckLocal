@@ -1,5 +1,5 @@
 //! `ducklocal open`: hand the window that is already running something to
-//! show — SQL in a new query tab, a `.dash` spec, an app folder, data files.
+//! show — SQL in a new query tab, a `.dash` spec, data files.
 //!
 //! The window listens on a loopback port and writes the port, with a random
 //! token, to an endpoint file in the app data directory that only this user
@@ -37,8 +37,8 @@ Usage: ducklocal open [OPTIONS] [PATH ...]
 
 Show something in the DuckLocal window that is already running, starting one
 if none is: SQL in a new query tab, and PATHs opened the way a drop on the
-window opens them — a .dash spec or an app folder as a tab, data files,
-folders and patterns attached.
+window opens them — a .dash spec as a tab, data files, folders and patterns
+attached.
 
 Options:
   --sql SQL          SQL for a new query tab
@@ -56,8 +56,7 @@ be reached.
 With --state, nothing opens and no window starts: the output is what the
 running window shows — {database, attached, active_tab, tabs}: each query
 tab's SQL and result (columns, row count, the first 20 rows, or the error),
-each dashboard's plots and the values its filters have picked, each app's
-folder. Exit 1 with kind not_running when no window is up, timeout when it
+and each dashboard's plots and the values its filters have picked. Exit 1 with kind not_running when no window is up, timeout when it
 does not answer within 5s. It takes no other option or PATH.
 ";
 

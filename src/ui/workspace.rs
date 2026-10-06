@@ -1,17 +1,15 @@
-//! Center workspace: query tabs and app tabs, the toolbar that belongs to
-//! whichever is active, the SQL editor or the app, and the results panel,
-//! split vertically by a resizable handle.
+//! Center workspace: query tabs and dashboard tabs, the toolbar that belongs
+//! to whichever is active, the SQL editor or the dashboard, and the results
+//! panel, split vertically by a resizable handle.
 //!
-//! A tab is either a query — an editor and the results of running it — an
-//! app, an agent-authored JavaScript view over the database the window is
-//! on, or a dashboard, a `.dash` spec rendered as a stack of resizable plots.
-//! They are peers: the tab strip mixes them, closing one is closing a tab, and
-//! renaming works on all three. What differs is the region and the toolbar
+//! A tab is either a query — an editor and the results of running it — or a
+//! dashboard, a `.dash` spec rendered as a stack of resizable plots. They are
+//! peers: the tab strip mixes them, closing one is closing a tab, and
+//! renaming works on both. What differs is the region and the toolbar
 //! behind the strip, which is why every path that reaches for "the active
 //! editor" goes through `as_query` rather than assuming one.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
@@ -27,14 +25,11 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use gpui_shell::ShellRuntime;
 
-use crate::analysis::apps::{self, OpenApp};
 use gpui_kit::assets::IconName as AssetIcon;
-use crate::analysis::runtime;
-use crate::analysis::view::AnalysisHost;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
+use crate::spec::tabs::OpenDocument;
 use crate::spec::view::Dashboard;
 use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
@@ -69,14 +64,6 @@ pub struct QueryTab {
     pub results: Entity<ResultsPanel>,
 }
 
-/// An agent-authored app, open as a tab.
-pub struct AppTab {
-    pub id: u64,
-    pub title: SharedString,
-    pub directory: PathBuf,
-    pub host: Entity<AnalysisHost>,
-}
-
 /// A `.dash` spec, open as a tab.
 pub struct DashboardTab {
     pub id: u64,
@@ -91,30 +78,27 @@ pub struct DashboardTab {
 
 pub enum WorkspaceTab {
     Query(QueryTab),
-    App(AppTab),
     Dashboard(DashboardTab),
 }
 
 /// Which kind a tab is, without borrowing it.
 ///
 /// The editor commands are decided from a list of these rather than from the
-/// tabs themselves, so the decision is testable without a window: an app or a
-/// dashboard is not an editor, and the arithmetic of what stays active after a
+/// tabs themselves, so the decision is testable without a window: a dashboard
+/// is not an editor, and the arithmetic of what stays active after a
 /// close does not depend on what the tabs hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Query,
-    App,
     Dashboard,
 }
 
 impl TabKind {
     /// The one glyph a kind of tab wears — on the tab, in the `+` menu, and
-    /// for apps in the sidebar too — so a kind reads the same everywhere.
+    /// for dashboards in the sidebar too — so a kind reads the same everywhere.
     pub fn glyph(self) -> AssetIcon {
         match self {
             TabKind::Query => AssetIcon::SquareTerminal,
-            TabKind::App => AssetIcon::AppWindow,
             TabKind::Dashboard => AssetIcon::LayoutDashboard,
         }
     }
@@ -147,8 +131,7 @@ fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
 
 /// Where a request for the active editor's content goes.
 ///
-/// An app tab has no editor at all, and a dashboard's editor holds `.dash`
-/// spec rather than SQL, so the request is answered by the nearest query tab
+/// A dashboard's editor holds `.dash` spec rather than SQL, so the request is answered by the nearest query tab
 /// — the last one open — or by a new one. Sending it nowhere would make the
 /// action look broken, and writing into a hidden editor would be the same
 /// thing with extra steps.
@@ -192,7 +175,6 @@ impl WorkspaceTab {
     pub fn id(&self) -> u64 {
         match self {
             WorkspaceTab::Query(tab) => tab.id,
-            WorkspaceTab::App(tab) => tab.id,
             WorkspaceTab::Dashboard(tab) => tab.id,
         }
     }
@@ -200,7 +182,6 @@ impl WorkspaceTab {
     pub fn title(&self) -> &SharedString {
         match self {
             WorkspaceTab::Query(tab) => &tab.title,
-            WorkspaceTab::App(tab) => &tab.title,
             WorkspaceTab::Dashboard(tab) => &tab.title,
         }
     }
@@ -210,8 +191,6 @@ impl WorkspaceTab {
     fn disambiguator(&self) -> Option<String> {
         match self {
             WorkspaceTab::Query(_) => None,
-            // An app's title is its folder, so the folder above says where.
-            WorkspaceTab::App(tab) => parent_name(&tab.directory),
             WorkspaceTab::Dashboard(tab) => parent_name(&tab.path),
         }
     }
@@ -221,40 +200,30 @@ impl WorkspaceTab {
     pub fn as_query(&self) -> Option<&QueryTab> {
         match self {
             WorkspaceTab::Query(tab) => Some(tab),
-            WorkspaceTab::App(_) | WorkspaceTab::Dashboard(_) => None,
+            WorkspaceTab::Dashboard(_) => None,
         }
     }
 
     pub fn kind(&self) -> TabKind {
         match self {
             WorkspaceTab::Query(_) => TabKind::Query,
-            WorkspaceTab::App(_) => TabKind::App,
             WorkspaceTab::Dashboard(_) => TabKind::Dashboard,
-        }
-    }
-
-    pub fn as_app(&self) -> Option<&AppTab> {
-        match self {
-            WorkspaceTab::App(tab) => Some(tab),
-            WorkspaceTab::Query(_) | WorkspaceTab::Dashboard(_) => None,
         }
     }
 
     pub fn as_dashboard(&self) -> Option<&DashboardTab> {
         match self {
             WorkspaceTab::Dashboard(tab) => Some(tab),
-            WorkspaceTab::Query(_) | WorkspaceTab::App(_) => None,
+            WorkspaceTab::Query(_) => None,
         }
     }
 
     /// The tab's focusable text editor: a query's SQL editor, or a
-    /// dashboard's source editor once its source view has been opened. An
-    /// app has none.
+    /// dashboard's source editor once its source view has been opened.
     pub fn editor(&self, cx: &App) -> Option<Entity<EditorState>> {
         match self {
             WorkspaceTab::Query(tab) => Some(tab.editor.clone()),
             WorkspaceTab::Dashboard(tab) => tab.host.read(cx).source_editor(),
-            WorkspaceTab::App(_) => None,
         }
     }
 }
@@ -285,12 +254,6 @@ pub struct Workspace {
     renaming: Option<(u64, Entity<InputState>)>,
     _rename_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
-    /// Declared last on purpose: fields drop in declaration order, and every
-    /// app tab's mounted script view holds QuickJS handles into this
-    /// runtime, so they have to be released before it is. See
-    /// [`crate::analysis::runtime`] for why dropping it late is fatal rather
-    /// than untidy.
-    runtime: Option<Rc<ShellRuntime>>,
 }
 
 impl Workspace {
@@ -309,8 +272,7 @@ impl Workspace {
             _subscriptions: vec![
                 cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
                     // A dashboard queries the window's connection, so a switch
-                    // of database re-runs it — the way an app follows the
-                    // window to another database.
+                    // of database re-runs it.
                     for tab in &mut this.tabs {
                         if let WorkspaceTab::Dashboard(tab) = tab {
                             tab.stale = false;
@@ -332,7 +294,6 @@ impl Workspace {
                     this.refresh_stale_dashboard(cx);
                 }),
             ],
-            runtime: None,
         };
         let tab = this.new_tab_editor(window, cx);
         // No "press ⌘↵" comment: the empty results panel under it says so.
@@ -392,59 +353,8 @@ impl Workspace {
         }
     }
 
-    /// The runtime every app shares, created with the first app.
-    ///
-    /// A failure is returned rather than logged so the app that asked for it
-    /// can say why it cannot run, in its own tab.
-    fn runtime(&mut self, cx: &mut Context<Self>) -> Result<Rc<ShellRuntime>, String> {
-        if let Some(runtime) = &self.runtime {
-            return Ok(runtime.clone());
-        }
-        match runtime::create(cx) {
-            Ok(created) => {
-                self.runtime = Some(created.clone());
-                Ok(created)
-            }
-            Err(error) => Err(format!("{error:#}")),
-        }
-    }
-
-    /// Open an app tab. `directory` is validated by the host, so a folder that
-    /// cannot be an app is reported inside the tab it would have filled.
-    pub fn open_app(&mut self, directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        // The same app twice is the same tab brought forward: apps are
-        // documents, and two tabs on one document is a way to edit half of it
-        // and wonder why the other half is stale.
-        let existing = self
-            .tabs
-            .iter()
-            .position(|tab| tab.as_app().is_some_and(|app| app.directory == directory));
-        if let Some(ix) = existing {
-            let title = self.tabs[ix].title().to_string();
-            self.note_recent(&directory, crate::recents::RecentKind::App, &title, cx);
-            self.activate(ix, window, cx);
-            return;
-        }
-
-        let id = self.next_tab_id;
-        self.next_tab_id += 1;
-        let title = apps::title_for(&directory);
-        let runtime = self.runtime(cx);
-        let host = cx.new(|cx| AnalysisHost::new(directory.clone(), runtime, window, cx));
-        self.tabs.push(WorkspaceTab::App(AppTab {
-            id,
-            title: title.clone().into(),
-            directory: directory.clone(),
-            host,
-        }));
-        self.active = self.tabs.len() - 1;
-        self.note_recent(&directory, crate::recents::RecentKind::App, &title, cx);
-        self.remember_apps();
-        cx.notify();
-    }
-
-    /// Open a `.dash` spec as a dashboard tab. Like an app, the same file
-    /// twice is the same tab brought forward, and the open set is remembered
+    /// Open a `.dash` spec as a dashboard tab. The same file twice is the
+    /// same tab brought forward, and the open set is remembered
     /// between launches.
     pub fn open_dashboard(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let existing = self.tabs.iter().position(|tab| {
@@ -489,41 +399,14 @@ impl Workspace {
             .update(cx, |_, cx| cx.emit(crate::state::RecentsChanged));
     }
 
-    /// Open several apps, as launch does: the command line's directories
-    /// first, then the ones remembered from last time.
-    pub fn open_apps(
-        &mut self,
-        directories: Vec<PathBuf>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        for directory in directories {
-            self.open_app(directory, window, cx);
-        }
-    }
-
-    /// Write the open apps down, so the next launch can put them back.
-    fn remember_apps(&self) {
-        let open: Vec<OpenApp> = self
-            .tabs
-            .iter()
-            .filter_map(|tab| {
-                tab.as_app()
-                    .map(|app| OpenApp::new(app.directory.clone(), app.title.to_string()))
-            })
-            .collect();
-        // Blocking, like the language setting: one small row, on a user action.
-        apps::remember(&open);
-    }
-
-    /// Write the open dashboards down, the same deal the apps get.
+    /// Write the open dashboards down, so the next launch can put them back.
     fn remember_dashboards(&self) {
-        let open: Vec<OpenApp> = self
+        let open: Vec<OpenDocument> = self
             .tabs
             .iter()
             .filter_map(|tab| {
                 tab.as_dashboard().map(|dashboard| {
-                    OpenApp::new(dashboard.path.clone(), dashboard.title.to_string())
+                    OpenDocument::new(dashboard.path.clone(), dashboard.title.to_string())
                 })
             })
             .collect();
@@ -542,8 +425,7 @@ impl Workspace {
 
     /// Replace the active editor's content with a history entry.
     ///
-    /// An app tab has no editor, and a dashboard's editor holds `.dash` spec
-    /// rather than SQL, so the SQL goes to the query tab the reader would
+    /// A dashboard's editor holds `.dash` spec rather than SQL, so the SQL goes to the query tab the reader would
     /// expect it in: the last one open, or a new one. Sending it nowhere
     /// would make the action look broken, and sending it to a hidden editor
     /// would be the same thing with extra steps.
@@ -639,10 +521,6 @@ impl Workspace {
                         entry["unsaved"] = json!(host.is_dirty(cx));
                         entry["dashboard"] = host.summary();
                     }
-                    WorkspaceTab::App(tab) => {
-                        entry["kind"] = json!("app");
-                        entry["directory"] = json!(tab.directory.display().to_string());
-                    }
                 }
                 entry
             })
@@ -705,31 +583,6 @@ impl Workspace {
         self.editor_shown = true;
         cx.notify();
         self.focus_active_editor(window, cx);
-    }
-
-    /// The tab strip's "+": a query, or an app folder to open as one.
-    fn pick_app_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(tr("analysis.picker.prompt").into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else {
-                return;
-            };
-            let Some(directory) = paths.into_iter().next() else {
-                return;
-            };
-            this.update_in(cx, |this, window, cx| {
-                // A folder that is not an app opens the tab that says so,
-                // rather than being refused with nothing to look at.
-                this.open_app(directory, window, cx);
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// The `+` menu's "Open dashboard…": a `.dash` file, from the system
@@ -798,7 +651,6 @@ impl Workspace {
         self.tabs.remove(ix);
         self.active = active_after_close(self.active, ix, self.tabs.len());
         self.refresh_stale_dashboard(cx);
-        self.remember_apps();
         self.remember_dashboards();
         cx.notify();
         self.focus_active_editor(window, cx);
@@ -976,7 +828,6 @@ impl Workspace {
     fn rename_tab(&mut self, index: usize, title: &str, cx: &mut Context<Self>) {
         let default_title = self.tabs.get(index).map(|tab| match tab {
             WorkspaceTab::Query(tab) => trf("workspace.tab.default_title", &[&tab.id.to_string()]),
-            WorkspaceTab::App(tab) => apps::title_for(&tab.directory),
             WorkspaceTab::Dashboard(tab) => crate::spec::tabs::title_for(&tab.path),
         });
         let Some(tab) = self.tabs.get_mut(index) else {
@@ -990,10 +841,8 @@ impl Workspace {
         };
         match tab {
             WorkspaceTab::Query(tab) => tab.title = title.into(),
-            WorkspaceTab::App(tab) => tab.title = title.into(),
             WorkspaceTab::Dashboard(tab) => tab.title = title.into(),
         }
-        self.remember_apps();
         self.remember_dashboards();
         cx.notify();
     }
@@ -1392,7 +1241,6 @@ impl Workspace {
                     .tooltip(tr("workspace.add_tab.tooltip"))
                     .dropdown_menu(move |menu, _window, _cx| {
                         let new_query = view.clone();
-                        let open_app = view.clone();
                         let open_dashboard = view.clone();
                         // Each entry wears the glyph its tab will wear.
                         menu.item(
@@ -1401,17 +1249,6 @@ impl Workspace {
                                 .on_click(move |_, window, cx| {
                                     if let Some(view) = new_query.upgrade() {
                                         view.update(cx, |this, cx| this.add_query_tab(window, cx));
-                                    }
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(tr("workspace.open_panel"))
-                                .icon(TabKind::App.glyph())
-                                .on_click(move |_, window, cx| {
-                                    if let Some(view) = open_app.upgrade() {
-                                        view.update(cx, |this, cx| {
-                                            this.pick_app_directory(window, cx)
-                                        });
                                     }
                                 }),
                         )
@@ -1432,7 +1269,6 @@ impl Workspace {
 
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         match self.active_tab() {
-            Some(WorkspaceTab::App(_)) => self.render_app_toolbar(cx).into_any_element(),
             Some(WorkspaceTab::Dashboard(_)) => self.render_dashboard_toolbar(cx).into_any_element(),
             _ => self.render_query_toolbar(cx).into_any_element(),
         }
@@ -1505,81 +1341,6 @@ impl Workspace {
                     .loading(self.profiling)
                     .tooltip(tr("workspace.profile.tooltip"))
                     .on_click(cx.listener(Self::profile_active)),
-            )
-    }
-
-    /// What an app tab's toolbar says instead of Run/Format/EXPLAIN: where the
-    /// app came from, how to reload it, and how to read what it is.
-    fn render_app_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (directory, showing_definition) = match self.active_tab() {
-            Some(WorkspaceTab::App(tab)) => (
-                Some(tab.directory.clone()),
-                tab.host.read(cx).is_showing_definition(),
-            ),
-            _ => (None, false),
-        };
-        let host = self
-            .active_tab()
-            .and_then(WorkspaceTab::as_app)
-            .map(|tab| tab.host.clone());
-
-        h_flex()
-            .w_full()
-            .px_3()
-            .py_2()
-            .gap_2()
-            .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Icon::new(AssetIcon::AppWindow)
-                    .small()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .children(directory.map(|directory| directory.to_string_lossy().to_string())),
-            )
-            .child(
-                Button::new("app-definition")
-                    .outline()
-                    .small()
-                    // The glyph of where the button goes: the source, or back
-                    // to the app.
-                    .icon(if showing_definition {
-                        AssetIcon::AppWindow
-                    } else {
-                        AssetIcon::Code
-                    })
-                    .label(if showing_definition {
-                        tr("analysis.definition.back")
-                    } else {
-                        tr("analysis.definition.show")
-                    })
-                    .tooltip(tr("analysis.definition.tooltip"))
-                    .when_some(host.clone(), |this, host| {
-                        this.on_click(cx.listener(move |_, _, _, cx| {
-                            host.update(cx, |host, cx| host.toggle_definition(cx));
-                        }))
-                    }),
-            )
-            .child(
-                Button::new("app-refresh")
-                    .outline()
-                    .small()
-                    .icon(IconName::RotateCw)
-                    .label(tr("analysis.reload"))
-                    .tooltip(tr("analysis.reload.tooltip"))
-                    .when_some(host, |this, host| {
-                        this.on_click(cx.listener(move |_, _, window, cx| {
-                            host.update(cx, |host, cx| host.refresh(window, cx));
-                        }))
-                    }),
             )
     }
 
@@ -1669,7 +1430,7 @@ impl Workspace {
                     .outline()
                     .small()
                     .icon(IconName::RotateCw)
-                    .label(tr("analysis.reload"))
+                    .label(tr("dashboard.reload"))
                     .loading(running)
                     .tooltip(tr("dashboard.reload.tooltip"))
                     .when_some(host, |this, host| {
@@ -1703,15 +1464,10 @@ impl Render for Workspace {
 }
 
 impl Workspace {
-    /// The tab's own region: a query is an editor over its results, and an
-    /// app or dashboard is the view itself, with nothing split off below it.
+    /// The tab's own region: a query is an editor over its results, and a
+    /// dashboard is the view itself, with nothing split off below it.
     fn render_region(&mut self) -> AnyElement {
         match self.active_tab() {
-            Some(WorkspaceTab::App(tab)) => div()
-                .flex_1()
-                .min_h_0()
-                .child(tab.host.clone())
-                .into_any_element(),
             Some(WorkspaceTab::Dashboard(tab)) => div()
                 .flex_1()
                 .min_h_0()
@@ -1746,7 +1502,7 @@ impl Workspace {
 
     /// The first-run screen stands where the editor would be: only once
     /// startup has landed, only while there is nothing to query, and only
-    /// until the user asks for the editor instead. An app or dashboard tab is
+    /// until the user asks for the editor instead. A dashboard tab is
     /// something to look at, so it takes the screen over the invitation.
     fn is_first_run(&self, cx: &App) -> bool {
         let state = self.state.read(cx);
@@ -1829,14 +1585,6 @@ impl Workspace {
                                 cx.notify();
                                 this.focus_active_editor(window, cx);
                             })),
-                    )
-                    .child(
-                        Button::new("first-run-open-app")
-                            .ghost()
-                            .label(tr("workspace.open_panel"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.pick_app_directory(window, cx)
-                            })),
                     ),
             )
             .child(
@@ -1880,9 +1628,9 @@ mod tests {
     };
     use std::path::Path;
 
-    /// Three tabs with an app in the middle, the arrangement the branch
+    /// Three tabs with a dashboard in the middle, the arrangement the branch
     /// mistakes would show up in.
-    const MIXED: [TabKind; 3] = [TabKind::Query, TabKind::App, TabKind::Query];
+    const MIXED: [TabKind; 3] = [TabKind::Query, TabKind::Dashboard, TabKind::Query];
 
     #[test]
     fn only_titles_carried_twice_are_duplicates() {
@@ -1894,15 +1642,15 @@ mod tests {
     #[test]
     fn a_document_is_told_apart_by_its_folder() {
         assert_eq!(
-            parent_name(Path::new("/x/examples/usage_panel/dashboard.dash")).as_deref(),
-            Some("usage_panel")
+            parent_name(Path::new("/x/examples/usage_dashboard/dashboard.dash")).as_deref(),
+            Some("usage_dashboard")
         );
         assert_eq!(parent_name(Path::new("/")), None);
     }
 
     #[test]
     fn closing_the_active_tab_moves_to_the_one_before_it() {
-        // The app in the middle closes: the tab that takes its place is the
+        // The dashboard in the middle closes: the tab that takes its place is the
         // one that slid into its index.
         assert_eq!(active_after_close(1, 1, 2), 1);
         // The last tab closes: there is nothing after it to move to.
@@ -1914,8 +1662,8 @@ mod tests {
 
     #[test]
     fn closing_a_tab_before_the_active_one_keeps_its_place() {
-        // A query tab before the active app closes: the app is still the
-        // active tab, one index earlier.
+        // A query tab before the active dashboard closes: the dashboard is
+        // still the active tab, one index earlier.
         assert_eq!(active_after_close(2, 0, 2), 1);
         assert_eq!(active_after_close(1, 0, 2), 0);
     }
@@ -1927,14 +1675,14 @@ mod tests {
     }
 
     #[test]
-    fn an_app_tab_never_takes_editor_content() {
-        // The active tab is the app: the content goes to a query tab, and
-        // never into the app.
+    fn a_dashboard_tab_never_takes_editor_content() {
+        // The active tab is the dashboard: the content goes to a query tab,
+        // and never into the dashboard's spec editor.
         assert_eq!(editor_target(&MIXED, 1), EditorTarget::Switch(2));
-        // With the app last, the query tab before it is the nearest one.
-        let active_app_last = [TabKind::Query, TabKind::Query, TabKind::App];
+        // With the dashboard last, the query tab before it is the nearest one.
+        let active_dashboard_last = [TabKind::Query, TabKind::Query, TabKind::Dashboard];
         assert_eq!(
-            editor_target(&active_app_last, 2),
+            editor_target(&active_dashboard_last, 2),
             EditorTarget::Switch(1)
         );
     }
@@ -1947,8 +1695,8 @@ mod tests {
 
     #[test]
     fn with_no_query_tab_open_the_content_needs_a_new_one() {
-        let only_apps = [TabKind::App, TabKind::App];
-        assert_eq!(editor_target(&only_apps, 0), EditorTarget::New);
+        let only_dashboards = [TabKind::Dashboard, TabKind::Dashboard];
+        assert_eq!(editor_target(&only_dashboards, 0), EditorTarget::New);
         assert_eq!(editor_target(&[], 0), EditorTarget::New);
     }
 }

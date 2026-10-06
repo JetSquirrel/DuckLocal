@@ -34,7 +34,7 @@ use gpui_kit::*;
 
 use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
-use crate::recents::{RecentDocument, RecentKind};
+use crate::recents::RecentDocument;
 use crate::state::{
     format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged,
     HistoryChanged, RecentsChanged, S3ConfigChanged,
@@ -64,7 +64,7 @@ pub struct Sidebar {
     node_meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
     /// S3 browse tree, present while S3 is configured.
     s3_browse: Option<S3Browse>,
-    /// Recently opened apps and dashboards, shown as clickable groups.
+    /// Recently opened dashboards, shown as a clickable group.
     recents: Rc<Vec<RecentDocument>>,
     /// A schema reload is in flight; the refresh button shows loading and
     /// repeat clicks are ignored until it finishes.
@@ -279,7 +279,6 @@ impl Sidebar {
                 // A section is a heading, not a folder: its glyph says it
                 // folds, nothing more.
                 SchemaNodeKind::LocalFilesGroup
-                | SchemaNodeKind::AppsGroup
                 | SchemaNodeKind::DashboardsGroup
                 | SchemaNodeKind::S3Status => Some(if entry.is_expanded() {
                     IconName::ChevronDown.into()
@@ -291,10 +290,10 @@ impl Sidebar {
                 } else {
                     IconName::Folder.into()
                 }),
-                SchemaNodeKind::RecentDocument => m.doc.as_ref().map(|doc| match doc.kind {
-                    RecentKind::App => gpui_kit::assets::IconName::AppWindow,
-                    RecentKind::Dashboard => gpui_kit::assets::IconName::LayoutDashboard,
-                }),
+                SchemaNodeKind::RecentDocument => m
+                    .doc
+                    .as_ref()
+                    .map(|_| gpui_kit::assets::IconName::LayoutDashboard),
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
                 SchemaNodeKind::View => Some(IconName::Eye.into()),
                 SchemaNodeKind::File | SchemaNodeKind::S3File => Some(IconName::File.into()),
@@ -445,11 +444,8 @@ impl Sidebar {
                                                 });
                                                 return;
                                             }
-                                            workspace.update(cx, |ws, cx| match doc.kind {
-                                                RecentKind::App => ws.open_app(path, window, cx),
-                                                RecentKind::Dashboard => {
-                                                    ws.open_dashboard(path, window, cx)
-                                                }
+                                            workspace.update(cx, |ws, cx| {
+                                                ws.open_dashboard(path, window, cx)
                                             });
                                         })
                                 }),
@@ -553,7 +549,7 @@ impl Sidebar {
                                                     }),
                                             )
                                         })
-                                        // A recent app or dashboard leaves the list —
+                                        // A recent dashboard leaves the list —
                                         // only the list: its files and any open tab
                                         // stay, so there is nothing to confirm.
                                         .when_some(removable_doc, |this, doc| {

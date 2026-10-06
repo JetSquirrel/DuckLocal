@@ -1,11 +1,10 @@
 #!/bin/bash
 # The dependency invariants a build can break silently.
 #
-# The toolkit, the script runtime and the component catalog are three crates
-# out of one repository, and `rquickjs` is patched to the same one. They only
-# work together when all four come from the same commit: two revisions put two
-# copies of `gpui-base` — or of `rquickjs` — in the build, and the failure is a
-# wall of trait mismatches that names neither cause. Nothing in Cargo enforces
+# The toolkit's crates come out of one repository. They only work together
+# when all of them come from the same commit: two revisions put two copies of
+# `gpui-base` in the build, and the failure is a wall of trait mismatches that
+# names neither cause. Nothing in Cargo enforces
 # that, so this does, offline and in a second.
 #
 # Run from anywhere; CI runs it before the tests.
@@ -21,7 +20,7 @@ fail() {
     status=1
 }
 
-# 1. One revision in Cargo.toml, across dependencies and [patch] alike.
+# 1. One revision in Cargo.toml, across every dependency on it.
 manifest_revs=$(
     grep -o "git = \"https://$REPO\", rev = \"[0-9a-f]*\"" Cargo.toml |
         grep -o 'rev = "[0-9a-f]*"' | grep -o '[0-9a-f]\{7,\}' | sort -u
@@ -55,8 +54,7 @@ while IFS= read -r source; do
 done < <(grep -o "git+https://$REPO?rev=[0-9a-f]*#[0-9a-f]*" Cargo.lock | sort -u)
 
 # 3. No crate is in the build twice, once from the repository and once from
-#    crates.io. This is what the [patch] on rquickjs exists to prevent, and it
-#    is the shape the same mistake takes for any other shared crate.
+#    crates.io: the shape the same mistake takes for any shared crate.
 duplicates=$(
     awk -v repo="$REPO" '
         /^name = / { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name) }

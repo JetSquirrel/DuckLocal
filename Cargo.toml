@@ -16,15 +16,12 @@ categories = ["database", "gui"]
 members = ["quicklook"]
 
 [dependencies]
-# One dependency graph: the UI toolkit, the scriptable-shell runtime and the
-# component catalog all come from the same release tag. Mixing the
+# The UI toolkit comes from one pinned revision of its repository; mixing the
 # crates.io release with the Git one would put two incompatible copies of
 # `gpui-base` in the build.
 # `tree-sitter-sql`: the SQL editor and the SQL in `.dash` heredocs are the only
 # code DuckLocal highlights, so it links that one grammar rather than the set.
 gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0", features = ["tree-sitter-sql"] }
-gpui-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0" }
-gpui-component-shell = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0" }
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
 calamine = { version = "0.36", features = ["dates"] }
 smol = "2"
@@ -71,11 +68,6 @@ rust_xlsxwriter = "0.99"
 # Same release tag as the build dependency (see above); the extra feature only
 # joins the test build, where `gpui_kit::test` and `#[gpui_kit::test]` live.
 gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0", features = ["test-support"] }
-
-# `gpui-shell` scripts run on the QuickJS fork the toolkit pins; the crates.io
-# `rquickjs` would be a second, incompatible copy of the same crate.
-[patch.crates-io]
-rquickjs = { git = "https://github.com/longbridge/gpui-kit", rev = "0c830f4d257e69fdd17200650533ab4ca9a40cc0" }
 
 # Fast over small. The opt-level reaches DuckDB's C++ too: libduckdb-sys
 # builds it with the `cc` crate, which passes Cargo's level on to the

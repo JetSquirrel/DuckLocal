@@ -12,11 +12,9 @@ pub(super) enum SchemaNodeKind {
     Column,
     LocalFilesGroup,
     File,
-    /// Group header for recently opened analysis apps.
-    AppsGroup,
     /// Group header for recently opened dashboards.
     DashboardsGroup,
-    /// A recently opened document row (app or dashboard).
+    /// A recently opened dashboard row.
     RecentDocument,
     S3Status,
     S3Bucket,
@@ -102,7 +100,6 @@ impl SchemaNodeKind {
         matches!(
             self,
             SchemaNodeKind::LocalFilesGroup
-                | SchemaNodeKind::AppsGroup
                 | SchemaNodeKind::DashboardsGroup
                 | SchemaNodeKind::S3Status
         )

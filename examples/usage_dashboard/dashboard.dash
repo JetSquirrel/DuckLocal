@@ -1,16 +1,14 @@
-// The usage_panel app's data as a dashboard spec: the same four questions
-// main.js asks, declared rather than scripted. Check it from the repository
-// root:
+// Four questions about usage and cost exports, as a dashboard spec. Check it
+// from the repository root:
 //
-//   ducklocal check examples/usage_panel/dashboard.dash
+//   ducklocal check examples/usage_dashboard/dashboard.dash
 //
 // or open it as a dashboard tab in the GUI:
 //
-//   ducklocal examples/usage_panel/dashboard.dash
+//   ducklocal examples/usage_dashboard/dashboard.dash
 //
-// The app finds its relations by prefix (the latest amount-* and cost-* in
-// the catalog); a spec cannot, so the two relation names below are written
-// out — point them at the exports you have open. The names carry dashes, so
+// A spec cannot find relations by prefix, so the two relation names below
+// are written out — point them at the exports you have open. The names carry dashes, so
 // they stay double-quoted in the SQL.
 
 query "usage_by_type" {

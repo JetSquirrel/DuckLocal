@@ -15,7 +15,6 @@ Usage:
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
   ducklocal open [OPTIONS]      Show work in the running window; --state reads it
   ducklocal check FILE          Validate a .dash dashboard spec
-  ducklocal export --html APP   Export an analysis app as standalone HTML
   ducklocal --version
 
 Run `ducklocal <command> --help` for its options.
@@ -52,20 +51,6 @@ TARGET is a csv/tsv/parquet/json file, a workbook (its first sheet), or, with
 --database, a table or view name.
 ";
 
-pub(crate) const EXPORT_HELP: &str = "\
-Usage: ducklocal export --html [OPTIONS] APP
-
-Run an analysis app (a folder with main.js, or that file) once in a hidden
-window and write the data it queried as a self-contained HTML file.
-
-Options:
-  --out FILE         Destination, default ./<app folder>.html
-  --force            Replace an existing destination
-  --database PATH    Existing database file, opened read-only
-  --read-write       Allow writes (requires --database)
-  --timeout SECONDS  Capture time limit, default 15
-";
-
 pub(crate) const CHECK_HELP: &str = "\
 Usage: ducklocal check FILE [--database PATH]
 
@@ -100,16 +85,8 @@ pub(crate) struct CliError {
 }
 
 impl CliError {
-    pub(crate) fn kind(&self) -> &'static str {
-        self.kind
-    }
-
     pub(crate) fn message(&self) -> &str {
         &self.message
-    }
-
-    pub(crate) fn code(&self) -> i32 {
-        self.code
     }
 
     pub(crate) fn argument(message: impl Into<String>) -> Self {
@@ -638,9 +615,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "schema"
             | "profile"
             | "open"
-            | "export"
             | "check"
-            | "dash"
             | "lsp"
             | "--help"
             | "--version"
@@ -668,16 +643,9 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("profile", _) => profile(&args[1..]),
         ("open", 2) if args[1] == "--help" => Ok(crate::remote::OPEN_HELP.to_string()),
         ("open", _) => crate::remote::open(&args[1..]),
-        ("export", _) => crate::app_export::dispatch(&args[1..]),
         ("check", 2) if args[1] == "--help" => Ok(CHECK_HELP.to_string()),
         ("check", _) => crate::spec::check(&args[1..]),
         ("lsp", 2) if args[1] == "--help" => Ok(LSP_HELP.to_string()),
-        // `dash export` was the app's HTML export before the command was
-        // renamed; `dash` alone now means the .dash spec format. Saying so
-        // beats the fallback, which would open a GUI on a path named "dash".
-        ("dash", _) => Err(CliError::argument(
-            "`dash export` is now `export`: ducklocal export --html APP",
-        )),
         _ => Err(CliError::argument(
             "Unknown or extra arguments; use ducklocal --help",
         )),

@@ -10,7 +10,7 @@ use gpui_kit::SharedString;
 use super::model::{ColumnRef, DatabaseRef, FileRef, SchemaNodeKind, SchemaNodeMeta, TableRef};
 use super::s3::{s3_children_items, S3Browse};
 use crate::i18n::tr;
-use crate::recents::{RecentDocument, RecentKind};
+use crate::recents::RecentDocument;
 use crate::schema::{DatabaseInfo, NodeKind, TableInfo};
 use crate::state::{format_rows, AttachedFileView};
 
@@ -49,14 +49,10 @@ pub(super) fn build_tree_items(
         );
     }
 
-    if let Some(group) = recents_group("group:apps", tr("sidebar.group.apps"), recents, RecentKind::App, &mut meta) {
-        items.push(group);
-    }
     if let Some(group) = recents_group(
         "group:dashboards",
         tr("sidebar.group.dashboards"),
         recents,
-        RecentKind::Dashboard,
         &mut meta,
     ) {
         items.push(group);
@@ -142,17 +138,15 @@ pub(super) fn build_tree_items(
     (items, meta)
 }
 
-/// One recents group ("Apps" or "Dashboards"): a row per remembered document,
+/// The recent dashboards group: a row per remembered document,
 /// in a stable order, like files the user can click back open.
 fn recents_group(
     id: &str,
     label: &str,
     recents: &[RecentDocument],
-    kind: RecentKind,
     meta: &mut HashMap<SharedString, SchemaNodeMeta>,
 ) -> Option<TreeItem> {
-    let mut documents: Vec<&RecentDocument> =
-        recents.iter().filter(|doc| doc.kind == kind).collect();
+    let mut documents: Vec<&RecentDocument> = recents.iter().collect();
     // By name, then path — not by recency. Opening a document bumps it to the
     // front of the stored list, and a list ordered that way reshuffles under
     // the pointer the moment one of its rows is clicked. Recency still decides
@@ -165,10 +159,7 @@ fn recents_group(
     meta.insert(
         group_id.clone(),
         SchemaNodeMeta::new(
-            match kind {
-                RecentKind::App => SchemaNodeKind::AppsGroup,
-                RecentKind::Dashboard => SchemaNodeKind::DashboardsGroup,
-            },
+            SchemaNodeKind::DashboardsGroup,
             Some(documents.len().to_string().into()),
         ),
     );
@@ -395,13 +386,13 @@ mod file_hint_tests {
             path: path.to_string(),
             title: title.to_string(),
         };
-        let usage = doc("dashboard", "/ex/usage_panel/dashboard.dash");
-        let analysis = doc("dashboard", "/ex/analysis_app/dashboard.dash");
+        let usage = doc("dashboard", "/ex/usage_dashboard/dashboard.dash");
+        let orders = doc("dashboard", "/ex/orders_dashboard/dashboard.dash");
         let sales = doc("Sales", "/ex/sales.dash");
         // Most recent first, as stored, in either order: the sidebar agrees.
         for stored in [
-            vec![&usage, &analysis, &sales],
-            vec![&sales, &analysis, &usage],
+            vec![&usage, &orders, &sales],
+            vec![&sales, &orders, &usage],
         ] {
             let mut shown = stored;
             sort_documents(&mut shown);
@@ -409,8 +400,8 @@ mod file_hint_tests {
             assert_eq!(
                 paths,
                 [
-                    "/ex/analysis_app/dashboard.dash",
-                    "/ex/usage_panel/dashboard.dash",
+                    "/ex/orders_dashboard/dashboard.dash",
+                    "/ex/usage_dashboard/dashboard.dash",
                     "/ex/sales.dash"
                 ]
             );
