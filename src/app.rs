@@ -73,12 +73,16 @@ pub struct DuckLocalApp {
     sidebar: Entity<Sidebar>,
     workspace: Entity<Workspace>,
     status_bar: Entity<StatusBarView>,
+    /// Startup's own open request has landed, or failed. Until then, Finder
+    /// opens and `ducklocal open` requests wait in their queues: run beside
+    /// it, the one that finished last decided what the window said it was on.
+    started: bool,
 }
 
 impl DuckLocalApp {
     /// `paths` are the command-line arguments: data files, folders, patterns,
-    /// a database file to open instead of the in-memory connection, an app
-    /// directory or a `.dash` spec to open as a tab.
+    /// a database file to open instead of the in-memory connection, or a
+    /// `.dash` spec to open as a tab.
     pub fn new(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(AppState::new);
         let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
@@ -110,51 +114,54 @@ impl DuckLocalApp {
             })
             .await;
 
-            this.update_in(cx, |this, window, cx| match result {
-                Ok((
-                    dashboards,
-                    remembered_dashboards,
-                    outcome,
-                    offer_setup,
-                )) => {
-                    apply_open_outcome(open_state, outcome, window, cx);
-                    this.workspace.update(cx, |ws, cx| {
-                        for path in dashboards {
-                            ws.open_dashboard(path, window, cx);
+            this.update_in(cx, |this, window, cx| {
+                this.started = true;
+                match result {
+                    Ok((
+                        dashboards,
+                        remembered_dashboards,
+                        outcome,
+                        offer_setup,
+                    )) => {
+                        apply_open_outcome(open_state, outcome, window, cx);
+                        this.workspace.update(cx, |ws, cx| {
+                            for path in dashboards {
+                                ws.open_dashboard(path, window, cx);
+                            }
+                            for spec in &remembered_dashboards.specs {
+                                ws.open_dashboard(std::path::PathBuf::from(&spec.path), window, cx);
+                            }
+                            ws.focus_active_editor(window, cx);
+                        });
+                        // A remembered dashboard that is gone, or is no longer
+                        // one, is named rather than silently dropped.
+                        for problem in remembered_dashboards.problems {
+                            window.push_notification(Notification::error(problem), cx);
                         }
-                        for spec in &remembered_dashboards.specs {
-                            ws.open_dashboard(std::path::PathBuf::from(&spec.path), window, cx);
+                        // Installing the app does not put `ducklocal` on the PATH;
+                        // say once where that is done.
+                        if offer_setup {
+                            window.push_notification(
+                                Notification::info(tr("setup.offer"))
+                                    .title(tr("setup.title"))
+                                    .action(|_, _, cx| {
+                                        Button::new("offer-setup")
+                                            .primary()
+                                            .small()
+                                            .label(tr("setup.offer.action"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.dismiss(window, cx);
+                                                crate::ui::setup_dialog::open(window, cx);
+                                            }))
+                                    }),
+                                cx,
+                            );
                         }
-                        ws.focus_active_editor(window, cx);
-                    });
-                    // A remembered dashboard that is gone, or is no longer
-                    // one, is named rather than silently dropped.
-                    for problem in remembered_dashboards.problems {
-                        window.push_notification(Notification::error(problem), cx);
                     }
-                    // Installing the app does not put `ducklocal` on the PATH;
-                    // say once where that is done.
-                    if offer_setup {
-                        window.push_notification(
-                            Notification::info(tr("setup.offer"))
-                                .title(tr("setup.title"))
-                                .action(|_, _, cx| {
-                                    Button::new("offer-setup")
-                                        .primary()
-                                        .small()
-                                        .label(tr("setup.offer.action"))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.dismiss(window, cx);
-                                            crate::ui::setup_dialog::open(window, cx);
-                                        }))
-                                }),
-                            cx,
-                        );
+                    Err(e) => {
+                        window
+                            .push_notification(trf("notify.init_memory.failed", &[&e.to_string()]), cx);
                     }
-                }
-                Err(e) => {
-                    window
-                        .push_notification(trf("notify.init_memory.failed", &[&e.to_string()]), cx);
                 }
             })
             .ok();
@@ -164,11 +171,17 @@ impl DuckLocalApp {
         // Finder opens queue from the moment the platform callback is
         // registered — possibly before this view exists — and `ducklocal
         // open` requests from the moment the listener starts, so drain both
-        // on a slow poll and open them like a drop on the window. The task ends with
+        // on a slow poll, once startup's own open has landed, and open them
+        // like a drop on the window. The task ends with
         // the window: `update_in` fails once the view is gone.
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 smol::Timer::after(Duration::from_millis(200)).await;
+                match this.read_with(cx, |this, _| this.started) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
                 let paths: Vec<String> = std::mem::take(
                     &mut *FINDER_OPENS
                         .lock()
@@ -207,13 +220,14 @@ impl DuckLocalApp {
             sidebar,
             workspace,
             status_bar,
+            started: false,
         }
     }
 
     /// Paths from outside the app — a drop on the window, or a document
     /// Finder opens with it: a `.dash` file opens a dashboard tab, and
-    /// everything else is the same request the
-    /// command line and the pickers make.
+    /// everything else is the same request the command line and the pickers
+    /// make.
     fn open_external(&mut self, requested: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let (dashboards, data) = crate::spec::tabs::split(requested);
         for path in dashboards {

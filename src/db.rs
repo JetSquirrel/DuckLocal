@@ -104,11 +104,7 @@ pub fn open_file(path: &str) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    #[cfg(windows)]
-    let opened = open_file_on_windows(&expanded);
-    #[cfg(not(windows))]
-    let opened = Connection::open(&expanded).map_err(anyhow::Error::from);
-    let connection = opened.map_err(|e| {
+    let connection = open_without_a_second_instance(&expanded).map_err(|e| {
         anyhow!(crate::storage::explain_error(
             &expanded,
             e,
@@ -118,11 +114,16 @@ pub fn open_file(path: &str) -> Result<()> {
     replace(Some(connection))
 }
 
-/// Windows denies a second instance access to a file held by our own
-/// database. Reuse the primary instance, or release a matching attachment
-/// before opening it as primary. Keep the old primary alive until success.
-#[cfg(windows)]
-fn open_file_on_windows(path: &str) -> Result<Connection> {
+/// Open `path` without a second DuckDB instance on a file our own database
+/// already holds: reuse the primary instance, or release a matching
+/// attachment before opening the file as primary. Keep the old primary alive
+/// until the open succeeds.
+///
+/// Windows refuses the second instance outright. macOS and Linux let it
+/// open, and that is worse: file locks there belong to the process, so
+/// dropping the old instance afterwards released the lock the new one relied
+/// on, and a read-write attachment could be checkpointed by both.
+fn open_without_a_second_instance(path: &str) -> Result<Connection> {
     let guard = lock()?;
     let Some(conn) = guard.as_ref() else {
         return Ok(Connection::open(path)?);
@@ -609,7 +610,6 @@ mod tests {
 
     use super::*;
 
-    #[cfg(windows)]
     #[test]
     fn reopening_primary_database_reuses_its_instance() {
         let _guard = connection_guard();
@@ -681,6 +681,48 @@ mod tests {
         permissions.set_readonly(false);
         std::fs::set_permissions(&path, permissions).unwrap();
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn opening_an_attached_file_as_primary_detaches_it_first() {
+        let _guard = connection_guard();
+        let path = std::env::temp_dir().join(format!(
+            "ducklocal_attached_to_primary_{}.duckdb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        open_memory().unwrap();
+        with_connection(|conn| {
+            attach_database_of(
+                conn,
+                &DatabaseAttachment {
+                    path: path.to_string_lossy().into_owned(),
+                    alias: "logs".into(),
+                    read_only: false,
+                },
+            )?;
+            conn.execute_batch("CREATE TABLE logs.events AS SELECT 7 AS id")?;
+            Ok(())
+        })
+        .unwrap();
+
+        open_file(path.to_str().unwrap()).unwrap();
+        // The file is the primary now, written by the attachment before it
+        // let go, and the only database: the attachment is not left behind.
+        let (current, id, copies): (String, i64, i64) = with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT current_database(), (SELECT id FROM events), \
+                 (SELECT count(*) FROM duckdb_databases() WHERE NOT internal)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .unwrap();
+        assert_eq!(current, path.file_stem().unwrap().to_string_lossy());
+        assert_eq!(id, 7);
+        assert_eq!(copies, 1);
+        close().unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

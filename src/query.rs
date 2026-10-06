@@ -644,11 +644,38 @@ pub fn error_byte_range(sql: &str, message: &str) -> Option<Range<usize>> {
     None
 }
 
+/// The one statement `sql` holds, without its `;`, or why there is not
+/// exactly one.
+///
+/// Explain and Profile wrap the editor's text in a prefix, and DuckDB runs
+/// every statement of a prepared text but the last one: wrapping
+/// `SELECT 1; DELETE FROM t` would delete before anything is explained.
+fn single_statement(sql: &str) -> Result<&str> {
+    match crate::script::split(sql).as_slice() {
+        [piece] if piece.kind == crate::script::PieceKind::Sql => Ok(&sql[piece.range.clone()]),
+        _ => anyhow::bail!(crate::i18n::tr("query.single_statement")),
+    }
+}
+
+/// Whether `sql` is one statement that only reads, by DuckDB's own parser:
+/// `json_serialize_sql` serializes a single SELECT — `FROM`, `VALUES`,
+/// `TABLE`, `SHOW`, `DESCRIBE` and `SUMMARIZE` all parse to one — and
+/// refuses anything else, including a write behind a `WITH`. Nothing runs.
+fn is_read_only_query(conn: &Connection, sql: &str) -> Result<bool> {
+    let failed: Option<bool> = conn.query_row(
+        "SELECT (json_serialize_sql(?::VARCHAR)::JSON ->> 'error')::BOOLEAN",
+        [sql],
+        |row| row.get(0),
+    )?;
+    Ok(failed == Some(false))
+}
+
 /// `EXPLAIN <sql>` rendered as plain text lines.
 pub fn explain_of(conn: &Connection, sql: &str) -> Result<(Vec<String>, u128)> {
     let started = Instant::now();
-    let trimmed = sql.trim().trim_end_matches(';');
-    let mut stmt = conn.prepare(&format!("EXPLAIN {trimmed}"))?;
+    let statement = single_statement(sql)?;
+    // On its own line: a trailing `-- comment` stays a comment.
+    let mut stmt = conn.prepare(&format!("EXPLAIN {statement}\n"))?;
     let mut rows = stmt.query([])?;
     let mut lines = Vec::new();
     while let Some(row) = rows.next()? {
@@ -720,17 +747,15 @@ impl QueryProfile {
 ///
 /// The statement really runs — that is how its operators get timed — so
 /// only statements that read are profiled: an `UPDATE` profiled to see why
-/// it is slow would also have updated.
+/// it is slow would also have updated. The first keyword does not say so —
+/// `WITH x AS (…) INSERT …` starts like a query — so DuckDB's parser decides.
 pub fn profile_of(conn: &Connection, sql: &str) -> Result<QueryProfile> {
-    let trimmed = sql.trim().trim_end_matches(';');
-    // `CALL` and `PRAGMA` return rows but may also change settings or data;
-    // `EXPLAIN` of an `EXPLAIN` profiles nothing the user wrote.
-    let keyword = keyword_of(trimmed);
-    if !returns_rows(trimmed) || matches!(keyword.as_str(), "call" | "pragma" | "explain") {
+    let statement = single_statement(sql)?;
+    if !is_read_only_query(conn, statement)? {
         anyhow::bail!(crate::i18n::tr("query.profile.read_only"));
     }
     let started = Instant::now();
-    let mut stmt = conn.prepare(&format!("EXPLAIN (ANALYZE, FORMAT JSON) {trimmed}"))?;
+    let mut stmt = conn.prepare(&format!("EXPLAIN (ANALYZE, FORMAT JSON) {statement}\n"))?;
     let mut rows = stmt.query([])?;
     let mut json = None;
     while let Some(row) = rows.next()? {
@@ -1306,6 +1331,11 @@ mod tests {
             "DELETE FROM t",
             "CALL pragma_version()",
             "EXPLAIN SELECT 1",
+            // A write behind a CTE starts like a query.
+            "WITH s AS (SELECT 2) INSERT INTO t SELECT * FROM s",
+            // DuckDB would run the DELETE while preparing the last statement.
+            "SELECT 1; DELETE FROM t",
+            "INSERT INTO t VALUES (1); SELECT 1",
         ] {
             assert!(profile_of(&conn, sql).is_err(), "{sql}");
         }
@@ -1365,6 +1395,36 @@ mod tests {
         let conn = mem();
         let (lines, _) = explain_of(&conn, "SELECT 42").unwrap();
         assert!(!lines.is_empty());
+        // A trailing comment does not swallow anything.
+        assert!(explain_of(&conn, "SELECT 42 -- answer").is_ok());
+    }
+
+    #[test]
+    fn explain_never_runs_a_statement_before_the_last() {
+        let conn = mem();
+        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i").unwrap();
+        assert!(explain_of(&conn, "DELETE FROM t; SELECT 1").is_err());
+        assert!(explain_of(&conn, "SELECT 1; DELETE FROM t").is_err());
+        // Explaining a write plans it without running it.
+        assert!(explain_of(&conn, "DELETE FROM t;").is_ok());
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn profile_runs_every_kind_of_query() {
+        let conn = mem();
+        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i").unwrap();
+        for sql in [
+            "WITH s AS (SELECT 2 AS i) SELECT * FROM s",
+            "FROM t -- trailing comment",
+            "SUMMARIZE t",
+            "SELECT 1;",
+        ] {
+            assert!(profile_of(&conn, sql).is_ok(), "{sql}");
+        }
     }
 
     #[test]
