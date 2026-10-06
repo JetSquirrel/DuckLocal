@@ -119,17 +119,22 @@ const FIT_SAMPLE_ROWS: usize = 200;
 /// cell spends on something besides its text, such as a copy button. Columns
 /// that together exceed the viewport scroll horizontally.
 pub(crate) fn fit_column_width(header: &str, rows: &[Vec<String>], col: usize, extra: f32) -> f32 {
-    let text_cols = rows
-        .iter()
-        .take(FIT_SAMPLE_ROWS)
-        .filter_map(|row| row.get(col))
-        .map(|cell| display_columns(cell))
-        .chain(std::iter::once(display_columns(header)))
-        .max()
-        .unwrap_or(0);
     let paddings = cell_paddings();
     let chrome = f32::from(paddings.left + paddings.right) + extra;
-    (text_cols as f32 * CELL_CHAR_WIDTH + chrome).clamp(MIN_FIT_WIDTH, MAX_FIT_WIDTH)
+    let width =
+        |cols: usize| (cols as f32 * CELL_CHAR_WIDTH + chrome).clamp(MIN_FIT_WIDTH, MAX_FIT_WIDTH);
+    let mut fitted = width(display_columns(header));
+    for row in rows.iter().take(FIT_SAMPLE_ROWS) {
+        // Once capped, scanning more cells cannot change the width. JSON
+        // and long text columns otherwise scan up to 200 large strings.
+        if fitted >= MAX_FIT_WIDTH {
+            break;
+        }
+        if let Some(cell) = row.get(col) {
+            fitted = fitted.max(width(display_columns(cell)));
+        }
+    }
+    fitted
 }
 
 /// Monospace columns `text` occupies on its widest line.
@@ -708,12 +713,14 @@ impl ResultsPanel {
                     AssetIconName::CircleCheck,
                     trf("results.script.rows", &[&result.row_count().to_string()]),
                 ),
-                Some(Shown::Affected { .. }) => {
-                    (AssetIconName::CircleCheck, tr("results.script.done").to_string())
-                }
-                Some(Shown::Failed(_)) => {
-                    (AssetIconName::CircleX, tr("results.script.failed").to_string())
-                }
+                Some(Shown::Affected { .. }) => (
+                    AssetIconName::CircleCheck,
+                    tr("results.script.done").to_string(),
+                ),
+                Some(Shown::Failed(_)) => (
+                    AssetIconName::CircleX,
+                    tr("results.script.failed").to_string(),
+                ),
                 None => (
                     AssetIconName::CircleDashed,
                     tr("results.script.skipped").to_string(),

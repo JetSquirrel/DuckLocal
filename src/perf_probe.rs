@@ -61,6 +61,45 @@ fn probe<T>(name: &str, f: impl FnOnce() -> T) -> T {
 
 const ROWS: usize = 100_000;
 
+#[test]
+fn perf_g_capped_chart_allocations() {
+    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let crate::query::QueryOutcome::Rows(result) = crate::query::run_of(
+        &conn,
+        "SELECT 'city-' || i AS label, i AS value FROM range(100000) t(i)",
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let (baseline, old_count) = probe("G1 baseline: allocate every category", || {
+        crate::ui::chart::collect_plot_rows(&result, &[1], usize::MAX)
+    });
+    let (capped, new_count) = probe("G2 capped: retain 200 categories", || {
+        crate::ui::chart::collect_plot_rows(&result, &[1], 200)
+    });
+    assert_eq!(old_count, new_count);
+    assert_eq!(capped.len(), 200);
+    assert_eq!(baseline[..200], capped);
+}
+
+#[test]
+fn perf_h_long_text_column_fit() {
+    use unicode_width::UnicodeWidthStr;
+    let rows = vec![vec!["x".repeat(100_000)]; 200];
+    let baseline = probe("H1 baseline: measure all sampled cells", || {
+        let cols = rows
+            .iter()
+            .map(|row| row[0].as_str().width())
+            .max()
+            .unwrap();
+        (cols as f32 * 9.6 + 20.).clamp(80., 360.)
+    });
+    let fitted = probe("H2 capped: stop when column is full", || {
+        crate::ui::results::fit_column_width("text", &rows, 0, 0.)
+    });
+    assert_eq!(baseline, fitted);
+}
+
 fn wide_table(conn: &duckdb::Connection) {
     conn.execute_batch(&format!(
         "CREATE TABLE wide AS

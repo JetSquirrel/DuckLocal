@@ -648,6 +648,9 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     {
         return None;
     }
+    #[cfg(windows)]
+    crate::windows::attach_cli_console();
+
     // The language server's stdio is a frame stream, not a document: it
     // handles its own output and exit code, so it never reaches the writeln
     // path below.

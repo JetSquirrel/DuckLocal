@@ -1,3 +1,6 @@
+// A GUI executable must not allocate a console when opened from Explorer.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod analysis;
 mod app;
 mod app_export;
@@ -25,6 +28,8 @@ mod spec;
 mod state;
 mod storage;
 mod ui;
+#[cfg(windows)]
+mod windows;
 
 use gpui_kit::component::{ThemeMode, TitleBar};
 use gpui_kit::*;
@@ -35,6 +40,8 @@ fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     #[cfg(feature = "scroll-bench")]
     if args.first().is_some_and(|arg| arg == "__scroll-bench") {
+        #[cfg(windows)]
+        windows::attach_cli_console();
         ui::scroll_bench::run();
         return;
     }
@@ -84,27 +91,27 @@ fn main() {
         }
     });
     application.run(move |cx| {
-            gpui_kit::init(cx);
-            ui::init(cx);
-            ui::theme::install(ThemeMode::Light, cx);
-            // The interface size is the rem base; it must be re-applied after
-            // every Theme::change, which resets the theme to stock defaults.
-            ui::scale::apply(cx);
-            // `ducklocal open` reaches this window from here on.
-            remote::serve();
+        gpui_kit::init(cx);
+        ui::init(cx);
+        ui::theme::install(ThemeMode::Light, cx);
+        // The interface size is the rem base; it must be re-applied after
+        // every Theme::change, which resets the theme to stock defaults.
+        ui::scale::apply(cx);
+        // `ducklocal open` reaches this window from here on.
+        remote::serve();
 
-            let window_bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(window_bounds)),
-                window_min_size: Some(size(px(960.), px(600.))),
-                ..TitleBar::window_options()
-            };
-            // The helper wraps the view in the Root that hosts overlays and
-            // window chrome; the run closure already holds `&mut App`, so no
-            // spawn is needed to reach one.
-            gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| DuckLocalApp::new(paths, window, cx))
-            })
-            .expect("Failed to open window");
-        });
+        let window_bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(window_bounds)),
+            window_min_size: Some(size(px(960.), px(600.))),
+            ..TitleBar::window_options()
+        };
+        // The helper wraps the view in the Root that hosts overlays and
+        // window chrome; the run closure already holds `&mut App`, so no
+        // spawn is needed to reach one.
+        gpui_kit::open_window(options, cx, move |window, cx| {
+            cx.new(|cx| DuckLocalApp::new(paths, window, cx))
+        })
+        .expect("Failed to open window");
+    });
 }

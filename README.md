@@ -23,7 +23,7 @@ Your data stays on your machine, and there is no account. The only optional netw
 
 ## Features
 
-- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with ⌘↵, inspect plans with EXPLAIN
+- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with Cmd+Enter on macOS or Ctrl+Enter on Windows/Linux, inspect plans with EXPLAIN
 - Schema sidebar: browse tables and columns, generate SELECTs, change a column's type
 - Results grid with filtering, copy, CSV/Parquet export, and built-in charts
 - Dashboards as `.dash` files, with cross-filtering
@@ -63,7 +63,20 @@ cargo run -- ./data/logs/     # or open something straight away
 ./scripts/bundle.sh           # build target/release/DuckLocal.app (unsigned)
 ```
 
-Releases target macOS 12+ on Apple silicon; `scripts/package-macos.sh` builds the signed, notarized dmg. See [development](https://ducklocal.app/docs/development).
+Release packaging supports macOS 12+ on Apple silicon, Linux x86_64 and Windows x86_64; `scripts/package-macos.sh` builds the signed, notarized dmg. See [development](https://ducklocal.app/docs/development).
+
+### Windows
+
+```powershell
+cargo build --release --locked
+python scripts/check-windows.py target/release/ducklocal.exe
+```
+
+The executable opens the GUI without a console window and embeds the duck icon for Explorer and the taskbar. CLI commands attach to the caller's console while preserving redirected stdin/stdout/stderr and LSP pipes. In PowerShell, use `Start-Process -Wait -PassThru` when waiting for an exit code, or a pipeline to capture JSON, e.g. `./ducklocal.exe query --sql "SELECT 42" | Out-String`.
+
+For a size-oriented build, use `cargo build --profile compact --locked` (`target/compact/ducklocal.exe`). Rust uses size optimization while DuckDB's C++ engine keeps optimization level 3; both profiles retain LTO and symbol stripping. Compare actual size and performance on the target machine; the normal release stays optimized for speed.
+
+Regenerate the committed Windows icon with `python scripts/make-icons.py --windows` (Pillow required). Normal builds need no Python or Pillow; MSVC builds need the Visual Studio C++ tools and Windows SDK. Run `cargo test --release perf_g_ -- --nocapture --test-threads=1` to compare category-chart allocations, and `perf_h_` for long-text column fitting.
 
 ## License
 

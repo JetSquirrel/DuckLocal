@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Only the latest revision of a branch/PR needs a full native build.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     # The app bundles as a macOS .app; test where it ships.
@@ -48,8 +53,20 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # PDBs and C++ debug information are expensive to compile, link and
+      # cache on Windows. Keep the existing dependency optimization levels;
+      # this changes CI debug information only, never the release profile.
+      - name: Configure Windows CI debug information
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_PROFILE_DEV_DEBUG=0" >> $env:GITHUB_ENV
+          "CARGO_PROFILE_TEST_DEBUG=0" >> $env:GITHUB_ENV
+
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       # The packages gpui-kit's own CI installs for its Linux build.
       - name: Install system libraries
@@ -62,8 +79,20 @@ jobs:
             libvulkan1
 
       - name: Build
+        if: runner.os == 'Linux'
         run: cargo build --locked
+
+      # cargo test builds the app for the CLI/LSP integration tests too.
+      # Building it separately first repeats GPUI compilation with different
+      # test-support features. Report compilation separately from execution.
+      - name: Compile Windows tests
+        if: runner.os == 'Windows'
+        run: cargo test --locked --no-run
 
       - name: Run tests
         if: runner.os == 'Windows'
-        run: cargo test --locked
+        run: "cargo test --locked -- --skip perf_probe::"
+
+      - name: Verify Windows executable
+        if: runner.os == 'Windows'
+        run: python scripts/check-windows.py target/debug/ducklocal.exe

@@ -128,7 +128,11 @@ pub fn open_file(path: &str) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    let connection = Connection::open(&expanded).map_err(|e| {
+    #[cfg(windows)]
+    let opened = open_file_on_windows(&expanded);
+    #[cfg(not(windows))]
+    let opened = Connection::open(&expanded).map_err(anyhow::Error::from);
+    let connection = opened.map_err(|e| {
         anyhow!(crate::storage::explain_error(
             &expanded,
             e,
@@ -136,6 +140,58 @@ pub fn open_file(path: &str) -> Result<()> {
         ))
     })?;
     replace(Some(connection))
+}
+
+/// Windows denies a second instance access to a file held by our own
+/// database. Reuse the primary instance, or release a matching attachment
+/// before opening it as primary. Keep the old primary alive until success.
+#[cfg(windows)]
+fn open_file_on_windows(path: &str) -> Result<Connection> {
+    let mut app = app_lock()?;
+    let guard = lock()?;
+    let Some(conn) = guard.as_ref() else {
+        return Ok(Connection::open(path)?);
+    };
+    let canonical = crate::sources::canonical_file_path(path).ok();
+    let databases = {
+        let mut stmt = conn.prepare(
+            "SELECT database_name, path, readonly FROM duckdb_databases() \
+             WHERE NOT internal ORDER BY database_oid",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(DatabaseAttachment {
+                alias: r.get(0)?,
+                path: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                read_only: r.get(2)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let existing = databases.iter().position(|database| {
+        canonical.is_some() && crate::sources::canonical_file_path(&database.path).ok() == canonical
+    });
+    match existing {
+        Some(0) => Ok(conn.try_clone()?),
+        Some(ix) => {
+            let attachment = &databases[ix];
+            let current: String = conn.query_row("SELECT current_database()", [], |r| r.get(0))?;
+            // Wait for app queries (lock order: app, then window), and release
+            // their cloned connection before releasing the attached file.
+            *app = None;
+            detach_database_of(conn, &attachment.alias)?;
+            match Connection::open(path) {
+                Ok(opened) => Ok(opened),
+                Err(error) => {
+                    // A failed switch must not leave the old workspace with
+                    // a missing attachment or a different default database.
+                    attach_database_of(conn, attachment)?;
+                    conn.execute_batch(&format!("USE \"{}\"", current.replace('"', "\"\"")))?;
+                    Err(error.into())
+                }
+            }
+        }
+        None => Ok(Connection::open(path)?),
+    }
 }
 
 /// Open an in-memory database, replacing any current connection.
@@ -624,6 +680,80 @@ mod tests {
 
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn reopening_primary_database_reuses_its_instance() {
+        let _guard = connection_guard();
+        let path = std::env::temp_dir().join(format!(
+            "ducklocal_primary_reopen_{}.duckdb",
+            std::process::id()
+        ));
+        let path = path.to_str().unwrap();
+        open_file(path).unwrap();
+        with_connection(|conn| {
+            conn.execute_batch("CREATE OR REPLACE TABLE retained AS SELECT 42 AS answer")?;
+            Ok(())
+        })
+        .unwrap();
+        open_file(path).unwrap();
+        let answer: i64 = with_connection(|conn| {
+            Ok(conn.query_row("SELECT answer FROM retained", [], |row| row.get(0))?)
+        })
+        .unwrap();
+        assert_eq!(answer, 42);
+        close().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_attachment_switch_restores_the_old_workspace() {
+        let _guard = connection_guard();
+        let path = std::env::temp_dir().join(format!(
+            "ducklocal_readonly_switch_{}.duckdb",
+            std::process::id()
+        ));
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE OR REPLACE TABLE retained AS SELECT 42 AS answer")
+                .unwrap();
+        }
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        open_memory().unwrap();
+        with_connection(|conn| {
+            attach_database_of(
+                conn,
+                &DatabaseAttachment {
+                    path: path.to_string_lossy().into_owned(),
+                    alias: "logs".into(),
+                    read_only: true,
+                },
+            )?;
+            conn.execute_batch("USE logs")?;
+            Ok(())
+        })
+        .unwrap();
+        // The Windows read-only attribute prevents opening this as writable
+        // primary, while the original read-only attachment can be restored.
+        assert!(open_file(path.to_str().unwrap()).is_err());
+        let (current, answer): (String, i64) = with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT current_database(), answer FROM retained",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+        assert_eq!(current, "logs");
+        assert_eq!(answer, 42);
+        close().unwrap();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
+
     #[test]
     fn interrupt_stops_a_running_query_without_its_lock() {
         let _guard = connection_guard();
@@ -662,16 +792,28 @@ mod tests {
 
     #[test]
     fn home_is_compacted_only_at_a_path_boundary() {
-        assert_eq!(compact_home_under("/Users/al/x.csv", "/Users/al"), "~/x.csv");
+        assert_eq!(
+            compact_home_under("/Users/al/x.csv", "/Users/al"),
+            "~/x.csv"
+        );
         assert_eq!(compact_home_under("/Users/al", "/Users/al"), "~");
-        assert_eq!(compact_home_under("/Users/alice/x", "/Users/al"), "/Users/alice/x");
+        assert_eq!(
+            compact_home_under("/Users/alice/x", "/Users/al"),
+            "/Users/alice/x"
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_home_is_compacted_at_a_backslash() {
-        assert_eq!(compact_home_under(r"C:\Users\al\x.csv", r"C:\Users\al"), r"~\x.csv");
-        assert_eq!(compact_home_under(r"C:\Users\alice\x", r"C:\Users\al"), r"C:\Users\alice\x");
+        assert_eq!(
+            compact_home_under(r"C:\Users\al\x.csv", r"C:\Users\al"),
+            r"~\x.csv"
+        );
+        assert_eq!(
+            compact_home_under(r"C:\Users\alice\x", r"C:\Users\al"),
+            r"C:\Users\alice\x"
+        );
     }
 
     #[cfg(windows)]
@@ -725,7 +867,10 @@ mod tests {
         assert_eq!(
             created,
             [
-                (Some("Orders".to_string()), "ducklocal_attach_test".to_string()),
+                (
+                    Some("Orders".to_string()),
+                    "ducklocal_attach_test".to_string()
+                ),
                 (
                     Some("Extra Sheet".to_string()),
                     "ducklocal_attach_test_Extra Sheet".to_string()
@@ -740,7 +885,8 @@ mod tests {
     }
 
     #[test]
-    fn data_file_detection() {        assert!(is_data_file("/tmp/a.csv"));
+    fn data_file_detection() {
+        assert!(is_data_file("/tmp/a.csv"));
         assert!(is_data_file("/tmp/a.PARQUET".to_lowercase().as_str()));
         assert!(is_data_file("/tmp/a.ndjson"));
         assert!(is_data_file("/tmp/a.xlsx"));

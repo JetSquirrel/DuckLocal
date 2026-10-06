@@ -132,7 +132,11 @@ impl AppState {
     /// which.
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_collapsed = !self.sidebar_collapsed;
-        let value = if self.sidebar_collapsed { "true" } else { "false" };
+        let value = if self.sidebar_collapsed {
+            "true"
+        } else {
+            "false"
+        };
         if let Err(e) = crate::history::set_setting(SIDEBAR_COLLAPSED, value) {
             tracing::warn!("Failed to persist the sidebar state: {e}");
         }
@@ -471,7 +475,9 @@ pub fn attach_data_files(paths: &[String]) -> RequestReport {
                     if let Some(kind) = crate::db::data_file_kind(&path) {
                         crate::history::register_attached_sheets(&path, kind, &pairs).ok();
                     }
-                    report.created.extend(pairs.into_iter().map(|(_, name)| name));
+                    report
+                        .created
+                        .extend(pairs.into_iter().map(|(_, name)| name));
                 }
                 Err(e) => report
                     .failed
@@ -743,6 +749,13 @@ mod tests {
 
             // Opening the attached file as the main database does not try to
             // attach it a second time.
+            crate::db::with_app_connection(|conn| {
+                conn.query_row("SELECT count(*) FROM logs.events", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
+                Ok(())
+            })
+            .unwrap();
             crate::db::open_file(&logs).unwrap();
             assert!(reattach_registered_databases().is_empty());
 

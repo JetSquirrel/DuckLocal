@@ -13,12 +13,17 @@ assets/AppIcon.icns
     into a grey rounded square of its own, which is why the old icon, a
     tile with a soft shadow baked in, looked small and boxed.
 
+assets/AppIcon.ico
+    The same duck in seven Windows icon sizes. Generate on any platform
+    with --windows; this mode does not run iconutil or tiffutil.
+
 assets/dmg-background.tiff
     The dmg window's background at 1x and 2x: an arrow from the app to
     Applications, and nothing else. The icon positions it
     is drawn for live in scripts/dmg-settings.py.
 """
 
+import argparse
 import os
 import subprocess
 import tempfile
@@ -63,7 +68,7 @@ def squircle(size, scale=4):
     return mask.resize((size, size), Image.LANCZOS)
 
 
-def icon():
+def icon_canvas():
     art = Image.open(os.path.join(ASSETS, "logo.png")).convert("RGBA").crop(ART_BOX)
     # The drawing at 78% of the body's width: big enough to read in the
     # Dock at 32px, with the paper still showing round it.
@@ -90,6 +95,21 @@ def icon():
     shadow.alpha_composite(shade, (offset, offset + 10))
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
     canvas.alpha_composite(body, (offset, offset))
+
+    return canvas
+
+
+def windows_icon():
+    """Multi-resolution Windows icon, using the same duck as the macOS icon."""
+    icon_canvas().save(
+        os.path.join(ASSETS, "AppIcon.ico"),
+        sizes=[(px, px) for px in (16, 24, 32, 48, 64, 128, 256)],
+    )
+    print("wrote assets/AppIcon.ico")
+
+
+def icon():
+    canvas = icon_canvas()
 
     work = tempfile.mkdtemp()
     iconset = os.path.join(work, "AppIcon.iconset")
@@ -139,5 +159,10 @@ def dmg_background():
 
 
 if __name__ == "__main__":
-    icon()
-    dmg_background()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--windows", action="store_true", help="Generate only AppIcon.ico; no macOS tools needed")
+    args = parser.parse_args()
+    windows_icon()
+    if not args.windows:
+        icon()
+        dmg_background()

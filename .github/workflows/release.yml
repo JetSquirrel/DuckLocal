@@ -154,13 +154,16 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      - name: Verify Windows executable
+        run: python scripts/check-windows.py target/release/ducklocal.exe
+
       - name: Package
         shell: pwsh
         run: |
           $dir = "ducklocal-windows-x86_64"
           New-Item -ItemType Directory $dir | Out-Null
-          Copy-Item target/release/ducklocal.exe, LICENSE, README.md $dir
-          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          Copy-Item target/release/ducklocal.exe, LICENSE, README.md, README.zh-CN.md $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip" -CompressionLevel Optimal
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
