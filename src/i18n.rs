@@ -511,6 +511,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "只能分析读取数据的语句（SELECT、WITH、FROM 等）：分析会真正执行语句。",
         "Only statements that read can be profiled (SELECT, WITH, FROM…): profiling runs the statement.",
     ),
+    (
+        "query.single_statement",
+        "一次只能对一条语句执行计划或分析：把要看的那条单独放进一个标签页。",
+        "Explain and Profile take one statement: put the one to look at in a tab of its own.",
+    ),
     ("workspace.rename.tooltip", "双击重命名", "Double-click to rename"),
     ("workspace.empty.title", "把数据拖进来", "Drop your data in"),
     (
