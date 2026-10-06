@@ -1,6 +1,6 @@
 [package]
 name = "ducklocal"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "A local-first workspace for querying and exploring your data, built natively on DuckDB"
 license = "Apache-2.0"
