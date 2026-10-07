@@ -508,7 +508,7 @@ impl Dashboard {
             };
             let pick = Pick {
                 column: filter.column.clone(),
-                // The grid's NULL is SQL's: compared with IS NULL.
+                // A cell showing NULL: SQL NULL, or the text 'NULL'.
                 value: (cell != "NULL").then(|| cell.clone()),
             };
             if self.picks.get(&filter.name) == Some(&pick) {

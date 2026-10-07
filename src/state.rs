@@ -298,7 +298,14 @@ pub fn attach_database(path: &str, read_only: bool) -> anyhow::Result<String> {
         // Keep the alias it had, so SQL written against it still runs.
         let alias = match registered.iter().find(|d| d.path == path) {
             Some(known) if !database_named(conn, &known.alias)? => known.alias.clone(),
-            _ => crate::db::database_alias_of(conn, &path)?,
+            _ => {
+                let reserved: Vec<String> = registered
+                    .iter()
+                    .filter(|d| d.path != path)
+                    .map(|d| d.alias.clone())
+                    .collect();
+                crate::db::database_alias_of(conn, &path, &reserved)?
+            }
         };
         let attachment = crate::db::DatabaseAttachment {
             path: path.clone(),

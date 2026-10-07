@@ -650,7 +650,7 @@ pub fn error_byte_range(sql: &str, message: &str) -> Option<Range<usize>> {
 /// Explain and Profile wrap the editor's text in a prefix, and DuckDB runs
 /// every statement of a prepared text but the last one: wrapping
 /// `SELECT 1; DELETE FROM t` would delete before anything is explained.
-fn single_statement(sql: &str) -> Result<&str> {
+pub(crate) fn single_statement(sql: &str) -> Result<&str> {
     match crate::script::split(sql).as_slice() {
         [piece] if piece.kind == crate::script::PieceKind::Sql => Ok(&sql[piece.range.clone()]),
         _ => anyhow::bail!(crate::i18n::tr("query.single_statement")),
@@ -1141,20 +1141,29 @@ fn format_float(v: f64) -> String {
     }
 }
 
+// A fraction of a second shows when there is one, as DuckDB prints it: a
+// cell is also what a dashboard filter compares against, and a timestamp cut
+// to whole seconds matched no row that had a fraction.
 fn format_timestamp(unit: TimeUnit, v: i64) -> String {
     let micros = unit.to_micros(v);
     use chrono::{Datelike as _, Timelike as _};
     match chrono::DateTime::from_timestamp_micros(micros) {
-        Some(t) if (0..=9999).contains(&t.year()) => format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            t.year(),
-            t.month(),
-            t.day(),
-            t.hour(),
-            t.minute(),
-            t.second()
+        Some(t) if (0..=9999).contains(&t.year()) => fraction(
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ),
+            t.timestamp_subsec_micros(),
         ),
-        Some(t) => t.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Some(t) => fraction(
+            t.format("%Y-%m-%d %H:%M:%S").to_string(),
+            t.timestamp_subsec_micros(),
+        ),
         None => v.to_string(),
     }
 }
@@ -1165,7 +1174,10 @@ fn format_time(unit: TimeUnit, v: i64) -> String {
     let h = secs.div_euclid(3600);
     let m = secs.div_euclid(60) % 60;
     let s = secs % 60;
-    format!("{h:02}:{m:02}:{s:02}")
+    fraction(
+        format!("{h:02}:{m:02}:{s:02}"),
+        micros.rem_euclid(1_000_000) as u32,
+    )
 }
 
 fn format_interval(months: i32, days: i32, nanos: i64) -> String {
@@ -1617,6 +1629,15 @@ mod tests {
         assert_eq!(
             value_to_string(&Value::Timestamp(TimeUnit::Microsecond, 0)),
             "1970-01-01 00:00:00"
+        );
+        // A fraction shows when there is one, trailing zeros trimmed.
+        assert_eq!(
+            value_to_string(&Value::Timestamp(TimeUnit::Microsecond, 500_000)),
+            "1970-01-01 00:00:00.5"
+        );
+        assert_eq!(
+            value_to_string(&Value::Time64(TimeUnit::Microsecond, 3_723_000_120)),
+            "01:02:03.00012"
         );
     }
 

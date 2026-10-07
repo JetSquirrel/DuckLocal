@@ -303,15 +303,19 @@ pub fn remove_attached_file_of(conn: &Connection, id: i64) -> Result<()> {
 }
 
 /// Register a database to attach into every connection, replacing any
-/// earlier registration under the same alias or of the same path.
+/// earlier registration of the same path. Another file's registration stays:
+/// aliases are chosen clear of registered ones
+/// ([`crate::db::database_alias_of`]), so an alias that is still taken is
+/// refused by the table's UNIQUE rather than deleted — deleting by alias
+/// forgot a file that was only skipped because its drive was not mounted.
 pub fn register_attached_database(database: &AttachedDatabase) -> Result<()> {
     with_connection(|conn| register_attached_database_to(conn, database))
 }
 
 pub fn register_attached_database_to(conn: &Connection, database: &AttachedDatabase) -> Result<()> {
     conn.execute(
-        "DELETE FROM attached_databases WHERE alias = ?1 OR path = ?2",
-        [&database.alias, &database.path],
+        "DELETE FROM attached_databases WHERE path = ?1",
+        [&database.path],
     )?;
     conn.execute(
         "INSERT INTO attached_databases(id, path, alias, read_only, attached_at)
@@ -505,6 +509,12 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].alias, "metrics");
         assert!(all[1].read_only);
+        // Another file under an alias already registered is refused by the
+        // store, and the registration it would have replaced stays.
+        assert!(register_attached_database_to(&conn, &db("/b/logs.duckdb", "logs")).is_err());
+        let all = attached_databases_of(&conn).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|d| d.path == "/a/logs.duckdb"));
         remove_attached_database_of(&conn, "metrics").unwrap();
         assert_eq!(attached_databases_of(&conn).unwrap().len(), 1);
     }

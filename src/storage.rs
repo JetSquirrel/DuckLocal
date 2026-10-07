@@ -94,19 +94,24 @@ fn release(version: &str) -> Option<(u64, u64, u64)> {
 /// `None` when the header does not explain the failure and DuckDB's own
 /// message is the best there is.
 ///
-/// `ours` is the bundled DuckDB's version (`v1.5.5`).
-pub fn explain_open_failure(path: &str, ours: &str, lang: Language) -> Option<String> {
+/// `ours` is the bundled DuckDB's version (`v1.5.5`); `error` is DuckDB's
+/// message. A file's version only explains a failure DuckDB blamed on the
+/// version: a newer release's file that this one can still read fails for
+/// other reasons too — a lock held by that release, above all.
+pub fn explain_open_failure(path: &str, ours: &str, error: &str, lang: Language) -> Option<String> {
     let text = |key, args: &[&str]| Some(trf_in(lang, key, args));
     match file_kind(path)? {
         FileKind::Sqlite => text("storage.sqlite", &[&sql_string(path)]),
         FileKind::Other => text("storage.not_duckdb", &[]),
-        FileKind::Duckdb { storage, .. } if storage < FIRST_STABLE_STORAGE => {
+        FileKind::Duckdb { storage, .. }
+            if storage < FIRST_STABLE_STORAGE && refused_for_its_version(error) =>
+        {
             text("storage.too_old", &[ours])
         }
         FileKind::Duckdb {
             created_by: Some(created_by),
             ..
-        } if release(&created_by) > release(ours) => text(
+        } if release(&created_by) > release(ours) && refused_for_its_version(error) => text(
             "storage.too_new",
             &[&created_by, ours, &sql_string(path), ours],
         ),
@@ -125,12 +130,21 @@ pub fn library_version() -> &'static str {
     })
 }
 
+/// Whether DuckDB refused a file over its storage version: the two messages
+/// it opens a file with, for the header's version number and for the
+/// serialization a newer release wrote.
+fn refused_for_its_version(error: &str) -> bool {
+    error.contains("database file with version number")
+        || error.contains("storage version greater than the latest version")
+}
+
 /// [`explain_open_failure`]'s text in front of DuckDB's own message, which
 /// stays for whoever needs the exact error.
 pub fn explain_error(path: &str, error: impl std::fmt::Display, lang: Language) -> String {
-    match explain_open_failure(path, library_version(), lang) {
-        Some(explanation) => format!("{explanation}\n\n{error}"),
-        None => error.to_string(),
+    let message = error.to_string();
+    match explain_open_failure(path, library_version(), &message, lang) {
+        Some(explanation) => format!("{explanation}\n\n{message}"),
+        None => message,
     }
 }
 
@@ -178,7 +192,7 @@ mod tests {
         assert_eq!(created_by.as_deref(), Some(ours.as_str()));
         // A file this build reads needs no explanation.
         assert_eq!(
-            explain_open_failure(path.to_str().unwrap(), &ours, Language::En),
+            explain_open_failure(path.to_str().unwrap(), &ours, TOO_NEW, Language::En),
             None
         );
         let _ = std::fs::remove_file(&path);
@@ -214,7 +228,7 @@ mod tests {
             path.to_str().unwrap().to_string()
         };
         let newer = write("ducklocal_storage_newer.duckdb", &header(69, "v1.10.0"));
-        let message = explain_open_failure(&newer, "v1.5.5", Language::En).unwrap();
+        let message = explain_open_failure(&newer, "v1.5.5", TOO_NEW, Language::En).unwrap();
         assert!(
             message.contains("v1.10.0") && message.contains("v1.5.5"),
             "{message}"
@@ -222,19 +236,36 @@ mod tests {
         assert!(message.contains("STORAGE_VERSION"), "{message}");
 
         let same = write("ducklocal_storage_same.duckdb", &header(64, "v1.5.5"));
-        assert_eq!(explain_open_failure(&same, "v1.5.5", Language::En), None);
+        assert_eq!(explain_open_failure(&same, "v1.5.5", TOO_NEW, Language::En), None);
 
         let ancient = write("ducklocal_storage_ancient.duckdb", &header(51, ""));
-        assert!(explain_open_failure(&ancient, "v1.5.5", Language::En).is_some());
+        assert!(explain_open_failure(&ancient, "v1.5.5", OLD_NUMBER, Language::En).is_some());
 
         let sqlite = write("ducklocal_storage.sqlite", b"SQLite format 3\0....");
-        assert!(explain_open_failure(&sqlite, "v1.5.5", Language::En)
+        assert!(explain_open_failure(&sqlite, "v1.5.5", "not a valid DuckDB database file", Language::En)
             .unwrap()
             .contains("sqlite"));
 
         for path in [newer, same, ancient, sqlite] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// DuckDB's messages for a file it will not read for its version.
+    const TOO_NEW: &str = "Invalid Input Error: Error opening \"x.duckdb\": file was written with \
+        a storage version greater than the latest version supported by this DuckDB instance.";
+    const OLD_NUMBER: &str = "IO Error: Trying to read a database file with version number 51, \
+        but we can only read versions between 64 and 67.";
+
+    #[test]
+    fn a_newer_file_that_failed_for_another_reason_is_not_called_too_new() {
+        let path = std::env::temp_dir().join("ducklocal_storage_newer_locked.duckdb");
+        std::fs::write(&path, header(64, "v1.10.0")).unwrap();
+        let path = path.to_str().unwrap().to_string();
+        let locked = "IO Error: Could not set lock on file \"x.duckdb\": Conflicting lock is held";
+        assert_eq!(explain_open_failure(&path, "v1.5.5", locked, Language::En), None);
+        assert!(explain_open_failure(&path, "v1.5.5", OLD_NUMBER, Language::En).is_some());
+        let _ = std::fs::remove_file(path);
     }
 
     /// The copy the too-new message prescribes runs as written.

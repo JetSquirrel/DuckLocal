@@ -477,8 +477,11 @@ pub struct DatabaseAttachment {
 
 /// An alias for the database at `path`: its file stem as a plain identifier
 /// (`2026-10 logs.duckdb` → `db_2026_10_logs`), with a numeric suffix when
-/// the connection already has a database by that name.
-pub fn database_alias_of(conn: &Connection, path: &str) -> Result<String> {
+/// the connection already has a database by that name, or `reserved` holds
+/// it — the aliases registered for other files, which a file skipped at
+/// launch (on a drive not mounted, say) still owns. Names compare without
+/// case, as DuckDB's do.
+pub fn database_alias_of(conn: &Connection, path: &str, reserved: &[String]) -> Result<String> {
     let stem = view_name_for(path)?;
     let mut alias: String = stem
         .chars()
@@ -488,9 +491,10 @@ pub fn database_alias_of(conn: &Connection, path: &str) -> Result<String> {
         alias = format!("db_{alias}");
     }
     let mut stmt = conn.prepare("SELECT lower(database_name) FROM duckdb_databases()")?;
-    let taken: HashSet<String> = stmt
+    let mut taken: HashSet<String> = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<_, _>>()?;
+    taken.extend(reserved.iter().map(|alias| alias.to_lowercase()));
     // `main` is not a database but names the default schema; an alias by
     // that name would make `main.t` mean two things.
     let free = |name: &str| !taken.contains(&name.to_lowercase()) && name != "main";
@@ -566,8 +570,13 @@ mod tests {
         let path = dir.join("2026-10 logs.duckdb");
         let path = path.to_str().unwrap();
 
-        let alias = database_alias_of(&conn, path).unwrap();
+        let alias = database_alias_of(&conn, path, &[]).unwrap();
         assert_eq!(alias, "db_2026_10_logs");
+        // Registered for another file, in any case: not free either.
+        assert_eq!(
+            database_alias_of(&conn, path, &["DB_2026_10_logs".to_string()]).unwrap(),
+            "db_2026_10_logs_2"
+        );
         let attachment = DatabaseAttachment {
             path: path.to_string(),
             alias: alias.clone(),
@@ -577,7 +586,7 @@ mod tests {
         conn.execute_batch(&format!("CREATE TABLE {alias}.events AS SELECT 1 AS id"))
             .unwrap();
         // Taken now: the next one gets a suffix.
-        assert_eq!(database_alias_of(&conn, path).unwrap(), "db_2026_10_logs_2");
+        assert_eq!(database_alias_of(&conn, path, &[]).unwrap(), "db_2026_10_logs_2");
 
         // Detaching the database in use moves the session off it first.
         conn.execute_batch(&format!("USE {alias}")).unwrap();

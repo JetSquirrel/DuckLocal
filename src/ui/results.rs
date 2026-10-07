@@ -147,6 +147,13 @@ fn display_columns(text: &str) -> usize {
 /// row containing the (case-insensitive) filter text in any cell. `None`
 /// means unfiltered — callers then use the row index directly, so an empty
 /// filter costs nothing.
+/// A result's statement as the relation an overview reads, `( … )`, with the
+/// closing paren on a line of its own so a trailing line comment ends before
+/// it.
+fn overview_relation(statement: &str) -> String {
+    format!("(\n{statement}\n)")
+}
+
 fn filter_row_indices(rows: &[Vec<String>], filter: &str) -> Option<Vec<usize>> {
     let needle = filter.trim().to_lowercase();
     if needle.is_empty() {
@@ -673,7 +680,15 @@ impl ResultsPanel {
             self.overview = OverviewState::Failed(tr("results.overview.not_query").to_string());
             return;
         }
-        let relation = format!("({})", sql.trim().trim_end_matches(';'));
+        // The statement without its `;`, and the closing paren on a line of
+        // its own: a trailing `-- note` would otherwise comment it out.
+        let relation = match crate::query::single_statement(&sql) {
+            Ok(statement) => overview_relation(statement),
+            Err(error) => {
+                self.overview = OverviewState::Failed(error.to_string());
+                return;
+            }
+        };
         self.overview_request += 1;
         let request = self.overview_request;
         self.overview = OverviewState::Loading;
@@ -1762,7 +1777,26 @@ fn format_thousands(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_row_indices, fit_column_width, MAX_FIT_WIDTH, MIN_FIT_WIDTH};
+    use super::{
+        filter_row_indices, fit_column_width, overview_relation, MAX_FIT_WIDTH, MIN_FIT_WIDTH,
+    };
+
+    #[test]
+    fn an_overview_reads_a_statement_that_ends_in_a_comment() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        for sql in [
+            "SELECT 1 AS n -- latest",
+            "SELECT 1 AS n; -- latest",
+            "-- why\nSELECT 1 AS n",
+        ] {
+            let statement = crate::query::single_statement(sql).unwrap();
+            let relation = overview_relation(statement);
+            assert!(
+                crate::overview::overview_of(&conn, &relation, "query").is_ok(),
+                "{sql}"
+            );
+        }
+    }
 
     fn rows() -> Vec<Vec<String>> {
         vec![

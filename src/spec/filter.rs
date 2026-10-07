@@ -47,7 +47,7 @@ pub(crate) struct Placeholder {
 pub(crate) struct Pick {
     /// The column the predicate compares, as named on the filter.
     pub column: String,
-    /// The cell as the result grid shows it; `None` is SQL NULL.
+    /// The cell as the result grid shows it; `None` is a cell showing NULL.
     pub value: Option<String>,
 }
 
@@ -56,7 +56,10 @@ impl Pick {
     pub(crate) fn predicate(&self) -> String {
         let column = format!("\"{}\"", self.column.replace('"', "\"\""));
         match &self.value {
-            None => format!("({column} IS NULL)"),
+            // The grid shows SQL NULL and the text 'NULL' alike, so a cell
+            // showing NULL matches either; the cast keeps the comparison
+            // legal for a column that is not text.
+            None => format!("({column} IS NULL OR CAST({column} AS VARCHAR) = 'NULL')"),
             Some(value) => format!("({column} = '{}')", value.replace('\'', "''")),
         }
     }
@@ -191,7 +194,8 @@ mod tests {
         );
         assert_eq!(
             apply(sql, &picks),
-            "FROM t WHERE (\"Sales \"\"Channel\"\"\" = 'it''s') AND (\"day\" IS NULL)"
+            "FROM t WHERE (\"Sales \"\"Channel\"\"\" = 'it''s') \
+             AND (\"day\" IS NULL OR CAST(\"day\" AS VARCHAR) = 'NULL')"
         );
     }
 
