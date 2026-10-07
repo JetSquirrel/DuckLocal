@@ -23,10 +23,13 @@ Your data stays on your machine, and there is no account. The only optional netw
 
 ## Features
 
-- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with Cmd+Enter on macOS or Ctrl+Enter on Windows/Linux, inspect plans with EXPLAIN
-- Schema sidebar: browse tables and columns, generate SELECTs, change a column's type
-- Results grid with filtering, copy, CSV/Parquet export, and built-in charts
-- Dashboards as `.dash` files, with cross-filtering
+- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with Cmd+Enter on macOS or Ctrl+Enter on Windows/Linux, inspect plans with EXPLAIN, and Profile a query to see which operators took the time (EXPLAIN ANALYZE)
+- Schema sidebar: browse tables and columns, generate SELECTs, change a column's type; attach more DuckDB or SQLite databases beside the open one, kept across launches
+- Extensions tab: list, install, load and update DuckDB extensions
+- Results grid with filtering, copy, CSV/Parquet export, built-in charts, and an Overview tab that summarizes every column (nulls, distinct values, range, distribution)
+- Dashboards as `.dash` files: line, bar, area, scatter, pie and map plots, tables and cards, with cross-filtering
+- On macOS, Parquet and DuckDB files open from Finder with a double-click, and Quick Look previews Parquet, DuckDB, CSV, TSV and JSON Lines files with the Space bar
+- A database file that will not open says why (a newer DuckDB, an old storage format, SQLite) and what to run instead; the status bar shows the oldest DuckDB that reads the open file and the release that wrote it
 - Query history, S3 via httpfs (session-only credentials)
 - Light and dark themes, four interface sizes, English and 简体中文
 
