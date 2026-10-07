@@ -1,0 +1,9 @@
+# The oldest macOS DuckLocal runs on, for every macOS build: the app, the
+# Quick Look extension (scripts/build-quicklook.sh links it for the same
+# release) and the DuckDB C++ that libduckdb-sys compiles through the `cc`
+# crate. Unset, `cc` targets the macOS of the machine that builds, so a
+# release built on a newer Mac carried code its declared minimum cannot
+# load. It matches LSMinimumSystemVersion in assets/Info.plist; other
+# platforms ignore it.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "12.0"
