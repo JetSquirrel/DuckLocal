@@ -659,9 +659,10 @@ mod tests {
             conn.execute_batch("CREATE OR REPLACE TABLE retained AS SELECT 42 AS answer")
                 .unwrap();
         }
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut permissions = original.clone();
         permissions.set_readonly(true);
-        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        std::fs::set_permissions(&path, permissions).unwrap();
         open_memory().unwrap();
         with_connection(|conn| {
             attach_database_of(
@@ -690,8 +691,9 @@ mod tests {
         assert_eq!(current, "logs");
         assert_eq!(answer, 42);
         close().unwrap();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&path, permissions).unwrap();
+        // Restored, not set_readonly(false): that would leave the file
+        // world-writable on Unix.
+        std::fs::set_permissions(&path, original).unwrap();
         std::fs::remove_file(&path).unwrap();
     }
 

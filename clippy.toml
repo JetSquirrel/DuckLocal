@@ -1,0 +1,4 @@
+# lsp_types::Url is a fluent_uri::Uri, whose interior mutability is a parse
+# cache that its Hash and Eq never read, so keying the LSP's open documents
+# by it is sound.
+ignore-interior-mutability = ["fluent_uri::Uri"]
