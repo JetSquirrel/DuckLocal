@@ -30,7 +30,8 @@ icon_assets!(
         Gauge,
         ChartColumn,
         DatabasePlus,
-        DatabaseX
+        DatabaseX,
+        MessageSquare
     ]
 );
 

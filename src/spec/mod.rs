@@ -28,6 +28,8 @@
 //! half runs the same parse and validation before drawing anything, so a file
 //! that fails `check` opens as its diagnostics, not as a broken chart.
 
+pub mod comment_card;
+pub mod comments;
 pub mod complete;
 pub mod filter;
 pub mod highlight;

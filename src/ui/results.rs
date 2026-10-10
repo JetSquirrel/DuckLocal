@@ -100,9 +100,10 @@ fn cell_paddings() -> Edges<Pixels> {
     }
 }
 
-/// Advance of one narrow character in the table's monospace cell font; a
-/// wide (CJK, fullwidth) character takes two. An estimate made without the
-/// text system, so it errs a little wide rather than clip.
+/// Advance of one narrow character in the table's monospace cell font at
+/// the default interface size; a wide (CJK, fullwidth) character takes two.
+/// An estimate made without the text system, so it errs a little wide rather
+/// than clip. Scaled with the interface size, as the font is.
 const CELL_CHAR_WIDTH: f32 = 9.6;
 /// A fitted column is never narrower than this, so short values and
 /// one-letter headers still leave room to grab the resize handle.
@@ -121,13 +122,16 @@ const FIT_SAMPLE_ROWS: usize = 200;
 pub(crate) fn fit_column_width(header: &str, rows: &[Vec<String>], col: usize, extra: f32) -> f32 {
     let paddings = cell_paddings();
     let chrome = f32::from(paddings.left + paddings.right) + extra;
-    let width =
-        |cols: usize| (cols as f32 * CELL_CHAR_WIDTH + chrome).clamp(MIN_FIT_WIDTH, MAX_FIT_WIDTH);
+    // At a larger interface size the text is wider than the estimate made at
+    // the default one, and a column fitted to it clipped its own values.
+    let unit = f32::from(crate::ui::scale::design(1.));
+    let (min, max) = (MIN_FIT_WIDTH * unit, MAX_FIT_WIDTH * unit);
+    let width = |cols: usize| (cols as f32 * CELL_CHAR_WIDTH * unit + chrome).clamp(min, max);
     let mut fitted = width(display_columns(header));
     for row in rows.iter().take(FIT_SAMPLE_ROWS) {
         // Once capped, scanning more cells cannot change the width. JSON
         // and long text columns otherwise scan up to 200 large strings.
-        if fitted >= MAX_FIT_WIDTH {
+        if fitted >= max {
             break;
         }
         if let Some(cell) = row.get(col) {

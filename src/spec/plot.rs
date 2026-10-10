@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::plot::label::{
-    Text, TEXT_GAP, TEXT_HEIGHT, TEXT_SIZE, truncate_text_to_width,
+    Text, TEXT_GAP, truncate_text_to_width,
 };
 use gpui_kit::component::plot::scale::{Scale, ScaleBand, ScaleLinear, ScalePoint};
 use gpui_kit::component::plot::shape::{Bar, BarAlignment, Line};
@@ -41,9 +41,15 @@ use crate::ui::chart::format_value;
 /// The headroom kept above the tallest bar or point, as the catalog charts
 /// keep above theirs.
 const TOP_GAP: f32 = 10.;
-/// The widest one bar in a group: the catalog caps a single-series bar at
-/// 30px, and a grouped bar is no different.
-const MAX_BAR_WIDTH: f32 = 30.;
+/// The widest one bar in a group. The catalog caps a bar at 30px, which on
+/// a dashboard's full-width row leaves a few categories as slivers lost in
+/// the space between them; a wider bar fills the row without turning into a
+/// slab.
+const MAX_BAR_WIDTH: f32 = 56.;
+/// The axis and bar labels' font size. The catalog draws 10px, which is hard
+/// to read under a dashboard plot — and for CJK labels most of all.
+const LABEL_SIZE: f32 = 12.;
+const LABEL_HEIGHT: f32 = LABEL_SIZE + TEXT_GAP;
 /// The gap between two bars of one group: enough to tell the series apart,
 /// not enough to split the group.
 const GROUP_GAP: f32 = 2.;
@@ -58,7 +64,7 @@ const TICK_COUNT: usize = 5;
 /// The gutter a plot reserves under itself for its x-axis labels, as the
 /// catalog computes it for the labels' font size.
 fn axis_gap() -> f32 {
-    axis_gutter(px(TEXT_SIZE))
+    axis_gutter(px(LABEL_SIZE))
 }
 
 /// The dashboard's chart palette: series cycle `chart_1..chart_5`, as at the
@@ -186,7 +192,7 @@ enum Layout {
 /// with what was painted.
 fn label_width(text: &str) -> f32 {
     use unicode_width::UnicodeWidthStr;
-    text.width() as f32 * TEXT_SIZE * 0.62
+    text.width() as f32 * LABEL_SIZE * 0.62
 }
 
 impl GroupedBars {
@@ -288,7 +294,7 @@ impl GroupedBars {
         let height = bounds.size.height.as_f32();
         let (band_range, value_range) = match self.layout(bounds) {
             Layout::Columns => {
-                let top = TOP_GAP + if self.values_shown() { TEXT_HEIGHT } else { 0. };
+                let top = TOP_GAP + if self.values_shown() { LABEL_HEIGHT } else { 0. };
                 ([0., width], [height - axis_gap(), top])
             }
             Layout::Rows { gutter, room } => ([0., height], [gutter, (width - room).max(gutter)]),
@@ -385,6 +391,7 @@ impl Plot for GroupedBars {
                                 point(px(tick + band_width / 2.), px(baseline + TEXT_GAP)),
                                 muted,
                             )
+                            .font_size(px(LABEL_SIZE))
                             .align(TextAlign::Center),
                         )
                     })
@@ -392,7 +399,7 @@ impl Plot for GroupedBars {
                 PlotLabel::new(labels).paint(&bounds, window, cx);
 
                 // The grid skips the baseline, which the axis line already draws.
-                let top = TOP_GAP + if self.values_shown() { TEXT_HEIGHT } else { 0. };
+                let top = TOP_GAP + if self.values_shown() { LABEL_HEIGHT } else { 0. };
                 let ticks = value_ticks(top, baseline, TICK_COUNT);
                 Grid::new()
                     .y(ticks[..ticks.len() - 1].to_vec())
@@ -413,7 +420,9 @@ impl Plot for GroupedBars {
                     .fill(fill);
                 if self.values_shown() {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
-                        vec![Text::new(d.0.label.clone(), at, muted).align(TextAlign::Center)]
+                        vec![Text::new(d.0.label.clone(), at, muted)
+                            .font_size(px(LABEL_SIZE))
+                            .align(TextAlign::Center)]
                     });
                 }
                 bar.paint(&bounds, window, cx);
@@ -427,7 +436,7 @@ impl Plot for GroupedBars {
                 // Every label while a row is a line of text tall; past that,
                 // every k-th, as many as the rows can hold.
                 let step = band_scale.step().max(1.);
-                let every = (TEXT_HEIGHT / step).ceil().max(1.) as usize;
+                let every = (LABEL_HEIGHT / step).ceil().max(1.) as usize;
                 let room_for_label = gutter - LABEL_PAD;
                 let labels = self
                     .points
@@ -437,16 +446,17 @@ impl Plot for GroupedBars {
                     .filter_map(|(_, d)| {
                         let tick = band_scale.tick(&d.band)?;
                         let text =
-                            truncate_text_to_width(&d.band, px(TEXT_SIZE), room_for_label, window);
+                            truncate_text_to_width(&d.band, px(LABEL_SIZE), room_for_label, window);
                         Some(
                             Text::new(
                                 text,
                                 point(
                                     px(gutter - LABEL_PAD / 2.),
-                                    px(tick + band_width / 2. - TEXT_SIZE / 2.),
+                                    px(tick + band_width / 2. - LABEL_SIZE / 2.),
                                 ),
                                 muted,
                             )
+                            .font_size(px(LABEL_SIZE))
                             .align(TextAlign::Right),
                         )
                     })
@@ -482,7 +492,9 @@ impl Plot for GroupedBars {
                         } else {
                             TextAlign::Left
                         };
-                        vec![Text::new(d.0.label.clone(), at, muted).align(align)]
+                        vec![Text::new(d.0.label.clone(), at, muted)
+                            .font_size(px(LABEL_SIZE))
+                            .align(align)]
                     });
                 }
                 bar.paint(&bounds, window, cx);
@@ -683,6 +695,7 @@ impl Plot for SeriesPlot {
                 let tick = x.tick_at(i)?;
                 Some(
                     AxisText::new(d.band.clone(), px(tick), cx.theme().muted_foreground)
+                        .font_size(px(LABEL_SIZE))
                         .align(point_label_align(i, self.points.len())),
                 )
             });
@@ -879,8 +892,8 @@ mod tests {
 
     #[test]
     fn categories_that_do_not_fit_lie_on_their_side() {
-        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(240.)));
-        // Six short kinds fit across 400px: upright, every label shown.
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(480.), px(240.)));
+        // Six short kinds fit across 480px: upright, every label shown.
         let kinds = bars(&["fix", "feature", "docs", "refactor", "test", "build"]);
         assert_eq!(kinds.layout(bounds), Layout::Columns);
         // Fourteen paths do not: on its side, the labels in a left gutter
@@ -888,9 +901,9 @@ mod tests {
         let areas: Vec<String> = (0..14).map(|i| format!("src/app_export_{i} (removed)")).collect();
         let areas = bars(&areas.iter().map(String::as_str).collect::<Vec<_>>());
         let Layout::Rows { gutter, room } = areas.layout(bounds) else {
-            panic!("fourteen long labels cannot stand upright in 400px");
+            panic!("fourteen long labels cannot stand upright in 480px");
         };
-        assert!((40.0..=160.).contains(&gutter), "{gutter}");
+        assert!((40.0..=192.).contains(&gutter), "{gutter}");
         assert!(room > 0.);
         // A click on a row, or on its label, picks that row's band.
         let at = |y: f32| areas.band_at(point(px(10.), px(y)), bounds);

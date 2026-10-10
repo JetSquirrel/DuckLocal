@@ -56,6 +56,18 @@ ducklocal check dashboard.dash --database warehouse.duckdb
 
 Validates a `.dash` file — `query "name" { sql = <<SQL … SQL }` blocks and `plot "name" { type/query/x/y/series/title }` blocks joined by `query.name` references, plus `source` and `filter` blocks — without opening a window. A `$name` in a query's SQL must name a `filter` block and is checked and run as `TRUE`, which is what the dashboard runs before anything is picked; a filter's `column` must be one its plot's query returns. The output's `filters` list each filter's `plot`, `column` and the `queries` that read it. After the static checks (syntax, duplicate names, dangling references, SQL through the real parser — one read-only statement per query) every query is described and run, read-only, and plot columns are checked against what it returns, including a numeric-type check on `y`. Queries run on `--database` (existing file, read-only) when given, in memory otherwise; in memory, a query reading a table no `source` defines is listed under `unresolved` (query, line, reason) rather than failing, and its plots' columns go unchecked. Success prints one JSON object with the spec's queries and plots. A spec mistake is exit 2, kind `spec`, one `file:line: message` per diagnostic, all diagnostics at once; database/I/O failures are exit 1.
 
+## Review comments on a dashboard
+
+```bash
+ducklocal comments dashboard.dash [--all]
+ducklocal comments dashboard.dash --reply c1 --text "Sorted descending" [--resolve]
+ducklocal comments dashboard.dash --resolve c1
+ducklocal comments dashboard.dash --reopen c1
+ducklocal comments dashboard.dash --add revenue --text "…"
+```
+
+Threads people post on plots from the window, stored as `FILE.comments.json` beside the spec. With no action, prints `{file, comments_file, open, threads}`; each thread has `id`, `plot`, `plot_title`, `plot_query`, `plot_lines` (`[first, last]` line of the `plot` block in FILE, or null when the spec does not parse), `plot_missing`, `resolved`, and `comments` (`author` `user`/`agent`, `text`, `at`). An action prints `{thread}` as changed. Replies are signed `agent`; a reply to a resolved thread reopens it unless `--resolve` is also given. Unknown thread is exit 2 with a hint to list them. No window is needed; a running one shows the change within a second.
+
 ## Show work in the running window
 
 ```bash
