@@ -54,9 +54,11 @@ TARGET is a csv/tsv/parquet/json file, a workbook (its first sheet), or, with
 pub(crate) const CHECK_HELP: &str = "\
 Usage: ducklocal check FILE [--database PATH]
 
-Validate a .dash dashboard spec: parse it, resolve its references, and check
-each query with DuckDB's parser. Nothing runs unless --database is given; then
-every query runs read-only and plot columns are checked against the results.
+Validate a .dash dashboard spec: parse it, resolve its references, check
+each query with DuckDB's parser, then run every query read-only and check
+plot columns against the results. Queries run on --database PATH when given,
+in memory otherwise; in memory, a query that reads a table no source defines
+is listed under \"unresolved\" instead of failing.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.
 
