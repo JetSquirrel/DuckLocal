@@ -44,7 +44,9 @@ use crate::ui::workspace::Workspace;
 use self::extensions::ExtensionList;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
-use self::sql::{overview_sql, select_column_sql, select_s3_file_sql, select_star_sql};
+use self::sql::{
+    overview_sql, select_column_sql, select_s3_file_sql, select_star_sql, table_info_text,
+};
 use self::tree::build_tree_items;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -307,11 +309,13 @@ impl Sidebar {
             });
 
             let group_name = item.id.clone();
-            // Sections and databases head what is under them: the same size
-            // as their rows, set apart by weight rather than by shrinking.
-            let is_heading = node_meta.is_some_and(|m| {
-                m.kind.is_section() || m.kind == SchemaNodeKind::Database
-            });
+            // Two levels of heading. A section (Local files, Dashboards, S3)
+            // is a label over a list: small, muted, set apart by weight. A
+            // database is a row that holds rows: full size, bold. Drawn alike
+            // they competed, and a database read as one more section.
+            let is_section = node_meta.is_some_and(|m| m.kind.is_section());
+            let is_database =
+                node_meta.is_some_and(|m| m.kind == SchemaNodeKind::Database);
             let hint = node_meta.and_then(|m| m.hint.clone());
             let tooltip: Option<SharedString> = match node_meta.map(|m| m.kind) {
                 Some(SchemaNodeKind::S3Status) => s3_endpoint.clone().map(Into::into),
@@ -356,9 +360,15 @@ impl Sidebar {
                                 .gap_1p5()
                                 .items_baseline()
                                 .map(|this| {
-                                    this.text_sm().when(is_heading, |this| {
-                                        this.font_weight(FontWeight::SEMIBOLD)
-                                    })
+                                    if is_section {
+                                        this.text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(cx.theme().muted_foreground)
+                                    } else if is_database {
+                                        this.text_sm().font_weight(FontWeight::SEMIBOLD)
+                                    } else {
+                                        this.text_sm()
+                                    }
                                 })
                                 // The name keeps most of the row; the muted
                                 // hint that tells same-named rows apart gives
@@ -662,6 +672,30 @@ impl RowMenu {
                     .icon(IconName::Copy)
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(name.clone()));
+                    }),
+            );
+        }
+        // A table row, or a file row's view — not a column's row, which
+        // already says all there is about the column.
+        if let Some(table) = meta.table.clone().filter(|_| meta.column.is_none()) {
+            let state = self.state.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("sidebar.menu.copy_table_info"))
+                    .icon(IconName::Copy)
+                    .on_click(move |_, _, cx| {
+                        // The columns come from the catalog, read at click
+                        // time; the row itself does not carry them.
+                        let text = state
+                            .read(cx)
+                            .catalog
+                            .iter()
+                            .filter(|db| db.name == table.database)
+                            .flat_map(|db| &db.tables)
+                            .find(|t| t.schema == table.schema && t.name == table.name)
+                            .map(table_info_text);
+                        if let Some(text) = text {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
                     }),
             );
         }
