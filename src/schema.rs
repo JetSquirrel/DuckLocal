@@ -28,7 +28,6 @@ pub struct TableInfo {
     pub name: String,
     pub kind: NodeKind,
     pub estimated_rows: Option<i64>,
-    pub comment: Option<String>,
     pub columns: Vec<ColumnInfo>,
 }
 
@@ -72,7 +71,7 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
         .collect::<std::result::Result<_, _>>()?;
 
     let mut stmt = conn.prepare(
-        "SELECT database_name, schema_name, table_name, estimated_size, comment
+        "SELECT database_name, schema_name, table_name, estimated_size
          FROM duckdb_tables()
          WHERE database_name != 'system'
            AND schema_name NOT IN ('information_schema', 'pg_catalog', 'system')
@@ -85,7 +84,6 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<i64>>(3)?,
-                row.get::<_, Option<String>>(4)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -116,8 +114,7 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
                           schema: String,
                           name: String,
                           kind: NodeKind,
-                          estimated_rows: Option<i64>,
-                          comment: Option<String>| {
+                          estimated_rows: Option<i64>| {
         let columns = columns_by_table
             .remove(&(database.clone(), schema.clone(), name.clone()))
             .unwrap_or_default();
@@ -140,16 +137,15 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
             name,
             kind,
             estimated_rows,
-            comment,
             columns,
         });
     };
 
-    for (database, schema, name, estimated, comment) in tables {
-        push_table(database, schema, name, NodeKind::Table, estimated, comment);
+    for (database, schema, name, estimated) in tables {
+        push_table(database, schema, name, NodeKind::Table, estimated);
     }
     for (database, schema, name) in views {
-        push_table(database, schema, name, NodeKind::View, None, None);
+        push_table(database, schema, name, NodeKind::View, None);
     }
     Ok(databases)
 }
