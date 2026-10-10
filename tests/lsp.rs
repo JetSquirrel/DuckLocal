@@ -343,7 +343,10 @@ fn completion_inside_a_plot_offers_its_attributes() {
             "size",
             "size_scale",
             "tooltip",
-            "value"
+            "value",
+            "note",
+            "tone",
+            "text"
         ],
         "{response}"
     );
