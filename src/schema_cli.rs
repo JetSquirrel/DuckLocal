@@ -153,7 +153,12 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 
     let connection = crate::cli::open(database.clone(), false)?;
+    // Canonical, as the files are: on Windows a shell's `E:\proj` and the
+    // disk's `E:\Proj` are one folder, and only matching spellings strip.
     let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = crate::sources::canonical_file_path(&cwd.to_string_lossy())
+        .map(PathBuf::from)
+        .unwrap_or(cwd);
     let mut relations: Vec<Relation> = sources
         .files
         .iter()
