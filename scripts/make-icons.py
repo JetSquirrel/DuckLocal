@@ -14,8 +14,12 @@ assets/AppIcon.icns
     tile with a soft shadow baked in, looked small and boxed.
 
 assets/AppIcon.ico
-    The same duck in seven Windows icon sizes. Generate on any platform
-    with --windows; this mode does not run iconutil or tiffutil.
+    The same duck in seven Windows icon sizes, on a Windows grid rather
+    than Apple's: Windows draws an icon edge to edge, with no shrinking or
+    masking of its own, so the macOS margin and shadow made the duck small
+    in the taskbar. Here the tile fills the canvas and the duck the tile.
+    Generate on any platform with --windows; this mode does not run
+    iconutil or tiffutil.
 
 assets/dmg-background.tiff
     The dmg window's background at 1x and 2x: an arrow from the app to
@@ -68,11 +72,16 @@ def squircle(size, scale=4):
     return mask.resize((size, size), Image.LANCZOS)
 
 
-def icon_canvas():
+def icon_canvas(canvas_size=CANVAS, body_size=BODY, fill=0.78, shadow=True):
+    """The duck on a paper tile of `body_size`, centred in `canvas_size`.
+
+    `fill` is the drawing's share of the tile's width; `shadow` adds the
+    drop shadow Apple's template carries.
+    """
     art = Image.open(os.path.join(ASSETS, "logo.png")).convert("RGBA").crop(ART_BOX)
-    # The drawing at 78% of the body's width: big enough to read in the
-    # Dock at 32px, with the paper still showing round it.
-    scale = BODY * 0.78 / (DRAWING[2] - DRAWING[0])
+    # By default the drawing is 78% of the body's width: big enough to read
+    # in the Dock at 32px, with the paper still showing round it.
+    scale = body_size * fill / (DRAWING[2] - DRAWING[0])
     art = art.resize((round(art.width * scale), round(art.height * scale)), Image.LANCZOS)
     # Matte out the paper: the logo's paper is not quite flat, and pasting
     # it as it is shows its edge as a faint rectangle. What is left is the
@@ -81,27 +90,32 @@ def icon_canvas():
     ink = ink.convert("L").point(lambda v: min(255, max(0, (v - 6) * 8)))
     art.putalpha(ink)
 
-    body = Image.new("RGBA", (BODY, BODY), PAPER)
-    body.alpha_composite(art, ((BODY - art.width) // 2, (BODY - art.height) // 2 + 8))
-    mask = squircle(BODY)
+    body = Image.new("RGBA", (body_size, body_size), PAPER)
+    body.alpha_composite(
+        art, ((body_size - art.width) // 2, (body_size - art.height) // 2 + body_size // 100)
+    )
+    mask = squircle(body_size)
     body.putalpha(mask)
 
-    # The drop shadow Apple's template carries under the body.
-    canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    shadow = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    shade = Image.new("RGBA", (BODY, BODY), (0, 0, 0, 90))
-    shade.putalpha(ImageChops.multiply(mask, Image.new("L", mask.size, 90)))
-    offset = (CANVAS - BODY) // 2
-    shadow.alpha_composite(shade, (offset, offset + 10))
-    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(14)))
+    canvas = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    offset = (canvas_size - body_size) // 2
+    if shadow:
+        # The drop shadow Apple's template carries under the body.
+        layer = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+        shade = Image.new("RGBA", (body_size, body_size), (0, 0, 0, 90))
+        shade.putalpha(ImageChops.multiply(mask, Image.new("L", mask.size, 90)))
+        layer.alpha_composite(shade, (offset, offset + 10))
+        canvas.alpha_composite(layer.filter(ImageFilter.GaussianBlur(14)))
     canvas.alpha_composite(body, (offset, offset))
 
     return canvas
 
 
 def windows_icon():
-    """Multi-resolution Windows icon, using the same duck as the macOS icon."""
-    icon_canvas().save(
+    """Multi-resolution Windows icon: the same duck, filling the square."""
+    # A 2% margin keeps the tile's corners off the edge; the duck takes 90%
+    # of the tile, so the paper is a rim rather than a frame.
+    icon_canvas(body_size=round(CANVAS * 0.96), fill=0.90, shadow=False).save(
         os.path.join(ASSETS, "AppIcon.ico"),
         sizes=[(px, px) for px in (16, 24, 32, 48, 64, 128, 256)],
     )
