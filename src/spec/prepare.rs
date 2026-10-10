@@ -434,7 +434,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         card: None,
         width: plot.width(),
         time_axis,
-        notice: (!notices.is_empty()).then(|| notices.join(" · ")),
+        notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
         failure: None,
     }
 }

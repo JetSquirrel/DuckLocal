@@ -443,7 +443,7 @@ impl CompletionProvider for SqlCompletionProvider {
                     // the bare name is the old, usual behaviour.
                     CandidateSource::Table { schema, database } => (
                         CompletionItemKind::STRUCT,
-                        Some(format!("{schema} · {database}")),
+                        Some(format!("{database}.{schema}")),
                         1,
                         match &search_path {
                             Some(_) => relative_table_name(
@@ -457,7 +457,7 @@ impl CompletionProvider for SqlCompletionProvider {
                     ),
                     CandidateSource::Column { data_type, table } => (
                         CompletionItemKind::FIELD,
-                        Some(format!("{data_type} · {table}")),
+                        Some(format!("{data_type}{}{table}", crate::i18n::sep())),
                         2,
                         identifier_insert(&candidate.name),
                     ),

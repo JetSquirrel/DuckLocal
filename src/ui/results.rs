@@ -749,7 +749,7 @@ impl ResultsPanel {
                 .ghost()
                 .xsmall()
                 .icon(icon)
-                .label(format!("{}. {} · {status}", ix + 1, entry.label))
+                .label(format!("{}. {} ({status})", ix + 1, entry.label))
                 .tooltip(entry.sql.clone())
                 .selected(ix == self.script_selected)
                 .disabled(entry.shown.is_none())

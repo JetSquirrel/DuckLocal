@@ -163,6 +163,9 @@ pub struct Dashboard {
     table_subscriptions: Vec<(EntityId, Subscription)>,
     /// The plots turned over to show their SQL, by plot name.
     sql_shown: HashSet<String>,
+    /// Each card's value size for this frame, by plot index: the smallest
+    /// any card in its grid row needs, so a row of numbers reads as one.
+    card_sizes: HashMap<usize, f32>,
     /// The review threads on the plots, as last read from the comments file
     /// beside the spec (see `comments`), and why it could not be read.
     comments: Comments,
@@ -214,6 +217,7 @@ impl Dashboard {
             plot_bounds: HashMap::new(),
             table_subscriptions: Vec::new(),
             sql_shown: HashSet::new(),
+            card_sizes: HashMap::new(),
             comments: Comments::default(),
             comments_error: None,
             comment_open: None,
@@ -822,6 +826,17 @@ impl Dashboard {
             .into_any_element()
     }
 
+    /// The font size at which card `ix`'s value fits its share of the
+    /// dashboard's last laid-out width, less its padding.
+    fn card_value_size(&self, ix: usize) -> f32 {
+        let plot = &self.plots[ix];
+        let room = self.wheel.viewport().get().map(|viewport| {
+            viewport.size.width.as_f32() * plot.width as f32 / model::GRID_COLUMNS as f32
+                - CARD_PADDING
+        });
+        card_value_size(plot.card.as_deref().unwrap_or_default(), room)
+    }
+
     /// The height a grid row of nothing but drawn tables needs to show every
     /// row of the longest, up to a chart's default height; `None` for any
     /// other row.
@@ -972,14 +987,12 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.plots[ix].kind == "card" && self.plots[ix].failure.is_none() {
-            // The card's share of the dashboard's last laid-out width, less
-            // its padding: what its value has to fit in.
-            let room = self.wheel.viewport().get().map(|viewport| {
-                viewport.size.width.as_f32() * self.plots[ix].width as f32
-                    / model::GRID_COLUMNS as f32
-                    - CARD_PADDING
-            });
-            return render_card(&self.plots[ix], room, cx);
+            let size = self
+                .card_sizes
+                .get(&ix)
+                .copied()
+                .unwrap_or_else(|| self.card_value_size(ix));
+            return render_card(&self.plots[ix], size, cx);
         }
         let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
@@ -1003,7 +1016,7 @@ impl Dashboard {
         if failure.is_none() && self.is_pickable(&self.plots[ix].name) {
             let hint = tr("dashboard.filter.hint").to_string();
             notice = Some(match notice.take() {
-                Some(notice) => format!("{notice} · {hint}"),
+                Some(notice) => format!("{notice}{}{hint}", crate::i18n::sep()),
                 None => hint,
             });
         }
@@ -1016,7 +1029,7 @@ impl Dashboard {
                     if let Some(geo) = &plot.geo {
                         let (notes, key) = map_notes(geo, cx);
                         notice = match (notice.take(), notes) {
-                            (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+                            (Some(a), Some(b)) => Some(format!("{a}{}{b}", crate::i18n::sep())),
                             (a, b) => a.or(b),
                         };
                         legend = key;
@@ -1437,6 +1450,18 @@ impl Render for Dashboard {
             }
         } else {
             let rows = grid_rows(self.plots.iter().map(|plot| plot.width));
+            // Cards side by side share one value size: one shrunk alone left
+            // its number smaller and its label lower than its neighbours'.
+            self.card_sizes.clear();
+            for row in &rows {
+                let cards: Vec<usize> =
+                    row.iter().copied().filter(|&ix| self.plots[ix].kind == "card").collect();
+                let size = cards
+                    .iter()
+                    .map(|&ix| self.card_value_size(ix))
+                    .fold(CARD_VALUE_MAX, f32::min);
+                self.card_sizes.extend(cards.into_iter().map(|ix| (ix, size)));
+            }
             let mut stack = 0.;
             let panels = rows
                 .iter()
@@ -1774,9 +1799,8 @@ fn card_value_size(value: &str, room: Option<f32>) -> f32 {
     (room / ems).clamp(CARD_VALUE_MIN, CARD_VALUE_MAX)
 }
 
-fn render_card(plot: &PreparedPlot, room: Option<f32>, cx: &App) -> AnyElement {
+fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
     let value = plot.card.clone().unwrap_or_default();
-    let size = card_value_size(&value, room);
     v_flex()
         .size_full()
         .px_4()

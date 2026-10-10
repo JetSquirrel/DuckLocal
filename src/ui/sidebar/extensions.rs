@@ -160,7 +160,7 @@ impl Sidebar {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
-            .join(" · ");
+            .join(crate::i18n::sep());
         let this_busy = busy == Some(ext.name.as_str());
         let any_busy = busy.is_some();
 

@@ -356,7 +356,7 @@ fn database_hint(db: &DatabaseInfo) -> Option<SharedString> {
     if db.read_only {
         parts.push(tr("sidebar.database.read_only").to_string());
     }
-    (!parts.is_empty()).then(|| parts.join(" · ").into())
+    (!parts.is_empty()).then(|| parts.join(crate::i18n::sep()).into())
 }
 
 fn file_hint(path: &str, view_name: &str, duplicate: bool) -> Option<SharedString> {
@@ -371,7 +371,7 @@ fn file_hint(path: &str, view_name: &str, duplicate: bool) -> Option<SharedStrin
     if duplicate {
         parts.extend(crate::ui::workspace::parent_name(path));
     }
-    (!parts.is_empty()).then(|| parts.join(" · ").into())
+    (!parts.is_empty()).then(|| parts.join(crate::i18n::sep()).into())
 }
 
 #[cfg(test)]
@@ -425,7 +425,7 @@ mod file_hint_tests {
         );
         assert_eq!(
             file_hint("/x/book.xlsx", "book_Extra", true).as_deref(),
-            Some("book.xlsx · x")
+            Some(format!("book.xlsx{}x", crate::i18n::sep()).as_str())
         );
     }
 }
