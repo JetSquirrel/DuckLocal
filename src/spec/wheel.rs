@@ -13,6 +13,12 @@
 //!   pointer keeps scrolling the dashboard, instead of stopping dead when the
 //!   table catches it.
 //!
+//! - Revealing: a table takes a vertical gesture only once its edge in that
+//!   direction is on screen. Scrolling down onto a table moves the dashboard
+//!   until the table's bottom shows, and only then the rows — so the table
+//!   arrives whole, rather than catching the wheel the moment its top edge
+//!   slides under the pointer and holding the dashboard still mid-table.
+//!
 //! A trackpad says where a gesture begins: its first event is `Started`,
 //! often with no movement yet (fingers down, nothing moved). So a gesture is
 //! decided by its first event that moves, and a new `Started` decides afresh
@@ -23,7 +29,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{point, Pixels, ScrollHandle, ScrollWheelEvent, TouchPhase, Window};
+use gpui_kit::{point, Bounds, Pixels, ScrollHandle, ScrollWheelEvent, TouchPhase, Window};
 
 /// Events closer together than this belong to one gesture. Momentum arrives
 /// every frame; a wheel's separate clicks a person means as one move come
@@ -48,21 +54,30 @@ struct Latch {
     at: Instant,
 }
 
-/// The gesture in progress, shared by the stack and each table's handler.
+/// The gesture in progress, shared by the stack and each table's handler,
+/// and where the stack's viewport was last laid out.
 #[derive(Clone, Default)]
-pub struct WheelLatch(Rc<Cell<Option<Latch>>>);
+pub struct WheelLatch {
+    latch: Rc<Cell<Option<Latch>>>,
+    viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
 
 impl WheelLatch {
     /// The target of the gesture `now` continues, if it continues one.
     fn current(&self, now: Instant) -> Option<Target> {
-        self.0
+        self.latch
             .get()
             .filter(|latch| now.saturating_duration_since(latch.at) < GESTURE_GAP)
             .map(|latch| latch.target)
     }
 
     fn hold(&self, target: Target, now: Instant) {
-        self.0.set(Some(Latch { target, at: now }));
+        self.latch.set(Some(Latch { target, at: now }));
+    }
+
+    /// The cell the stack records its viewport's bounds in, as it paints.
+    pub fn viewport(&self) -> Rc<Cell<Option<Bounds<Pixels>>>> {
+        self.viewport.clone()
     }
 
     /// The stack's own handler: it only sees events no table kept, so any
@@ -74,13 +89,15 @@ impl WheelLatch {
         }
     }
 
-    /// The table of plot `ix` has already applied `event` to its rows (its
-    /// listener runs before this one); decide whether it keeps the event.
-    /// Returns true when propagation should stop — the stack must not move.
+    /// The table of plot `ix`, laid out at `table`, has already applied
+    /// `event` to its rows (its listener runs before this one); decide
+    /// whether it keeps the event. Returns true when propagation should stop
+    /// — the stack must not move.
     pub fn table_scrolled(
         &self,
         ix: usize,
         handle: &ScrollHandle,
+        table: Option<Bounds<Pixels>>,
         event: &ScrollWheelEvent,
         window: &Window,
     ) -> bool {
@@ -90,12 +107,23 @@ impl WheelLatch {
         let before = offset.y - delta.y;
         let latched = self.current(now);
         let moved = delta.x != Pixels::ZERO || delta.y != Pixels::ZERO;
-        let keeps = keeps(
-            before.into(),
-            handle.max_offset().y.into(),
-            delta.x.into(),
-            delta.y.into(),
-        );
+        let revealed = match (table, self.viewport.get()) {
+            (Some(table), Some(viewport)) => reveals(
+                (table.top().into(), table.bottom().into()),
+                (viewport.top().into(), viewport.bottom().into()),
+                delta.x.into(),
+                delta.y.into(),
+            ),
+            // Not laid out yet: nothing to reveal.
+            _ => true,
+        };
+        let keeps = revealed
+            && keeps(
+                before.into(),
+                handle.max_offset().y.into(),
+                delta.x.into(),
+                delta.y.into(),
+            );
         let started = event.touch_phase == TouchPhase::Started;
         let Some(target) = decide(latched, started, moved, keeps, ix) else {
             // Nothing moved, so there is nothing to take back, and no reason
@@ -150,9 +178,30 @@ fn keeps(before: f32, max: f32, dx: f32, dy: f32) -> bool {
     }
 }
 
+/// Whether a table spanning `table` (top, bottom) shows its edge in the
+/// direction of this delta inside a viewport spanning `viewport`: its bottom
+/// for a downward scroll (negative `dy`), its top for an upward one. A
+/// sideways swipe needs nothing revealed; the stack cannot use it.
+fn reveals(table: (f32, f32), viewport: (f32, f32), dx: f32, dy: f32) -> bool {
+    if dy.abs() < dx.abs() {
+        return true;
+    }
+    if dy < 0.0 {
+        table.1 <= viewport.1 + REVEAL_SLACK
+    } else if dy > 0.0 {
+        table.0 >= viewport.0 - REVEAL_SLACK
+    } else {
+        true
+    }
+}
+
+/// How far an edge may sit outside the viewport and still count as shown:
+/// the stack's own edge rounding, and the pixel of a border.
+const REVEAL_SLACK: f32 = 2.0;
+
 #[cfg(test)]
 mod tests {
-    use super::{decide, keeps, Target, WheelLatch, GESTURE_GAP};
+    use super::{decide, keeps, reveals, Target, WheelLatch, GESTURE_GAP};
     use std::time::{Duration, Instant};
 
     const MAX: f32 = 400.0;
@@ -167,6 +216,22 @@ mod tests {
         assert!(keeps(-MAX, MAX, 0.0, 20.0));
         // At the top, up goes to the stack.
         assert!(!keeps(0.0, MAX, 0.0, 20.0));
+    }
+
+    #[test]
+    fn a_table_takes_the_wheel_once_it_is_on_screen_that_way() {
+        let viewport = (0.0, 800.0);
+        // Scrolling down onto a table whose bottom is still below the fold:
+        // the dashboard keeps moving.
+        assert!(!reveals((600.0, 900.0), viewport, 0.0, -20.0));
+        // Its bottom is in view: the table may take it.
+        assert!(reveals((480.0, 780.0), viewport, 0.0, -20.0));
+        assert!(reveals((501.0, 801.0), viewport, 0.0, -20.0));
+        // Scrolling up onto a table whose top is above the fold.
+        assert!(!reveals((-100.0, 200.0), viewport, 0.0, 20.0));
+        assert!(reveals((10.0, 310.0), viewport, 0.0, 20.0));
+        // Sideways needs nothing revealed.
+        assert!(reveals((600.0, 900.0), viewport, -30.0, 2.0));
     }
 
     #[test]

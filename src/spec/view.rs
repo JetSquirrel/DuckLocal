@@ -832,6 +832,9 @@ impl Dashboard {
         let row_count = result.rows.len();
         let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
         let wheel = self.wheel.clone();
+        // Where the table sits, for the wheel to tell whether it is on screen.
+        let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+        let record = bounds.clone();
         v_flex()
             .size_full()
             .when(truncated, |this| {
@@ -848,10 +851,11 @@ impl Dashboard {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .relative()
                     // Runs after the table's own scrolling and before the
                     // stack's, so it decides whether the stack moves too.
                     .on_scroll_wheel(move |event, window, cx| {
-                        if wheel.table_scrolled(ix, &rows, event, window) {
+                        if wheel.table_scrolled(ix, &rows, bounds.get(), event, window) {
                             cx.stop_propagation();
                         }
                     })
@@ -860,6 +864,13 @@ impl Dashboard {
                             .small()
                             .stripe(true)
                             .scrollbar_visible(true, true),
+                    )
+                    .child(
+                        canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
                     ),
             )
             .into_any_element()
@@ -1048,33 +1059,8 @@ impl Dashboard {
     }
 }
 
-// TEMP frame trace
-pub(crate) static TRACE_WHEEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-fn trace_frame(started: Instant) {
-    use std::sync::Mutex;
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    if !*ON.get_or_init(|| std::env::var_os("DUCKLOCAL_TRACE_FRAMES").is_some()) {
-        return;
-    }
-    let mut last = LAST.lock().unwrap();
-    let dt = last.map(|l| started.duration_since(l).as_secs_f64() * 1000.).unwrap_or(0.);
-    *last = Some(started);
-    let wheels = TRACE_WHEEL.swap(0, std::sync::atomic::Ordering::Relaxed);
-    eprintln!("FRAME dt={dt:.2} render={:.3} wheels={wheels}", started.elapsed().as_secs_f64() * 1000.);
-}
-
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let __started = Instant::now();
-        let __out = self.render_inner(window, cx);
-        trace_frame(__started);
-        __out
-    }
-}
-
-impl Dashboard {
-    fn render_inner(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let body = if self.showing_source {
             // The source view stands on its own, spec error or not: the text
             // of a broken spec is exactly what one opens the source to fix.
@@ -1128,20 +1114,32 @@ impl Dashboard {
             // neighbours; a tab taller than the stack is filled, as before.
             let stack = px(stack);
             let wheel = self.wheel.clone();
+            let viewport = self.wheel.viewport();
+            // The canvas sits outside the scrolling div, so its bounds are
+            // the viewport's, not the scrolled content's.
             div()
-                .id(format!("dashboard-scroll-{}", self.id))
                 .size_full()
-                .on_scroll_wheel(move |event, window, _| {
-                    TRACE_WHEEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    wheel.stack_scrolled(event, window)
-                })
-                .overflow_y_scrollbar()
+                .relative()
                 .child(
                     div()
-                        .w_full()
-                        .h(stack)
-                        .min_h_full()
-                        .child(v_resizable(format!("dashboard-{}", self.id)).children(panels)),
+                        .id(format!("dashboard-scroll-{}", self.id))
+                        .size_full()
+                        .on_scroll_wheel(move |event, window, _| {
+                            wheel.stack_scrolled(event, window)
+                        })
+                        .overflow_y_scrollbar()
+                        .child(
+                            div().w_full().h(stack).min_h_full().child(
+                                v_resizable(format!("dashboard-{}", self.id)).children(panels),
+                            ),
+                        ),
+                )
+                .child(
+                    canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {})
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
                 )
                 .into_any_element()
         };
