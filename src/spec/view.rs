@@ -50,7 +50,9 @@ use gpui_kit::component::label::Label;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
+use gpui_kit::component::table::{
+    Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
+};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
 use gpui_kit::prelude::FluentBuilder;
 
@@ -69,7 +71,7 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
-use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
+use crate::ui::chart::{format_value, legend_row, map_notes, parse_number, pie_parts};
 use crate::ui::geo::GeoPlot;
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::ui::completion::starts_with_ignore_case;
@@ -795,15 +797,34 @@ impl Dashboard {
             let plot = self.plots[ix].name.clone();
             if self.is_pickable(&plot) {
                 // A row selected — by click or by the arrow keys — is a pick;
-                // the table's own highlight is what shows it.
+                // the table's own highlight is what shows it. The row is a
+                // position in the shown order, which a sort may have changed.
                 let picked_from = result.clone();
-                let subscription = cx.subscribe(&table, move |this, _, event: &TableEvent, cx| {
-                    if let TableEvent::SelectRow(row) = event {
-                        this.pick_row(&plot, &picked_from, *row, false, cx);
-                    }
-                });
+                let subscription =
+                    cx.subscribe(&table, move |this, table, event: &TableEvent, cx| {
+                        if let TableEvent::SelectRow(row) = event {
+                            let row = table.read(cx).delegate().source_row(*row);
+                            this.pick_row(&plot, &picked_from, row, false, cx);
+                        }
+                    });
                 self.table_subscriptions.push((table.entity_id(), subscription));
             }
+            // After a sort, the selected row moves to where its row went.
+            let subscription = cx.observe(&table, |_, table, cx| {
+                table.update(cx, |table, cx| {
+                    let Some(before) = table.delegate_mut().resorted.take() else {
+                        return;
+                    };
+                    let Some(selected) = table.selected_row() else {
+                        return;
+                    };
+                    let row = before.get(selected).copied().unwrap_or(selected);
+                    if let Some(shown) = table.delegate().order.iter().position(|&r| r == row) {
+                        table.set_selected_row(shown, cx);
+                    }
+                });
+            });
+            self.table_subscriptions.push((table.entity_id(), subscription));
             self.tables[ix] = Some(table);
         }
         let table = self.tables[ix].clone().expect("built just above");
@@ -1445,6 +1466,13 @@ fn cell_paddings() -> Edges<Pixels> {
 struct SpecTableDelegate {
     columns: Vec<Column>,
     result: Arc<QueryResult>,
+    /// The result's rows in the order shown: `order[shown]` is the row of
+    /// `result`. The query's own order until a header sorts it.
+    order: Vec<usize>,
+    /// The order before the last sort, until the view has moved the selected
+    /// row along with it: the table keeps a selection by position, and a
+    /// pick is a row, not a position.
+    resorted: Option<Vec<usize>>,
 }
 
 impl SpecTableDelegate {
@@ -1455,7 +1483,9 @@ impl SpecTableDelegate {
             .enumerate()
             .map(|(ix, column)| {
                 let width = fit_column_width(&column.name, &result.rows, ix, 0.);
-                let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
+                let mut spec = Column::new(format!("c{ix}"), column.name.clone())
+                    .width(width)
+                    .sortable();
                 if column.kind == ColumnKind::Numeric {
                     spec = spec.text_right();
                 }
@@ -1463,8 +1493,58 @@ impl SpecTableDelegate {
                 spec
             })
             .collect();
-        Self { columns, result }
+        let order = (0..result.rows.len()).collect();
+        Self {
+            columns,
+            result,
+            order,
+            resorted: None,
+        }
     }
+
+    /// The row of the result shown at `shown`.
+    fn source_row(&self, shown: usize) -> usize {
+        self.order.get(shown).copied().unwrap_or(shown)
+    }
+}
+
+/// The rows of `result` ordered by column `col`: numerically for a number
+/// column, as text otherwise — ISO dates and times sort right as text. NULL
+/// sorts last either way, and equal cells keep the query's order.
+fn sorted_rows(result: &QueryResult, col: usize, sort: ColumnSort) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..result.rows.len()).collect();
+    if sort == ColumnSort::Default {
+        return order;
+    }
+    let cell = |row: usize| {
+        result
+            .rows
+            .get(row)
+            .and_then(|r| r.get(col))
+            .map(String::as_str)
+            .filter(|cell| *cell != "NULL")
+    };
+    let numeric = result
+        .columns
+        .get(col)
+        .is_some_and(|c| c.kind == ColumnKind::Numeric);
+    let compare = |a: &str, b: &str| {
+        if numeric {
+            if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
+                return a.total_cmp(&b);
+            }
+        }
+        a.cmp(b)
+    };
+    let descending = sort == ColumnSort::Descending;
+    order.sort_by(|&a, &b| match (cell(a), cell(b)) {
+        (Some(a), Some(b)) if descending => compare(b, a),
+        (Some(a), Some(b)) => compare(a, b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    order
 }
 
 impl TableDelegate for SpecTableDelegate {
@@ -1478,6 +1558,17 @@ impl TableDelegate for SpecTableDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        let order = sorted_rows(&self.result, col_ix, sort);
+        self.resorted = Some(std::mem::replace(&mut self.order, order));
     }
 
     fn render_th(
@@ -1511,7 +1602,7 @@ impl TableDelegate for SpecTableDelegate {
         let text = self
             .result
             .rows
-            .get(row_ix)
+            .get(self.source_row(row_ix))
             .and_then(|row| row.get(col_ix))
             .cloned()
             .unwrap_or_default();
@@ -1620,10 +1711,35 @@ impl CompletionProvider for SpecCompletionProvider {
 mod tests {
     // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro
     // shadows the built-in `#[test]`.
-    use super::{grid_rows, load, Pick, Run};
+    use super::{grid_rows, load, sorted_rows, Pick, Run};
+    use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+    use gpui_kit::component::table::ColumnSort;
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
+
+    #[test]
+    fn a_table_sorts_numbers_as_numbers_and_nulls_last() {
+        let column = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind,
+        };
+        let result = QueryResult {
+            columns: vec![column("name", ColumnKind::Text), column("n", ColumnKind::Numeric)],
+            rows: [["b", "10"], ["a", "9"], ["c", "NULL"], ["d", "1,200"]]
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        };
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Ascending), [1, 0, 3, 2]);
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Descending), [3, 0, 1, 2]);
+        assert_eq!(sorted_rows(&result, 0, ColumnSort::Ascending), [1, 0, 2, 3]);
+        // A third click goes back to the query's own order.
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Default), [0, 1, 2, 3]);
+    }
 
     const BOARD: &str = r#"
 source "orders" { path = "orders.csv" }
