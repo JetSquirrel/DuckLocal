@@ -361,7 +361,7 @@ impl Workspace {
     pub fn open_dashboard(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let existing = self.tabs.iter().position(|tab| {
             tab.as_dashboard()
-                .is_some_and(|dashboard| dashboard.path == path)
+                .is_some_and(|dashboard| crate::recents::same_file(&dashboard.path, &path))
         });
         if let Some(ix) = existing {
             let title = self.tabs[ix].title().to_string();
