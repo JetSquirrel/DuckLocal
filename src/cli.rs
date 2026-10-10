@@ -15,6 +15,7 @@ Usage:
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
   ducklocal open [OPTIONS]      Show work in the running window; --state reads it
   ducklocal check FILE          Validate a .dash dashboard spec
+  ducklocal comments FILE       Read and answer review comments on a dashboard
   ducklocal --version
 
 Run `ducklocal <command> --help` for its options.
@@ -618,6 +619,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "profile"
             | "open"
             | "check"
+            | "comments"
             | "lsp"
             | "--help"
             | "--version"
@@ -647,6 +649,10 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("open", _) => crate::remote::open(&args[1..]),
         ("check", 2) if args[1] == "--help" => Ok(CHECK_HELP.to_string()),
         ("check", _) => crate::spec::check(&args[1..]),
+        ("comments", 2) if args[1] == "--help" => {
+            Ok(crate::spec::comments::COMMENTS_HELP.to_string())
+        }
+        ("comments", _) => crate::spec::comments::run(&args[1..]),
         ("lsp", 2) if args[1] == "--help" => Ok(LSP_HELP.to_string()),
         _ => Err(CliError::argument(
             "Unknown or extra arguments; use ducklocal --help",

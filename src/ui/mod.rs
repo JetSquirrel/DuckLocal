@@ -15,6 +15,7 @@ pub mod status_bar;
 pub mod theme;
 pub mod tiles;
 pub mod title_bar;
+pub mod update;
 pub mod workspace;
 
 use gpui_kit::component::notification::Notification;
@@ -40,6 +41,8 @@ gpui_kit::actions!(
         OpenData,
         OpenSetup,
         ToggleBaseMap,
+        CheckForUpdates,
+        ToggleUpdateCheck,
         Quit
     ]
 );
@@ -84,9 +87,15 @@ pub fn init(cx: &mut App) {
         // The item's check mark is part of the menu, built once.
         set_menus(cx);
     });
+    cx.on_action(|_: &CheckForUpdates, cx| update::check(cx));
+    cx.on_action(|_: &ToggleUpdateCheck, cx| {
+        update::toggle_at_launch(cx);
+        set_menus(cx);
+    });
     // After the bindings: the menu bar reads each item's shortcut from the
     // keymap at the moment it is built.
     set_menus(cx);
+    update::on_launch(cx);
 }
 
 /// The menu bar: every command the window has, with its shortcut, where a
@@ -100,11 +109,16 @@ pub fn set_menus(cx: &mut App) {
         disabled: false,
     };
     let base_map = tiles::enabled(cx);
+    let update_at_launch = update::at_launch(cx);
     cx.set_menus(vec![
         Menu {
             name: "DuckLocal".into(),
             items: vec![
                 MenuItem::action(tr("setup.open"), OpenSetup),
+                MenuItem::Separator,
+                MenuItem::action(tr("menu.check_updates"), CheckForUpdates),
+                MenuItem::action(tr("menu.check_updates_at_launch"), ToggleUpdateCheck)
+                    .checked(update_at_launch),
                 MenuItem::Separator,
                 MenuItem::action(tr("menu.quit"), Quit),
             ],

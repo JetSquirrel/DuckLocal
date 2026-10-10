@@ -46,7 +46,9 @@ use gpui_kit::component::chart::{AreaChart, LineChart};
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize,
 };
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::label::Label;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
@@ -67,6 +69,8 @@ use lsp_types::{
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
+use crate::spec::comment_card::CommentCard;
+use crate::spec::comments::{self, Author, Comments};
 use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
@@ -86,6 +90,15 @@ const PLOT_MAX: f32 = 800.;
 const CARD_DEFAULT: f32 = 104.;
 const CARD_MIN: f32 = 80.;
 const CARD_MAX: f32 = 400.;
+
+/// What a sortable header's arrow takes beside the column name.
+const SORT_ICON_WIDTH: f32 = 20.;
+
+/// A table plot's chrome around its rows — title, header row, padding — and
+/// one row's height, for sizing a row of tables to its content.
+const TABLE_CHROME: f32 = 84.;
+const TABLE_ROW: f32 = 30.;
+const TABLE_MIN: f32 = 120.;
 
 /// A `.dash` file open as a tab: its plots, and the run that produced them.
 pub struct Dashboard {
@@ -150,6 +163,16 @@ pub struct Dashboard {
     table_subscriptions: Vec<(EntityId, Subscription)>,
     /// The plots turned over to show their SQL, by plot name.
     sql_shown: HashSet<String>,
+    /// The review threads on the plots, as last read from the comments file
+    /// beside the spec (see `comments`), and why it could not be read.
+    comments: Comments,
+    comments_error: Option<String>,
+    /// The plot whose comment card is open, by plot name.
+    comment_open: Option<String>,
+    /// Each plot's comment card, by plot name; built lazily at render, since
+    /// its text box needs a window, and kept so a half-written comment
+    /// survives the card closing.
+    comment_cards: HashMap<String, Entity<CommentCard>>,
 }
 
 /// What a dashboard asks of the workspace around it.
@@ -191,7 +214,12 @@ impl Dashboard {
             plot_bounds: HashMap::new(),
             table_subscriptions: Vec::new(),
             sql_shown: HashSet::new(),
+            comments: Comments::default(),
+            comments_error: None,
+            comment_open: None,
+            comment_cards: HashMap::new(),
         };
+        this.load_comments();
         this.watch(cx);
         this.reload(cx);
         this
@@ -231,8 +259,10 @@ impl Dashboard {
                 "query": plot.query,
                 "failure": plot.failure,
                 "rows": self.results.get(&plot.query).map(|r| r.rows.len()),
+                "open_comments": self.comments.open_on(&plot.name),
             })).collect::<Vec<_>>(),
             "filters": filters,
+            "comments_file": comments::path_for(&self.path),
         })
     }
 
@@ -296,11 +326,29 @@ impl Dashboard {
     /// and our own saves are filtered out by their stamp.
     fn watch(&mut self, cx: &mut Context<Self>) {
         let watched = self.path.clone();
+        let comments_path = comments::path_for(&self.path);
         let watcher = cx.spawn(async move |this, cx| {
             let mut stamp = FileStamp::capture(&watched);
             let mut debounce = Debounce::new();
+            // The comments file is followed too, so an agent's reply shows
+            // on its plot without a reload.
+            let mut comments_stamp = FileStamp::capture(&comments_path);
+            let mut comments_debounce = Debounce::new();
             loop {
                 smol::Timer::after(POLL_INTERVAL).await;
+                let next = FileStamp::capture(&comments_path);
+                let changed = next != comments_stamp;
+                comments_stamp = next;
+                if comments_debounce.observe(Instant::now(), changed)
+                    && this
+                        .update(cx, |this, cx| {
+                            this.load_comments();
+                            cx.notify();
+                        })
+                        .is_err()
+                {
+                    break;
+                }
                 let next = FileStamp::capture(&watched);
                 let changed = next != stamp;
                 stamp = next.clone();
@@ -335,6 +383,84 @@ impl Dashboard {
         self.conflict = false;
         self.read_source();
         self.reload(cx);
+    }
+
+    /// Re-read the comments file. A file that does not read keeps the threads
+    /// last shown, and says why on the comments faces.
+    fn load_comments(&mut self) {
+        match comments::load(&self.path) {
+            Ok(loaded) => {
+                self.comments = loaded;
+                self.comments_error = None;
+            }
+            Err(error) => self.comments_error = Some(error),
+        }
+    }
+
+    /// The threads on the plots, for the comment cards.
+    pub fn comments(&self) -> &Comments {
+        &self.comments
+    }
+
+    pub fn comments_error(&self) -> Option<String> {
+        self.comments_error.clone()
+    }
+
+    /// A plot's title, for the comment card to quote; its name when the plot
+    /// is gone.
+    pub fn plot_title(&self, plot: &str) -> SharedString {
+        self.plots
+            .iter()
+            .find(|p| p.name == plot)
+            .map(|p| SharedString::from(p.title.to_string()))
+            .unwrap_or_else(|| SharedString::from(plot.to_string()))
+    }
+
+    pub fn close_comments(&mut self, cx: &mut Context<Self>) {
+        self.comment_open = None;
+        cx.notify();
+    }
+
+    /// Post a comment on `plot`: a reply to `replying`, or a new thread.
+    /// Written straight to the comments file; `false` when it could not be,
+    /// with the reason kept for the card to show.
+    pub fn post_comment(
+        &mut self,
+        plot: &str,
+        replying: Option<&str>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let result = comments::update(&self.path, |c| match replying {
+            Some(id) => c.reply(id, Author::User, text),
+            None => {
+                c.add(plot, Author::User, text);
+                Ok(())
+            }
+        });
+        let posted = self.comments_written(result);
+        cx.notify();
+        posted
+    }
+
+    pub fn set_resolved(&mut self, id: &str, resolved: bool, cx: &mut Context<Self>) {
+        let result = comments::update(&self.path, |c| c.set_resolved(id, resolved));
+        self.comments_written(result);
+        cx.notify();
+    }
+
+    fn comments_written(&mut self, result: Result<((), Comments), String>) -> bool {
+        match result {
+            Ok((_, loaded)) => {
+                self.comments = loaded;
+                self.comments_error = None;
+                true
+            }
+            Err(error) => {
+                self.comments_error = Some(error);
+                false
+            }
+        }
     }
 
     /// Read the spec file for the source view; a failure is kept as the
@@ -628,7 +754,10 @@ impl Dashboard {
     }
 
     /// One panel of the grid: the plot, or — turned over by the SQL button
-    /// that shows in its top-right corner on hover — the SQL behind it.
+    /// in its top-right corner — the SQL behind it. Beside that button, the
+    /// comment button opens the plot's comment card over the dashboard.
+    /// Both stay out of the way until the pointer is over the plot, except
+    /// that a plot with open threads keeps their count in sight.
     fn render_plot(
         &mut self,
         ix: usize,
@@ -645,38 +774,114 @@ impl Dashboard {
         let name = self.plots[ix].name.clone();
         let toggle = Button::new(("dashboard-sql", ix))
             .xsmall()
-            .outline()
+            .ghost()
             .label(if shown { tr("dashboard.sql.hide") } else { "SQL" })
             .tooltip(if shown {
                 tr("dashboard.sql.hide_tooltip")
             } else {
                 tr("dashboard.sql.show_tooltip")
             })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.sql_shown.remove(&name) {
-                    this.sql_shown.insert(name.clone());
+            .on_click(cx.listener({
+                let name = name.clone();
+                move |this, _, _, cx| {
+                    if !this.sql_shown.remove(&name) {
+                        this.sql_shown.insert(name.clone());
+                    }
+                    cx.notify();
                 }
-                cx.notify();
             }));
+        let comments = self.render_comment_button(ix, window, cx);
+        let open = self.comments.open_on(&name);
+        let commenting = self.comment_open.as_deref() == Some(name.as_str());
+        let hover_only = |this: Div, keep: bool| {
+            if keep {
+                this
+            } else {
+                this.opacity(0.).group_hover(group.clone(), |style| style.opacity(1.))
+            }
+        };
         div()
             .size_full()
             .relative()
             .group(group.clone())
             .child(face)
             .child(
-                div()
+                h_flex()
                     .absolute()
                     .top_1p5()
                     .right_2()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().background)
-                    // Out of the way until the pointer is over the plot; a
-                    // plot showing its SQL keeps the way back in sight.
-                    .when(!shown, |this| {
-                        this.opacity(0.).group_hover(group, |style| style.opacity(1.))
-                    })
-                    .child(toggle),
+                    .gap_0p5()
+                    .child(hover_only(div(), open > 0 || commenting).child(comments))
+                    .child(
+                        hover_only(div(), shown)
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().background)
+                            .child(toggle),
+                    ),
             )
+            .into_any_element()
+    }
+
+    /// The height a grid row of nothing but drawn tables needs to show every
+    /// row of the longest, up to a chart's default height; `None` for any
+    /// other row.
+    fn table_row_height(&self, row: &[usize]) -> Option<f32> {
+        let rows = row
+            .iter()
+            .map(|&ix| {
+                let plot = &self.plots[ix];
+                if plot.kind != "table" || plot.failure.is_some() {
+                    return None;
+                }
+                let result = self.results.get(&plot.query)?;
+                // A truncated result carries a banner above the grid.
+                Some(result.rows.len() + usize::from(result.truncated))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let longest = rows.into_iter().max()? as f32;
+        Some((TABLE_CHROME + longest * TABLE_ROW).min(PLOT_DEFAULT))
+    }
+
+    /// The comment button and the card it opens: a speech bubble, with the
+    /// count of open threads beside it once there are any.
+    fn render_comment_button(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = self.plots[ix].name.clone();
+        let open = self.comments.open_on(&name);
+        let is_open = self.comment_open.as_deref() == Some(name.as_str());
+        let card = match self.comment_cards.get(&name) {
+            Some(card) => card.clone(),
+            None => {
+                let dashboard = cx.entity().downgrade();
+                let plot = name.clone();
+                let card = cx.new(|cx| CommentCard::new(dashboard, plot, window, cx));
+                self.comment_cards.insert(name.clone(), card.clone());
+                card
+            }
+        };
+        let button = Button::new(("dashboard-comments", ix))
+            .xsmall()
+            .map(|this| if open > 0 { this.outline() } else { this.ghost() })
+            .icon(Icon::new(AssetIcon::MessageSquare))
+            .when(open > 0, |this| this.label(open.to_string()))
+            .tooltip(tr("dashboard.comments.show_tooltip"));
+        let focus_card = card.clone();
+        Popover::new(("dashboard-comment-card", ix))
+            .anchor(Anchor::TopRight)
+            .open(is_open)
+            .on_open_change(cx.listener(move |this, open: &bool, window, cx| {
+                this.comment_open = open.then(|| name.clone());
+                if *open {
+                    CommentCard::focus(&focus_card, window, cx);
+                }
+                cx.notify();
+            }))
+            .trigger(button)
+            .content(move |_, _, _| card.clone())
             .into_any_element()
     }
 
@@ -767,7 +972,14 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.plots[ix].kind == "card" && self.plots[ix].failure.is_none() {
-            return render_card(&self.plots[ix], cx);
+            // The card's share of the dashboard's last laid-out width, less
+            // its padding: what its value has to fit in.
+            let room = self.wheel.viewport().get().map(|viewport| {
+                viewport.size.width.as_f32() * self.plots[ix].width as f32
+                    / model::GRID_COLUMNS as f32
+                    - CARD_PADDING
+            });
+            return render_card(&self.plots[ix], room, cx);
         }
         let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
@@ -975,6 +1187,10 @@ impl Dashboard {
         let truncated = result.truncated;
         let row_count = result.rows.len();
         let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
+        // Stripes only once the rows fill the panel: striping pads a short
+        // table with empty rows down to the panel's foot, which reads as
+        // rows of nothing rather than as the end of the data.
+        let overflows = rows.max_offset().y > px(0.);
         let wheel = self.wheel.clone();
         // Where the table sits, for the wheel to tell whether it is on screen.
         let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
@@ -1006,7 +1222,7 @@ impl Dashboard {
                     .child(
                         DataTable::new(&table)
                             .small()
-                            .stripe(true)
+                            .stripe(overflows)
                             .scrollbar_visible(true, true),
                     )
                     .child(
@@ -1228,6 +1444,10 @@ impl Render for Dashboard {
                     let cards = row.iter().all(|&ix| self.plots[ix].kind == "card");
                     let (default, min, max) = if cards {
                         (CARD_DEFAULT, CARD_MIN, CARD_MAX)
+                    } else if let Some(height) = self.table_row_height(row) {
+                        // A row of short tables is as tall as its rows, not
+                        // a chart's height of empty space under them.
+                        (height, TABLE_MIN.min(height), PLOT_MAX)
                     } else {
                         (PLOT_DEFAULT, PLOT_MIN, PLOT_MAX)
                     };
@@ -1535,7 +1755,28 @@ fn grid_rows(widths: impl IntoIterator<Item = u8>) -> Vec<Vec<usize>> {
 
 /// A card: its title over its one value, large. What was dropped to get to
 /// one value — the rows past the first — is said under it, small.
-fn render_card(plot: &PreparedPlot, cx: &App) -> AnyElement {
+/// A card's horizontal padding, both sides.
+const CARD_PADDING: f32 = 32.;
+/// A card value's font size: as large as this, and never smaller than the
+/// floor — past that, a value that still does not fit is cut off.
+const CARD_VALUE_MAX: f32 = 30.;
+const CARD_VALUE_MIN: f32 = 14.;
+
+/// The font size at which `value` fits across `room` pixels. Digits and
+/// separators are about 0.6em wide in the UI font; a wide (CJK) character
+/// counts double.
+fn card_value_size(value: &str, room: Option<f32>) -> f32 {
+    use unicode_width::UnicodeWidthStr;
+    let Some(room) = room.filter(|room| *room > 0.) else {
+        return CARD_VALUE_MAX;
+    };
+    let ems = value.width().max(1) as f32 * 0.6;
+    (room / ems).clamp(CARD_VALUE_MIN, CARD_VALUE_MAX)
+}
+
+fn render_card(plot: &PreparedPlot, room: Option<f32>, cx: &App) -> AnyElement {
+    let value = plot.card.clone().unwrap_or_default();
+    let size = card_value_size(&value, room);
     v_flex()
         .size_full()
         .px_4()
@@ -1551,11 +1792,15 @@ fn render_card(plot: &PreparedPlot, cx: &App) -> AnyElement {
                 .child(plot.title.clone()),
         )
         .child(
+            // A number is never ellipsized while a smaller size fits it:
+            // `11,439,7…` reads as a different number.
             div()
-                .text_3xl()
+                .text_size(px(size))
+                .line_height(px(size * 1.2))
                 .font_weight(FontWeight::SEMIBOLD)
+                .whitespace_nowrap()
                 .text_ellipsis()
-                .child(plot.card.clone().unwrap_or_default()),
+                .child(value),
         )
         .when_some(plot.notice.clone(), |this, notice| {
             this.child(
@@ -1624,7 +1869,8 @@ impl SpecTableDelegate {
             .iter()
             .enumerate()
             .map(|(ix, column)| {
-                let width = fit_column_width(&column.name, &result.rows, ix, 0.);
+                // The header also holds the sort arrow beside its name.
+                let width = fit_column_width(&column.name, &result.rows, ix, SORT_ICON_WIDTH);
                 let mut spec = Column::new(format!("c{ix}"), column.name.clone())
                     .width(width)
                     .sortable();
@@ -1853,7 +2099,9 @@ impl CompletionProvider for SpecCompletionProvider {
 mod tests {
     // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro
     // shadows the built-in `#[test]`.
-    use super::{grid_rows, load, sorted_rows, Pick, Run};
+    use super::{
+        card_value_size, grid_rows, load, sorted_rows, Pick, Run, CARD_VALUE_MAX, CARD_VALUE_MIN,
+    };
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
     use gpui_kit::component::table::ColumnSort;
     use std::collections::HashMap;
@@ -1943,6 +2191,18 @@ filter "channel" { plot = plot.channels }
         let reloaded = load(&path, &picks, &HashMap::new());
         assert!(!Arc::ptr_eq(&fresh.results["count"], &reloaded.results["count"]));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_card_value_shrinks_to_fit_rather_than_clip() {
+        // Room to spare, or no layout yet: full size.
+        assert_eq!(card_value_size("42", Some(300.)), CARD_VALUE_MAX);
+        assert_eq!(card_value_size("11,439,704.50", None), CARD_VALUE_MAX);
+        // Thirteen characters in 150px: smaller, and it fits.
+        let size = card_value_size("11,439,704.50", Some(150.));
+        assert!(size < CARD_VALUE_MAX && 13. * 0.6 * size <= 150.);
+        // Never below the floor, however narrow.
+        assert_eq!(card_value_size("11,439,704.50", Some(20.)), CARD_VALUE_MIN);
     }
 
     #[test]

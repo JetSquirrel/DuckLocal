@@ -29,9 +29,25 @@ pub struct RecentDocument {
     pub title: String,
 }
 
-/// Move `document` to the front, dropping any older entry for the same path.
+/// Whether two paths name the same file. Compared as the file system
+/// resolves them, not as text: on Windows `E:\Proj.dash` and
+/// `E:\proj.dash` are one file, and so are a relative and an absolute
+/// spelling anywhere. A path that does not resolve (the file is gone) falls
+/// back to its text.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Move `document` to the front, dropping any older entry for the same file.
 fn upsert(documents: &mut Vec<RecentDocument>, document: RecentDocument) {
-    documents.retain(|d| d.path != document.path);
+    let path = Path::new(&document.path);
+    documents.retain(|d| !same_file(Path::new(&d.path), path));
     documents.insert(0, document);
     documents.truncate(MAX);
 }
@@ -57,10 +73,20 @@ pub fn add(path: &Path, kind: RecentKind, title: &str) {
 /// The list, most recent first. A value this build cannot read is an empty
 /// list rather than a sidebar that fails: recents are a convenience.
 pub fn list() -> Vec<RecentDocument> {
-    match crate::history::get_setting(SETTING) {
+    let documents = match crate::history::get_setting(SETTING) {
         Ok(Some(json)) => parse(&json),
         _ => Vec::new(),
+    };
+    // A list written before entries were compared as files may name one
+    // file twice; the more recent spelling stays.
+    let mut kept: Vec<RecentDocument> = Vec::with_capacity(documents.len());
+    for document in documents {
+        let path = Path::new(&document.path);
+        if !kept.iter().any(|k| same_file(Path::new(&k.path), path)) {
+            kept.push(document);
+        }
     }
+    kept
 }
 
 /// Read the stored list one entry at a time, so an entry of a kind this build
@@ -103,6 +129,22 @@ mod tests {
         upsert(&mut documents, document("/b"));
         let paths: Vec<&str> = documents.iter().map(|d| d.path.as_str()).collect();
         assert_eq!(paths, vec!["/b", "/a"]);
+    }
+
+    #[test]
+    fn two_spellings_of_one_file_are_one_entry() {
+        let dir = std::env::temp_dir().join(format!("ducklocal_recents_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("d.dash");
+        std::fs::write(&file, "").unwrap();
+        // The same file through a `..` detour.
+        let detour = dir.join("sub").join("..").join("d.dash");
+        let mut documents = vec![document(&file.to_string_lossy())];
+        upsert(&mut documents, document(&detour.to_string_lossy()));
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].path, detour.to_string_lossy());
+        assert!(!same_file(&file, &dir.join("other.dash")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

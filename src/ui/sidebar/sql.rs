@@ -1,8 +1,10 @@
 //! SQL the sidebar generates for its row actions: `SELECT` previews for
-//! tables, columns, and S3 files, and `ALTER COLUMN` for type edits. Pure
+//! tables, columns, and S3 files, `ALTER COLUMN` for type edits — and the
+//! table description "Copy table info" puts on the clipboard. Pure
 //! functions, tested as such.
 
 use super::model::{ColumnRef, TableRef};
+use crate::schema::{NodeKind, TableInfo};
 use crate::script::SearchPath;
 use crate::ui::completion::{identifier_insert, relative_table_name};
 
@@ -48,6 +50,34 @@ pub(super) fn select_s3_file_sql(uri: &str) -> String {
     format!("SELECT *\nFROM '{}'\nLIMIT 100;", uri.replace('\'', "''"))
 }
 
+/// A table as Markdown, for pasting into a chat, an issue or an agent's
+/// prompt: the name a query uses, what it is, its size, and every column
+/// with its type.
+pub(super) fn table_info_text(table: &TableInfo) -> String {
+    let name = relative_table_name(None, &table.database, &table.schema, &table.name);
+    let kind = match table.kind {
+        NodeKind::Table => "table",
+        NodeKind::View => "view",
+    };
+    let rows = table
+        .estimated_rows
+        .map(|rows| format!(", ~{rows} rows"))
+        .unwrap_or_default();
+    let mut text = format!(
+        "{name} ({kind}{rows}, {} columns)\n\n| column | type |\n|---|---|\n",
+        table.columns.len()
+    );
+    for column in &table.columns {
+        // A pipe in a name would end the cell early.
+        text.push_str(&format!(
+            "| {} | {} |\n",
+            column.name.replace('|', "\\|"),
+            column.data_type
+        ));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     // Deliberately not `use super::*`: a `gpui_kit::*` glob anywhere in the
@@ -55,7 +85,9 @@ mod tests {
     // the built-in `#[test]`.
     use super::{
         alter_column_type_sql, select_column_sql, select_s3_file_sql, select_star_sql,
+        table_info_text,
     };
+    use crate::schema::{ColumnInfo, NodeKind, TableInfo};
     use crate::script::SearchPath;
     use crate::ui::sidebar::model::{ColumnRef, TableRef};
 
@@ -163,5 +195,28 @@ mod tests {
             .query_row("SELECT amount::VARCHAR FROM orders", [], |r| r.get(0))
             .unwrap();
         assert_eq!(value, "42.00");
+    }
+
+    #[test]
+    fn table_info_lists_every_column_as_markdown() {
+        let column = |name: &str, data_type: &str| ColumnInfo {
+            name: name.to_string(),
+            data_type: data_type.to_string(),
+        };
+        let table = TableInfo {
+            database: "memory".to_string(),
+            schema: "main".to_string(),
+            name: "orders".to_string(),
+            kind: NodeKind::Table,
+            estimated_rows: Some(42),
+            columns: vec![column("date", "DATE"), column("a|b", "VARCHAR")],
+        };
+        assert_eq!(
+            table_info_text(&table),
+            "memory.main.orders (table, ~42 rows, 2 columns)\n\n\
+             | column | type |\n|---|---|\n\
+             | date | DATE |\n\
+             | a\\|b | VARCHAR |\n"
+        );
     }
 }

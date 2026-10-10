@@ -24,3 +24,6 @@
 # Publish only the official DuckLocal skill; keep local development skills private.
 /skills/*
 !/skills/ducklocal/
+
+# Dashboard review threads (ducklocal comments): working notes, not source
+*.dash.comments.json

@@ -1,5 +1,6 @@
-//! Bottom status bar: connection status on the left, last-query stats and the
-//! DuckDB version on the right.
+//! Bottom status bar: connection status on the left, last-query stats, the
+//! DuckDB version and DuckLocal's own version — the update check — on the
+//! right.
 
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::spinner::Spinner;
@@ -134,6 +135,55 @@ impl Render for StatusBarView {
                     .child(format!("DuckDB {version}")),
             );
         }
-        bar
+        bar.right(Separator::vertical()).right(update_status(cx))
+    }
+}
+
+/// DuckLocal's version, which checks for a newer one when clicked — and,
+/// once one is found, a link to its download page instead.
+fn update_status(cx: &App) -> AnyElement {
+    use crate::ui::update::{self, Status, CURRENT};
+    let version = format!("DuckLocal {CURRENT}");
+    let tooltip = |text: String| {
+        move |window: &mut Window, cx: &mut App| {
+            gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+        }
+    };
+    match update::status(cx) {
+        Status::Checking => h_flex()
+            .gap_1p5()
+            .items_center()
+            .child(Spinner::new().xsmall())
+            .child(tr("status_bar.update.checking"))
+            .into_any_element(),
+        Status::Available(tag) => div()
+            .id("update-available")
+            .cursor_pointer()
+            .text_color(cx.theme().primary)
+            .font_weight(FontWeight::MEDIUM)
+            .child(trf("status_bar.update.available", &[&tag]))
+            .tooltip(tooltip(update::RELEASES_URL.to_string()))
+            .on_click(|_, _, cx| cx.open_url(update::RELEASES_URL))
+            .into_any_element(),
+        status => {
+            let (label, hint) = match status {
+                Status::UpToDate => (
+                    format!("{version} · {}", tr("status_bar.update.latest")),
+                    tr("status_bar.update.check").to_string(),
+                ),
+                Status::Failed(error) => (
+                    format!("{version} · {}", tr("status_bar.update.failed")),
+                    error,
+                ),
+                _ => (version, tr("status_bar.update.check").to_string()),
+            };
+            div()
+                .id("update-check")
+                .cursor_pointer()
+                .child(label)
+                .tooltip(tooltip(hint))
+                .on_click(|_, _, cx| update::check(cx))
+                .into_any_element()
+        }
     }
 }
