@@ -564,7 +564,11 @@ mod tests {
         let listening = listen(&dir).unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            accept_loop(listening, move |r| tx.send(r).unwrap(), || Ok(json!({"tabs": []})))
+            accept_loop(
+                listening,
+                move |r| tx.send(r).unwrap(),
+                || Ok(json!({"tabs": []})),
+            )
         });
         deliver(&dir, &request()).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), request());
@@ -576,7 +580,11 @@ mod tests {
         let listening = listen(&dir).unwrap();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            accept_loop(listening, move |r| tx.send(r).unwrap(), || Ok(json!({"tabs": []})))
+            accept_loop(
+                listening,
+                move |r| tx.send(r).unwrap(),
+                || Ok(json!({"tabs": []})),
+            )
         });
         let path = dir.join(ENDPOINT_FILE);
         let mut endpoint: Endpoint =
@@ -612,7 +620,11 @@ mod tests {
         let dir = scratch("state-timeout");
         let listening = listen(&dir).unwrap();
         std::thread::spawn(move || {
-            accept_loop(listening, |_| {}, || Err("the window did not answer within 5s".into()))
+            accept_loop(
+                listening,
+                |_| {},
+                || Err("the window did not answer within 5s".into()),
+            )
         });
         assert!(matches!(fetch_state(&dir), Err(Unreachable::Timeout(_))));
     }

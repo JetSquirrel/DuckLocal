@@ -86,7 +86,9 @@ fn skip_trivia(script: &str, mut from: usize) -> Option<usize> {
             from += 1;
         }
         if script[from..].starts_with("--") {
-            from = script[from..].find('\n').map_or(bytes.len(), |ix| from + ix);
+            from = script[from..]
+                .find('\n')
+                .map_or(bytes.len(), |ix| from + ix);
         } else if script[from..].starts_with("/*") {
             from = script[from + 2..]
                 .find("*/")
@@ -338,7 +340,10 @@ pub fn summary(text: &str, max_chars: usize) -> String {
     if collapsed.chars().count() <= max_chars {
         collapsed
     } else {
-        let mut short: String = collapsed.chars().take(max_chars.saturating_sub(1)).collect();
+        let mut short: String = collapsed
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect();
         short.push('…');
         short
     }
@@ -385,7 +390,10 @@ mod tests {
     #[test]
     fn comment_only_pieces_are_dropped() {
         assert_eq!(texts("-- nothing here;\n;;  \n/* nor; here */"), []);
-        assert_eq!(texts("SELECT 1;\n-- trailing note"), [(PieceKind::Sql, "SELECT 1")]);
+        assert_eq!(
+            texts("SELECT 1;\n-- trailing note"),
+            [(PieceKind::Sql, "SELECT 1")]
+        );
     }
 
     #[test]
@@ -413,9 +421,15 @@ mod tests {
             "ATTACH ':memory:' AS other; USE other; CREATE TABLE t AS SELECT 42 AS n; SELECT * FROM t",
         );
         assert_eq!(outcome.steps.len(), 4);
-        assert!(outcome.steps.iter().all(|s| matches!(s.outcome, Some(Ok(_)))));
+        assert!(outcome
+            .steps
+            .iter()
+            .all(|s| matches!(s.outcome, Some(Ok(_)))));
         let path = outcome.search_path.clone().unwrap();
-        assert_eq!((path.database.as_str(), path.schema.as_str()), ("other", "main"));
+        assert_eq!(
+            (path.database.as_str(), path.schema.as_str()),
+            ("other", "main")
+        );
         // The rows of the last statement are the ones reported.
         let primary = outcome.primary().unwrap();
         assert_eq!(primary, 3);
@@ -440,13 +454,21 @@ mod tests {
         let conn = duckdb::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE stations(code VARCHAR); CREATE VIEW v AS SELECT 1")
             .unwrap();
-        let outcome = run_of(&conn, ".tables\n.tables stat%\n.schema stations\n.databases\n.help");
+        let outcome = run_of(
+            &conn,
+            ".tables\n.tables stat%\n.schema stations\n.databases\n.help",
+        );
         let rows: Vec<usize> = outcome
             .steps
             .iter()
             .map(|s| match &s.outcome {
                 Some(Ok(QueryOutcome::Rows(r))) => r.rows.len(),
-                other => panic!("{:?}", other.as_ref().map(|o| o.as_ref().err().map(|e| e.to_string()))),
+                other => panic!(
+                    "{:?}",
+                    other
+                        .as_ref()
+                        .map(|o| o.as_ref().err().map(|e| e.to_string()))
+                ),
             })
             .collect();
         assert_eq!(rows[0], 2, ".tables lists the table and the view");

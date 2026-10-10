@@ -569,7 +569,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_schema_is_idempotent() {        let conn = Connection::open_in_memory().unwrap();
+    fn prepare_schema_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
         prepare_schema(&conn).unwrap();
         prepare_schema(&conn).unwrap();
         register_attached_file_to(&conn, "/tmp/a.csv", "a", "csv").unwrap();

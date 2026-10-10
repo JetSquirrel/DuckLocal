@@ -37,8 +37,9 @@ use super::syntax::{self, Attr, Block, File, RefSite, Value};
 /// The plot types the format knows. Each is a promise the renderer can keep:
 /// x/y for the continuous ones and `pie`, anything tabular for `table`,
 /// coordinates for `map`, words and no query at all for `text`.
-pub(crate) const PLOT_TYPES: &[&str] =
-    &["line", "bar", "area", "scatter", "pie", "map", "table", "card", "text"];
+pub(crate) const PLOT_TYPES: &[&str] = &[
+    "line", "bar", "area", "scatter", "pie", "map", "table", "card", "text",
+];
 
 /// The attributes only a `map` takes.
 const MAP_ATTRS: &[&str] = &["lat", "lng", "color", "size", "size_scale", "tooltip"];
@@ -309,11 +310,7 @@ impl Spec {
                         return Some(Hit::Ref {
                             block: site.name.clone(),
                             attr: attr.name.clone(),
-                            segments: reference
-                                .segments
-                                .iter()
-                                .map(|s| s.name.clone())
-                                .collect(),
+                            segments: reference.segments.iter().map(|s| s.name.clone()).collect(),
                             segment: index,
                             span: segment.span,
                         });
@@ -553,16 +550,16 @@ fn source(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Source> {
     let mut seen = false;
     for attr in &block.attrs {
         match attr.name.as_str() {
-            "path" if seen => diagnostics.push(Diagnostic::at_attr(
-                attr,
-                "Duplicate attribute: path",
-            )),
+            "path" if seen => {
+                diagnostics.push(Diagnostic::at_attr(attr, "Duplicate attribute: path"))
+            }
             "path" => {
                 seen = true;
                 match string(attr, diagnostics) {
-                    Some(text) if text.trim().is_empty() => diagnostics.push(
-                        Diagnostic::at_attr(attr, "path names a file or a glob; it is empty"),
-                    ),
+                    Some(text) if text.trim().is_empty() => diagnostics.push(Diagnostic::at_attr(
+                        attr,
+                        "path names a file or a glob; it is empty",
+                    )),
                     Some(text) => {
                         if let Some(message) = super::source::unreadable(&text) {
                             diagnostics.push(Diagnostic::at_attr(attr, message));
@@ -663,10 +660,9 @@ fn query(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Query> {
                 seen = true;
                 match &attr.value {
                     Value::Heredoc(text) | Value::Str(text) => sql = Some(text.clone()),
-                    _ => diagnostics.push(Diagnostic::at_attr(
-                        attr,
-                        "sql is a heredoc or a string",
-                    )),
+                    _ => {
+                        diagnostics.push(Diagnostic::at_attr(attr, "sql is a heredoc or a string"))
+                    }
                 }
             }
             other => diagnostics.push(Diagnostic::at_attr(
@@ -803,19 +799,29 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         let name = attr.name.as_str();
         let misplaced = if is_text {
             (!matches!(name, "type" | "title" | "text" | "width")).then(|| {
-                format!("A text panel holds a title and text, and draws no query; it takes no {name}")
+                format!(
+                    "A text panel holds a title and text, and draws no query; it takes no {name}"
+                )
             })
         } else if name == "text" && !kind_name.is_empty() {
-            Some(format!("text is for text panels; this plot is a {kind_name} (its label is title)"))
+            Some(format!(
+                "text is for text panels; this plot is a {kind_name} (its label is title)"
+            ))
         } else if is_map {
             matches!(name, "x" | "y" | "series")
                 .then(|| format!("A map plot places points by lat and lng; it takes no {name}"))
         } else if is_card && (matches!(name, "x" | "y" | "series") || MAP_ATTRS.contains(&name)) {
-            Some(format!("A card shows one value; it takes no {name} (name its column with value)"))
+            Some(format!(
+                "A card shows one value; it takes no {name} (name its column with value)"
+            ))
         } else if !kind_name.is_empty() && MAP_ATTRS.contains(&name) {
-            Some(format!("{name} is for map plots; this plot is a {kind_name}"))
+            Some(format!(
+                "{name} is for map plots; this plot is a {kind_name}"
+            ))
         } else if !kind_name.is_empty() && !is_card && CARD_ATTRS.contains(&name) {
-            Some(format!("{name} is for card plots; this plot is a {kind_name}"))
+            Some(format!(
+                "{name} is for card plots; this plot is a {kind_name}"
+            ))
         } else if kind_name == "pie" && name == "series" {
             Some("A pie draws one series; it takes no series".to_string())
         } else {
@@ -850,14 +856,20 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     if is_text && !seen.contains("title") && !seen.contains("text") {
         diagnostics.push(Diagnostic::at_block(
             block,
-            format!("text panel {:?} shows nothing: give it a title, text, or both", block.name),
+            format!(
+                "text panel {:?} shows nothing: give it a title, text, or both",
+                block.name
+            ),
         ));
     }
     // A present-but-invalid type already earned its own diagnostic; "requires"
     // is only for attributes never written. y is required once the type is
     // known to need one.
     let kind = kind.unwrap_or_default();
-    if !kind.is_empty() && !matches!(kind.as_str(), "table" | "map" | "card" | "text") && y.is_none() {
+    if !kind.is_empty()
+        && !matches!(kind.as_str(), "table" | "map" | "card" | "text")
+        && y.is_none()
+    {
         diagnostics.push(Diagnostic::at_block(
             block,
             format!("plot block {:?} requires y", block.name),
@@ -935,7 +947,10 @@ fn columns(attr: &Attr, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<String>
     if names.is_empty() {
         diagnostics.push(Diagnostic::at_attr(
             attr,
-            format!("{} lists at least one column; leave it out for the default", attr.name),
+            format!(
+                "{} lists at least one column; leave it out for the default",
+                attr.name
+            ),
         ));
         return None;
     }
@@ -950,7 +965,10 @@ fn column(attr: &Attr, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
         Value::Ref(_) => {
             diagnostics.push(Diagnostic::at_attr(
                 attr,
-                format!("{} names a column of the plot's query, not a reference", attr.name),
+                format!(
+                    "{} names a column of the plot's query, not a reference",
+                    attr.name
+                ),
             ));
             None
         }
@@ -1178,8 +1196,19 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
 fn is_numeric(ty: &str) -> bool {
     let ty = ty.to_ascii_uppercase();
     [
-        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT",
-        "UINTEGER", "UBIGINT", "UHUGEINT", "FLOAT", "DOUBLE", "DECIMAL",
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+        "FLOAT",
+        "DOUBLE",
+        "DECIMAL",
     ]
     .iter()
     .any(|prefix| ty.starts_with(prefix))
@@ -1249,35 +1278,67 @@ filter "picked" {
         assert_eq!(spec.filters[0].column, "channel");
         assert_eq!(spec.filters[1].column, "id");
         let daily = spec.queries.iter().find(|q| q.name == "daily").unwrap();
-        let used: Vec<&str> = spec.filters_of(daily).iter().map(|f| f.name.as_str()).collect();
+        let used: Vec<&str> = spec
+            .filters_of(daily)
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
         assert_eq!(used, ["channel"]);
     }
 
     #[test]
     fn filter_mistakes_are_named() {
         let unknown = FILTERED.replace("WHERE $channel", "WHERE $chanel");
-        let messages: Vec<String> = validate_err(&unknown).into_iter().map(|d| d.message).collect();
+        let messages: Vec<String> = validate_err(&unknown)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
         assert!(
-            messages.iter().any(|m| m.contains("$chanel") && m.contains("no filter block")),
+            messages
+                .iter()
+                .any(|m| m.contains("$chanel") && m.contains("no filter block")),
             "{messages:?}"
         );
 
         let on_a_line = FILTERED.replace("plot = plot.channels", "plot = plot.daily");
-        let messages: Vec<String> = validate_err(&on_a_line).into_iter().map(|d| d.message).collect();
-        assert!(messages.iter().any(|m| m.contains("a line")), "{messages:?}");
+        let messages: Vec<String> = validate_err(&on_a_line)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("a line")),
+            "{messages:?}"
+        );
 
         let missing = FILTERED.replace("plot = plot.channels", "plot = plot.nope");
-        let messages: Vec<String> = validate_err(&missing).into_iter().map(|d| d.message).collect();
-        assert!(messages.iter().any(|m| m.contains("does not define")), "{messages:?}");
+        let messages: Vec<String> = validate_err(&missing)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("does not define")),
+            "{messages:?}"
+        );
 
         let table_without_column = FILTERED.replace("  column = id\n", "");
-        let messages: Vec<String> =
-            validate_err(&table_without_column).into_iter().map(|d| d.message).collect();
-        assert!(messages.iter().any(|m| m.contains("name the column")), "{messages:?}");
+        let messages: Vec<String> = validate_err(&table_without_column)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("name the column")),
+            "{messages:?}"
+        );
 
         let bad_name = FILTERED.replace("filter \"channel\"", "filter \"sales-channel\"");
-        let messages: Vec<String> = validate_err(&bad_name).into_iter().map(|d| d.message).collect();
-        assert!(messages.iter().any(|m| m.contains("letters, digits")), "{messages:?}");
+        let messages: Vec<String> = validate_err(&bad_name)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("letters, digits")),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -1285,13 +1346,24 @@ filter "picked" {
         let spec = validate_ok(&FILTERED.replace("column = id", "column = nope"));
         let lookup = |name: &str| -> Result<Vec<(String, String)>, String> {
             Ok(match name {
-                "by_channel" => vec![("channel".into(), "VARCHAR".into()), ("revenue".into(), "DOUBLE".into())],
-                "rows" => vec![("id".into(), "BIGINT".into()), ("channel".into(), "VARCHAR".into())],
-                _ => vec![("date".into(), "DATE".into()), ("orders".into(), "BIGINT".into())],
+                "by_channel" => vec![
+                    ("channel".into(), "VARCHAR".into()),
+                    ("revenue".into(), "DOUBLE".into()),
+                ],
+                "rows" => vec![
+                    ("id".into(), "BIGINT".into()),
+                    ("channel".into(), "VARCHAR".into()),
+                ],
+                _ => vec![
+                    ("date".into(), "DATE".into()),
+                    ("orders".into(), "BIGINT".into()),
+                ],
             })
         };
-        let messages: Vec<String> =
-            check_columns(&spec, &lookup).into_iter().map(|d| d.message).collect();
+        let messages: Vec<String> = check_columns(&spec, &lookup)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(messages[0].contains("\"nope\""), "{messages:?}");
     }
@@ -1357,12 +1429,30 @@ wat "huh" {}
 "#;
         let diagnostics = validate_err(source);
         let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
-        assert!(messages.iter().any(|m| m.contains("Duplicate query")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("\"donut\"")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("does not define")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("requires x")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("requires y")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("Unknown block")), "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("Duplicate query")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("\"donut\"")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("does not define")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("requires x")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("requires y")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("Unknown block")),
+            "{messages:?}"
+        );
 
         // Each diagnostic points: attribute mistakes at the attribute's name,
         // block mistakes at the kind keyword.
@@ -1441,7 +1531,10 @@ plot "p" { type = "line" query = query.q x = timestamp }
         else {
             panic!("a reference segment: {:?}", spec.locate(11, 20));
         };
-        assert_eq!((block.as_str(), attr.as_str(), segment), ("latency", "query", 1));
+        assert_eq!(
+            (block.as_str(), attr.as_str(), segment),
+            ("latency", "query", 1)
+        );
         assert_eq!(segments, ["query", "latency"]);
         assert_eq!(&GOOD[span.0..span.1], "latency");
 
@@ -1477,10 +1570,7 @@ plot "p" { type = "line" query = query.q x = timestamp }
                 name_span: spec.queries[0].name_span,
             })
         );
-        assert!(matches!(
-            spec.locate(2, 3),
-            Some(Hit::Block { .. })
-        ));
+        assert!(matches!(spec.locate(2, 3), Some(Hit::Block { .. })));
 
         // Between blocks and past the last one: nothing.
         assert_eq!(spec.locate(8, 1), None);
@@ -1511,7 +1601,9 @@ plot "p" { type = "bar" query = query.q x = nope y = service }
             "{diagnostics:?}"
         );
         assert!(
-            diagnostics.iter().any(|d| d.message.contains("not numeric")),
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("not numeric")),
             "{diagnostics:?}"
         );
     }
@@ -1564,8 +1656,14 @@ plot "c" { type = "pie" query = query.q x = t y = v series = s }
 "#,
         );
         let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
-        assert!(messages.iter().any(|m| m.contains("takes no x")), "{messages:?}");
-        assert!(messages.iter().any(|m| m.contains("takes no y")), "{messages:?}");
+        assert!(
+            messages.iter().any(|m| m.contains("takes no x")),
+            "{messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("takes no y")),
+            "{messages:?}"
+        );
         assert!(
             messages.iter().any(|m| m.contains("lat is for map plots")),
             "{messages:?}"
@@ -1601,7 +1699,10 @@ plot "guessed" { type = "map" query = query.q }
         let diagnostics = check_columns(&spec, &stations);
         // A text longitude places nothing; the guessed map finds both.
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert!(diagnostics[0].message.contains("lng = \"code\""), "{diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("lng = \"code\""),
+            "{diagnostics:?}"
+        );
 
         let no_coordinates = |_: &str| -> Result<Vec<(String, String)>, String> {
             Ok(vec![("code".into(), "VARCHAR".into())])
@@ -1614,7 +1715,9 @@ plot "guessed" { type = "map" query = query.q }
             "{diagnostics:?}"
         );
         assert!(
-            diagnostics.iter().any(|d| d.message.contains("\"geo_lat\"")),
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("\"geo_lat\"")),
             "a named column the query lacks is reported: {diagnostics:?}"
         );
     }
@@ -1688,7 +1791,9 @@ plot "m" {
         let diagnostics = check_columns(&spec, &columns);
         let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert!(
-            messages.iter().any(|m| m.contains("size = \"place\" (VARCHAR), which is not numeric")),
+            messages
+                .iter()
+                .any(|m| m.contains("size = \"place\" (VARCHAR), which is not numeric")),
             "{messages:?}"
         );
         assert!(
@@ -1760,7 +1865,10 @@ plot "e" { type = "bar" query = query.q x = n y = n text = "words" }
         assert!(has("Unknown tone: \"red\""), "{messages:?}");
         assert!(has("note is for card plots"), "{messages:?}");
         assert!(has("tone is for card plots"), "{messages:?}");
-        assert!(has("A text panel holds a title and text, and draws no query; it takes no query"), "{messages:?}");
+        assert!(
+            has("A text panel holds a title and text, and draws no query; it takes no query"),
+            "{messages:?}"
+        );
         assert!(has("text panel \"d\" shows nothing"), "{messages:?}");
         assert!(has("text is for text panels"), "{messages:?}");
     }
@@ -1789,10 +1897,16 @@ plot "d" { type = "line" query = query.q x = t y = v width = "6" }
         assert!(has("requires path"), "{messages:?}");
         assert!(has("A workbook cannot be a source"), "{messages:?}");
         assert!(has("A card shows one value; it takes no y"), "{messages:?}");
-        assert!(has("A card shows one value; it takes no series"), "{messages:?}");
+        assert!(
+            has("A card shows one value; it takes no series"),
+            "{messages:?}"
+        );
         assert!(has("value is for card plots"), "{messages:?}");
         assert_eq!(
-            messages.iter().filter(|m| m.starts_with("width is")).count(),
+            messages
+                .iter()
+                .filter(|m| m.starts_with("width is"))
+                .count(),
             2,
             "{messages:?}"
         );

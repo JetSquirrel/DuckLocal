@@ -176,12 +176,30 @@ FILE`, then answer each thread with --reply ID --text \"what changed\"
 ";
 
 const SPEC: &[FlagSpec] = &[
-    FlagSpec { name: "--all", takes_value: false },
-    FlagSpec { name: "--reply", takes_value: true },
-    FlagSpec { name: "--text", takes_value: true },
-    FlagSpec { name: "--resolve", takes_value: false },
-    FlagSpec { name: "--reopen", takes_value: true },
-    FlagSpec { name: "--add", takes_value: true },
+    FlagSpec {
+        name: "--all",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--reply",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--text",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--resolve",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--reopen",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--add",
+        takes_value: true,
+    },
 ];
 
 /// `ducklocal comments FILE [...]`.
@@ -221,7 +239,10 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
     };
     let file = file.ok_or_else(|| CliError::argument("Name the .dash file the comments are on"))?;
     if !file.is_file() {
-        return Err(CliError::failure("io", format!("{}: no such file", file.display())));
+        return Err(CliError::failure(
+            "io",
+            format!("{}: no such file", file.display()),
+        ));
     }
     let need_text = || {
         text.clone()
@@ -365,14 +386,20 @@ mod tests {
 
         comments.set_resolved(&a, true).unwrap();
         assert_eq!(comments.open_on("revenue"), 0);
-        comments.reply(&a, Author::Agent, "Sorted descending").unwrap();
+        comments
+            .reply(&a, Author::Agent, "Sorted descending")
+            .unwrap();
         assert_eq!(comments.open_on("revenue"), 1);
         assert!(comments.reply("c9", Author::Agent, "?").is_err());
 
         // Resolved threads sort after open ones.
         comments.add("revenue", Author::User, "Another");
         comments.set_resolved("c1", true).unwrap();
-        let ids: Vec<_> = comments.on_plot("revenue").iter().map(|t| t.id.clone()).collect();
+        let ids: Vec<_> = comments
+            .on_plot("revenue")
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
         assert_eq!(ids, ["c3", "c1"]);
     }
 

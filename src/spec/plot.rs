@@ -23,16 +23,14 @@
 
 use std::sync::Arc;
 
-use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::plot::label::{
-    Text, TEXT_GAP, truncate_text_to_width,
-};
+use gpui_kit::component::plot::label::{truncate_text_to_width, Text, TEXT_GAP};
 use gpui_kit::component::plot::scale::{Scale, ScaleBand, ScaleLinear, ScalePoint};
 use gpui_kit::component::plot::shape::{Bar, BarAlignment, Line};
 use gpui_kit::component::plot::tooltip::{CrossLine, Dot, Tooltip, TooltipState};
 use gpui_kit::component::plot::{
-    AxisText, Grid, PathCaches, Plot, PlotAxis, PlotElement, PlotLabel, axis_gutter,
+    axis_gutter, AxisText, Grid, PathCaches, Plot, PlotAxis, PlotElement, PlotLabel,
 };
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 
 use crate::spec::prepare::{PlotPoint, PreparedPlot};
@@ -239,7 +237,11 @@ impl GroupedBars {
                 .fold(0., f32::max)
         };
         let band = widest(|d| &d.band);
-        let value = if self.values_shown() { widest(|d| &d.label) } else { 0. };
+        let value = if self.values_shown() {
+            widest(|d| &d.label)
+        } else {
+            0.
+        };
         let step = width / self.points.len() as f32;
         if band.max(value) + LABEL_PAD <= step {
             return Layout::Columns;
@@ -286,7 +288,12 @@ impl GroupedBars {
         let height = bounds.size.height.as_f32();
         let (band_range, value_range) = match self.layout(bounds) {
             Layout::Columns => {
-                let top = TOP_GAP + if self.values_shown() { LABEL_HEIGHT } else { 0. };
+                let top = TOP_GAP
+                    + if self.values_shown() {
+                        LABEL_HEIGHT
+                    } else {
+                        0.
+                    };
                 ([0., width], [height - axis_gap(), top])
             }
             Layout::Rows { gutter, room } => ([0., height], [gutter, (width - room).max(gutter)]),
@@ -391,7 +398,12 @@ impl Plot for GroupedBars {
                 PlotLabel::new(labels).paint(&bounds, window, cx);
 
                 // The grid skips the baseline, which the axis line already draws.
-                let top = TOP_GAP + if self.values_shown() { LABEL_HEIGHT } else { 0. };
+                let top = TOP_GAP
+                    + if self.values_shown() {
+                        LABEL_HEIGHT
+                    } else {
+                        0.
+                    };
                 let ticks = value_ticks(top, baseline, TICK_COUNT);
                 Grid::new()
                     .y(ticks[..ticks.len() - 1].to_vec())
@@ -515,13 +527,21 @@ impl Plot for GroupedBars {
                 let index = band_scale.nearest_index(position.x.as_f32());
                 let d = self.points.get(index)?;
                 let center = band_scale.tick(&d.band)? + band_scale.band_width() / 2.;
-                Some(TooltipState::new(index, point(px(center), position.y), vec![]))
+                Some(TooltipState::new(
+                    index,
+                    point(px(center), position.y),
+                    vec![],
+                ))
             }
             Layout::Rows { .. } => {
                 let index = band_scale.nearest_index(position.y.as_f32());
                 let d = self.points.get(index)?;
                 let center = band_scale.tick(&d.band)? + band_scale.band_width() / 2.;
-                Some(TooltipState::new(index, point(position.x, px(center)), vec![]))
+                Some(TooltipState::new(
+                    index,
+                    point(position.x, px(center)),
+                    vec![],
+                ))
             }
         }
     }
@@ -541,8 +561,9 @@ impl Plot for GroupedBars {
         // The hovered band highlights whole, the way the catalog's bar chart
         // highlights its bar; the tooltip lists the series the band has.
         let cross_line = match self.layout(bounds) {
-            Layout::Columns => CrossLine::new(state.cross_line)
-                .span(0., bounds.size.height.as_f32() - axis_gap()),
+            Layout::Columns => {
+                CrossLine::new(state.cross_line).span(0., bounds.size.height.as_f32() - axis_gap())
+            }
             Layout::Rows { gutter, .. } => CrossLine::new(state.cross_line)
                 .horizontal()
                 .h_span(gutter, bounds.size.width.as_f32() - gutter),
@@ -739,7 +760,9 @@ impl Plot for SeriesPlot {
                         if !d.present.get(s).copied().unwrap_or(false) {
                             continue;
                         }
-                        let Some(y_tick) = y.tick(&d.values[s]) else { continue };
+                        let Some(y_tick) = y.tick(&d.values[s]) else {
+                            continue;
+                        };
                         let color = palette[s % palette.len()];
                         let origin = bounds.origin
                             + point(px(x_tick - DOT_SIZE / 2.), px(y_tick - DOT_SIZE / 2.));
@@ -782,7 +805,11 @@ impl Plot for SeriesPlot {
             .present_series(index)
             .filter_map(|(s, _)| Some(point(px(x_tick), px(y.tick(&d.values[s])?))))
             .collect();
-        Some(TooltipState::new(index, point(px(x_tick), position.y), dots))
+        Some(TooltipState::new(
+            index,
+            point(px(x_tick), position.y),
+            dots,
+        ))
     }
 
     fn tooltip(
@@ -833,11 +860,11 @@ mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
-        GROUP_GAP, GroupedBars, Layout, group_slot, labeled, point_label_align, value_ticks,
-        x_label_count,
+        group_slot, labeled, point_label_align, value_ticks, x_label_count, GroupedBars, Layout,
+        GROUP_GAP,
     };
     use crate::spec::prepare::PlotPoint;
-    use gpui_kit::{Bounds, SharedString, TextAlign, point, px, size};
+    use gpui_kit::{point, px, size, Bounds, SharedString, TextAlign};
     use std::sync::Arc;
 
     #[test]
@@ -890,7 +917,9 @@ mod tests {
         assert_eq!(kinds.layout(bounds), Layout::Columns);
         // Fourteen paths do not: on its side, the labels in a left gutter
         // no wider than 40% of the plot.
-        let areas: Vec<String> = (0..14).map(|i| format!("src/app_export_{i} (removed)")).collect();
+        let areas: Vec<String> = (0..14)
+            .map(|i| format!("src/app_export_{i} (removed)"))
+            .collect();
         let areas = bars(&areas.iter().map(String::as_str).collect::<Vec<_>>());
         let Layout::Rows { gutter, room } = areas.layout(bounds) else {
             panic!("fourteen long labels cannot stand upright in 480px");

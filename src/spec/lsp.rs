@@ -28,8 +28,8 @@ use lsp_types::{
     CompletionTextEdit, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability, Location,
-    MarkupContent, MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
+    MarkupContent, MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
 };
 use serde_json::json;
 
@@ -117,21 +117,24 @@ fn serve(database: Option<PathBuf>) -> Result<i32, CliError> {
                         shutdown = true;
                         Response::new_ok(id, ())
                     }
-                    Completion::METHOD => {
-                        answer::<CompletionParams, _>(id, request.params, |_uri, position, source| {
-                            complete_at(source, position)
-                        }, &documents)
-                    }
-                    HoverRequest::METHOD => {
-                        answer::<HoverParams, _>(id, request.params, |_uri, position, source| {
-                            hover_at(source, position)
-                        }, &documents)
-                    }
-                    GotoDefinition::METHOD => {
-                        answer::<GotoDefinitionParams, _>(id, request.params, |uri, position, source| {
-                            definition_at(source, uri, position)
-                        }, &documents)
-                    }
+                    Completion::METHOD => answer::<CompletionParams, _>(
+                        id,
+                        request.params,
+                        |_uri, position, source| complete_at(source, position),
+                        &documents,
+                    ),
+                    HoverRequest::METHOD => answer::<HoverParams, _>(
+                        id,
+                        request.params,
+                        |_uri, position, source| hover_at(source, position),
+                        &documents,
+                    ),
+                    GotoDefinition::METHOD => answer::<GotoDefinitionParams, _>(
+                        id,
+                        request.params,
+                        |uri, position, source| definition_at(source, uri, position),
+                        &documents,
+                    ),
                     method => Response::new_err(
                         id,
                         ErrorCode::MethodNotFound as i32,
@@ -145,8 +148,7 @@ fn serve(database: Option<PathBuf>) -> Result<i32, CliError> {
             }
             Message::Notification(notification) => match notification.method.as_str() {
                 DidOpenTextDocument::METHOD => {
-                    match serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)
-                    {
+                    match serde_json::from_value::<DidOpenTextDocumentParams>(notification.params) {
                         Ok(params) => {
                             let document = params.text_document;
                             documents.insert(document.uri.clone(), document.text);
@@ -235,16 +237,16 @@ fn publish(
         return;
     };
     let diagnostics = diagnose(source, database);
-    let _ = connection.sender.send(Message::Notification(
-        lsp_server::Notification::new(
+    let _ = connection
+        .sender
+        .send(Message::Notification(lsp_server::Notification::new(
             PublishDiagnostics::METHOD.to_string(),
             PublishDiagnosticsParams {
                 uri: uri.clone(),
                 diagnostics,
                 version: None,
             },
-        ),
-    ));
+        )));
 }
 
 /// Every complaint about the document, in the order `check` would list them:
@@ -367,10 +369,7 @@ impl PositionParams for GotoDefinitionParams {
 /// filters against its own typed text.
 fn complete_at(source: &str, position: Position) -> Option<CompletionResponse> {
     let (line, col) = line_col(source, position);
-    let line_text = source
-        .lines()
-        .nth(position.line as usize)
-        .unwrap_or("");
+    let line_text = source.lines().nth(position.line as usize).unwrap_or("");
     let (_, prefix_units) = ident_prefix(line_text, col.saturating_sub(1));
     let range = Range {
         start: Position::new(position.line, position.character - prefix_units),
@@ -456,7 +455,12 @@ fn definition_at(source: &str, uri: &Url, position: Position) -> Option<GotoDefi
         return None;
     }
     let target = match segments[0].as_str() {
-        "query" => spec.queries.iter().find(|q| q.name == segments[1])?.name_span,
+        "query" => {
+            spec.queries
+                .iter()
+                .find(|q| q.name == segments[1])?
+                .name_span
+        }
         "plot" => spec.plots.iter().find(|p| p.name == segments[1])?.name_span,
         _ => return None,
     };
@@ -505,7 +509,11 @@ fn attr_doc(name: &str) -> Option<&'static str> {
 /// The first non-empty line of a query's SQL, cut to a readable length: the
 /// hover answers "which query is this", not "what does it say in full".
 fn sql_summary(sql: &str) -> String {
-    let line = sql.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = sql
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     const LIMIT: usize = 80;
     if line.chars().count() > LIMIT {
         format!("{}…", line.chars().take(LIMIT).collect::<String>())
@@ -521,7 +529,13 @@ fn sql_summary(sql: &str) -> String {
 fn ident_prefix(line: &str, char_col: usize) -> (usize, u32) {
     let mut chars = 0usize;
     let mut units = 0u32;
-    for ch in line.chars().take(char_col).collect::<Vec<_>>().into_iter().rev() {
+    for ch in line
+        .chars()
+        .take(char_col)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         if ch.is_ascii_alphanumeric() || ch == '_' {
             chars += 1;
             units += ch.len_utf16() as u32;
@@ -539,7 +553,10 @@ fn ident_prefix(line: &str, char_col: usize) -> (usize, u32) {
 /// text during edits.
 fn line_col(source: &str, position: Position) -> (usize, usize) {
     let line_text = source.lines().nth(position.line as usize).unwrap_or("");
-    (position.line as usize + 1, utf16_col_to_char_col(line_text, position.character) + 1)
+    (
+        position.line as usize + 1,
+        utf16_col_to_char_col(line_text, position.character) + 1,
+    )
 }
 
 /// A 0-based UTF-16 column as a 0-based character index.

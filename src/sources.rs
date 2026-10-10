@@ -360,7 +360,10 @@ mod tests {
     #[test]
     fn verbatim_prefixes_are_dropped() {
         assert_eq!(strip_verbatim(r"\\?\C:\data\x.csv"), r"C:\data\x.csv");
-        assert_eq!(strip_verbatim(r"\\?\UNC\host\share\x.csv"), r"\\host\share\x.csv");
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\host\share\x.csv"),
+            r"\\host\share\x.csv"
+        );
         assert_eq!(strip_verbatim("/home/al/x.csv"), "/home/al/x.csv");
         // A verbatim path that is not a drive path keeps its prefix.
         assert_eq!(

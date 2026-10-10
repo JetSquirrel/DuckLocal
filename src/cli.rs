@@ -166,7 +166,12 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
 fn closest_flag<'a>(text: &str, spec: &'a [FlagSpec]) -> Option<&'a str> {
     let bare = text.trim_start_matches('-');
     spec.iter()
-        .map(|flag| (flag.name, edit_distance(bare, flag.name.trim_start_matches('-'))))
+        .map(|flag| {
+            (
+                flag.name,
+                edit_distance(bare, flag.name.trim_start_matches('-')),
+            )
+        })
         .filter(|(_, distance)| *distance <= 2)
         .min_by_key(|(_, distance)| *distance)
         .map(|(name, _)| name)
@@ -234,7 +239,10 @@ pub(crate) fn parse_args(
             });
         };
         if !seen.insert(flag.name) {
-            return Err(CliError::argument(format!("Duplicate option: {}", flag.name)));
+            return Err(CliError::argument(format!(
+                "Duplicate option: {}",
+                flag.name
+            )));
         }
         if !flag.takes_value {
             parsed.push(Arg::Flag(flag.name, None));
@@ -440,13 +448,19 @@ pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
         let opened = ffi::duckdb_open(ptr::null(), &mut raw);
         let database = ParserDatabase(raw);
         if opened != ffi::DuckDBSuccess {
-            return Err(CliError::failure("database", "Cannot initialize SQL parser"));
+            return Err(CliError::failure(
+                "database",
+                "Cannot initialize SQL parser",
+            ));
         }
         let mut raw = ptr::null_mut();
         let connected = ffi::duckdb_connect(database.0, &mut raw);
         let connection = ParserConnection(raw);
         if connected != ffi::DuckDBSuccess {
-            return Err(CliError::failure("database", "Cannot initialize SQL parser"));
+            return Err(CliError::failure(
+                "database",
+                "Cannot initialize SQL parser",
+            ));
         }
         let mut raw = ptr::null_mut();
         let count = ffi::duckdb_extract_statements(connection.0, sql.as_ptr(), &mut raw);
@@ -503,10 +517,10 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
         Format::Markdown => Ok(crate::query::format_markdown(&result)
             .trim_end()
             .to_string()),
-        Format::Json => hotpath::measure_block!("cli::serialize_json", {
-            serde_json::to_string(&result)
-        })
-        .map_err(|e| CliError::failure("output", e)),
+        Format::Json => {
+            hotpath::measure_block!("cli::serialize_json", serde_json::to_string(&result))
+                .map_err(|e| CliError::failure("output", e))
+        }
     };
     // The process exits right after printing. Freeing up to 2M cells one by
     // one, each an object for a DECIMAL, DATE or TIMESTAMP, took as long as
@@ -633,7 +647,9 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     // The language server's stdio is a frame stream, not a document: it
     // handles its own output and exit code, so it never reaches the writeln
     // path below.
-    if first == "lsp" && args.get(1).map(|arg| arg.as_os_str()) != Some(std::ffi::OsStr::new("--help")) {
+    if first == "lsp"
+        && args.get(1).map(|arg| arg.as_os_str()) != Some(std::ffi::OsStr::new("--help"))
+    {
         return Some(crate::spec::lsp::main(&args[1..]));
     }
     let result = match (first, args.len()) {
@@ -698,9 +714,11 @@ mod tests {
     fn hints_follow_the_message_and_the_kind() {
         let read_only = "Invalid Input Error: Cannot execute statement of type \"DROP\" on database \"w\" which is attached in read-only mode!";
         assert!(hint_for("sql", read_only).unwrap().contains("--read-write"));
-        assert!(hint_for("sql", "Catalog Error: Table with name x does not exist!")
-            .unwrap()
-            .contains("ducklocal schema"));
+        assert!(
+            hint_for("sql", "Catalog Error: Table with name x does not exist!")
+                .unwrap()
+                .contains("ducklocal schema")
+        );
         assert!(hint_for("argument", "Expected exactly one SQL statement; found 2").is_some());
         // A kind the hint is not about gets none.
         assert!(hint_for("io", "Table with name x does not exist").is_none());

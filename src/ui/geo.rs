@@ -192,7 +192,13 @@ impl GeoData {
         if valid.is_empty() || valid.len() * 2 < result.rows.len() {
             return None;
         }
-        Some(Self::build(result, lat_ix, lng_ix, valid, &MapStyle::default()))
+        Some(Self::build(
+            result,
+            lat_ix,
+            lng_ix,
+            valid,
+            &MapStyle::default(),
+        ))
     }
 
     /// The map a dashboard's `map` plot names outright: its latitude and
@@ -250,7 +256,11 @@ impl GeoData {
                         && ![Some(lat_ix), Some(lng_ix), size_ix, category_ix, label_ix]
                             .contains(&Some(ix))
                 });
-                size_ix.into_iter().chain(others).take(DEFAULT_MEASURES).collect()
+                size_ix
+                    .into_iter()
+                    .chain(others)
+                    .take(DEFAULT_MEASURES)
+                    .collect()
             }
         };
 
@@ -334,7 +344,9 @@ impl GeoData {
             extent,
             dropped,
             capped_from,
-            size_name: style.size.map(|(column, _)| result.columns[column].name.clone()),
+            size_name: style
+                .size
+                .map(|(column, _)| result.columns[column].name.clone()),
             size_key: size_key.map(|(_, key)| key),
             size_missing,
             measures: measure_ixs
@@ -528,7 +540,11 @@ fn category_column(
 
 /// Color by `column`, as a `color` attribute asks: every value it holds, the
 /// most common first, the rest folded into "other" past the palette.
-fn category_of(result: &QueryResult, valid: &[(usize, f64, f64)], column: usize) -> Option<Category> {
+fn category_of(
+    result: &QueryResult,
+    valid: &[(usize, f64, f64)],
+    column: usize,
+) -> Option<Category> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for &(row_ix, _, _) in valid {
         if let Some(value) = result.rows[row_ix].get(column) {
@@ -889,13 +905,11 @@ impl Plot for GeoPlot {
                     let r = self.data.points[*ix].diameter / 2.;
                     *d2 <= r * r
                 };
-                inside(a)
-                    .cmp(&inside(b))
-                    .then(if inside(a) && inside(b) {
-                        a.0.cmp(&b.0)
-                    } else {
-                        b.2.total_cmp(&a.2).then(a.0.cmp(&b.0))
-                    })
+                inside(a).cmp(&inside(b)).then(if inside(a) && inside(b) {
+                    a.0.cmp(&b.0)
+                } else {
+                    b.2.total_cmp(&a.2).then(a.0.cmp(&b.0))
+                })
             })?;
         let at = point(px(x), px(y));
         Some(TooltipState::new(index, at, vec![at]))
@@ -1172,7 +1186,11 @@ mod tests {
     }
 
     fn diameter_of(geo: &GeoData, label: &str) -> f32 {
-        geo.points.iter().find(|p| p.label == label).unwrap().diameter
+        geo.points
+            .iter()
+            .find(|p| p.label == label)
+            .unwrap()
+            .diameter
     }
 
     #[test]

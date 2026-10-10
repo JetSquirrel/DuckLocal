@@ -22,11 +22,12 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
-use gpui_kit::assets::IconName as AssetIcon;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
 use crate::spec::tabs::OpenDocument;
@@ -38,6 +39,7 @@ use crate::ui::{
     pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, RUN_QUERY_KEYSTROKE,
     WORKSPACE_KEY_CONTEXT,
 };
+use gpui_kit::assets::IconName as AssetIcon;
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
 const RESULTS_PANEL_MIN: f32 = 160.;
@@ -422,11 +424,7 @@ impl Workspace {
     }
 
     pub fn focus_active_editor(&self, window: &mut Window, cx: &mut App) {
-        if let Some(editor) = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.editor(cx))
-        {
+        if let Some(editor) = self.tabs.get(self.active).and_then(|tab| tab.editor(cx)) {
             editor.read(cx).focus_handle(cx).focus(window, cx);
         }
     }
@@ -666,7 +664,12 @@ impl Workspace {
 
     /// Closing a dashboard whose source holds unsaved edits: save and close,
     /// close without saving, or stay.
-    fn confirm_close_dashboard(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_close_dashboard(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(title) = self
             .tabs
             .iter()
@@ -1175,12 +1178,14 @@ impl Workspace {
                                         .w(crate::ui::scale::design(rename_width(&input, cx)))
                                         .border_b_1()
                                         .border_color(cx.theme().primary)
-                                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                                            if event.keystroke.key == "escape" {
-                                                cx.stop_propagation();
-                                                this.cancel_rename(cx);
-                                            }
-                                        }))
+                                        .on_key_down(cx.listener(
+                                            |this, event: &KeyDownEvent, _, cx| {
+                                                if event.keystroke.key == "escape" {
+                                                    cx.stop_propagation();
+                                                    this.cancel_rename(cx);
+                                                }
+                                            },
+                                        ))
                                         .child(Input::new(&input).xsmall().appearance(false)),
                                 ),
                                 None => this.child(
@@ -1219,10 +1224,7 @@ impl Workspace {
                                 .items_center()
                                 .when(dirty, |this| {
                                     this.child(
-                                        div()
-                                            .size_1p5()
-                                            .rounded_full()
-                                            .bg(cx.theme().warning),
+                                        div().size_1p5().rounded_full().bg(cx.theme().warning),
                                     )
                                 })
                                 .when(closable, |this| {
@@ -1277,7 +1279,9 @@ impl Workspace {
 
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         match self.active_tab() {
-            Some(WorkspaceTab::Dashboard(_)) => self.render_dashboard_toolbar(cx).into_any_element(),
+            Some(WorkspaceTab::Dashboard(_)) => {
+                self.render_dashboard_toolbar(cx).into_any_element()
+            }
             _ => self.render_query_toolbar(cx).into_any_element(),
         }
     }

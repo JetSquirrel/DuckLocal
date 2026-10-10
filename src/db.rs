@@ -586,7 +586,10 @@ mod tests {
         conn.execute_batch(&format!("CREATE TABLE {alias}.events AS SELECT 1 AS id"))
             .unwrap();
         // Taken now: the next one gets a suffix.
-        assert_eq!(database_alias_of(&conn, path, &[]).unwrap(), "db_2026_10_logs_2");
+        assert_eq!(
+            database_alias_of(&conn, path, &[]).unwrap(),
+            "db_2026_10_logs_2"
+        );
 
         // Detaching the database in use moves the session off it first.
         conn.execute_batch(&format!("USE {alias}")).unwrap();

@@ -102,13 +102,19 @@ impl UiSize {
 
     /// One step larger, or the same when already the largest.
     pub fn larger(self) -> UiSize {
-        let ix = UiSize::ALL.iter().position(|size| *size == self).unwrap_or(1);
+        let ix = UiSize::ALL
+            .iter()
+            .position(|size| *size == self)
+            .unwrap_or(1);
         UiSize::ALL[(ix + 1).min(UiSize::ALL.len() - 1)]
     }
 
     /// One step smaller, or the same when already the smallest.
     pub fn smaller(self) -> UiSize {
-        let ix = UiSize::ALL.iter().position(|size| *size == self).unwrap_or(1);
+        let ix = UiSize::ALL
+            .iter()
+            .position(|size| *size == self)
+            .unwrap_or(1);
         UiSize::ALL[ix.saturating_sub(1)]
     }
 }

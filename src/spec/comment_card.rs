@@ -47,7 +47,10 @@ impl CommentCard {
         // ⌘↵ / Ctrl+↵ posts; a plain Enter is a new line, as in any
         // multi-line comment box.
         let subscription = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter { secondary: true, .. } = event {
+            if let InputEvent::PressEnter {
+                secondary: true, ..
+            } = event
+            {
                 this.post(window, cx);
             }
         });
@@ -80,14 +83,16 @@ impl CommentCard {
             .unwrap_or(false);
         if posted {
             self.replying = None;
-            self.input.update(cx, |state, cx| state.set_value("", window, cx));
+            self.input
+                .update(cx, |state, cx| state.set_value("", window, cx));
         }
         cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.replying = None;
-        self.input.update(cx, |state, cx| state.set_value("", window, cx));
+        self.input
+            .update(cx, |state, cx| state.set_value("", window, cx));
         self.dashboard
             .update(cx, |dashboard, cx| dashboard.close_comments(cx))
             .ok();
@@ -264,12 +269,7 @@ impl Render for CommentCard {
                 .child(div().h(px(1.)).bg(border))
             })
             .when_some(error, |this, error| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+                this.child(div().text_xs().text_color(cx.theme().danger).child(error))
             })
             .when_some(replying.clone(), |this, id| {
                 this.child(

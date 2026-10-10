@@ -290,8 +290,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, SyntaxError> {
                     if c == '\n' {
                         line += 1;
                         if current.trim() == delimiter {
-                            closing_indent =
-                                Some(current.len() - current.trim_start().len());
+                            closing_indent = Some(current.len() - current.trim_start().len());
                             end = Some(offset);
                             break;
                         }
@@ -321,9 +320,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, SyntaxError> {
                     .map(|l| {
                         if indent == 0 {
                             l.clone()
-                        } else if l.len() >= indent
-                            && l.bytes().take(indent).all(|b| b == b' ')
-                        {
+                        } else if l.len() >= indent && l.bytes().take(indent).all(|b| b == b' ') {
                             l[indent..].to_string()
                         } else {
                             l.trim_start().to_string()
@@ -357,7 +354,10 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>, SyntaxError> {
                     span: (start, end),
                 });
             }
-            _ if ch.is_ascii_digit() || (ch == '-' && matches!(chars.clone().nth(1), Some((_, c)) if c.is_ascii_digit())) => {
+            _ if ch.is_ascii_digit()
+                || (ch == '-'
+                    && matches!(chars.clone().nth(1), Some((_, c)) if c.is_ascii_digit())) =>
+            {
                 let start_line = line;
                 let mut word = String::new();
                 chars.next();
@@ -555,12 +555,7 @@ fn expect_ident(tokens: &[Token], pos: usize, hint: &str) -> Result<FoundIdent, 
     }
 }
 
-fn expect(
-    tokens: &[Token],
-    pos: usize,
-    kind: TokenKind,
-    what: &str,
-) -> Result<usize, SyntaxError> {
+fn expect(tokens: &[Token], pos: usize, kind: TokenKind, what: &str) -> Result<usize, SyntaxError> {
     match tokens.get(pos) {
         Some(token) if token.kind == kind => Ok(pos + 1),
         Some(token) => Err(SyntaxError::at(token, format!("Expected {what}"))),
@@ -573,9 +568,9 @@ fn parse_value(
     pos: usize,
     refs: &mut Vec<RefSite>,
 ) -> Result<(Value, usize), SyntaxError> {
-    let token = tokens.get(pos).ok_or_else(|| {
-        SyntaxError::at_end(tokens, "An attribute needs a value after `=`")
-    })?;
+    let token = tokens
+        .get(pos)
+        .ok_or_else(|| SyntaxError::at_end(tokens, "An attribute needs a value after `=`"))?;
     match &token.kind {
         TokenKind::Str(text) => Ok((Value::Str(text.clone()), pos + 1)),
         TokenKind::Heredoc(text) => Ok((Value::Heredoc(text.clone()), pos + 1)),
@@ -614,9 +609,9 @@ fn parse_value(
             let mut values = Vec::new();
             let mut next = pos + 1;
             loop {
-                let token = tokens.get(next).ok_or_else(|| {
-                    SyntaxError::at(token, "A list is never closed")
-                })?;
+                let token = tokens
+                    .get(next)
+                    .ok_or_else(|| SyntaxError::at(token, "A list is never closed"))?;
                 if token.kind == TokenKind::RBracket {
                     return Ok((Value::List(values), next + 1));
                 }
@@ -628,10 +623,7 @@ fn parse_value(
                 next = after;
             }
         }
-        other => Err(SyntaxError::at(
-            token,
-            format!("Not a value: {other:?}"),
-        )),
+        other => Err(SyntaxError::at(token, format!("Not a value: {other:?}"))),
     }
 }
 
@@ -667,7 +659,10 @@ mod tests {
         let heredoc = token(&TokenKind::Heredoc("SELECT 1".into()));
         assert_eq!((heredoc.line, heredoc.col), (2, 9));
         assert_eq!(heredoc.span, (20, 42));
-        assert_eq!(&source[heredoc.span.0..heredoc.span.1], "<<SQL\n  SELECT 1\n  SQL");
+        assert_eq!(
+            &source[heredoc.span.0..heredoc.span.1],
+            "<<SQL\n  SELECT 1\n  SQL"
+        );
 
         let close = token(&TokenKind::RBrace);
         assert_eq!((close.line, close.col, close.span), (5, 1, (43, 44)));
@@ -714,7 +709,10 @@ plot "latency" {
         assert_eq!(&source[query.name_span.0..query.name_span.1], "\"latency\"");
         assert_eq!(query.end_line, 9);
         assert_eq!((query.attrs[0].line, query.attrs[0].col), (4, 3));
-        assert_eq!(&source[query.attrs[0].name_span.0..query.attrs[0].name_span.1], "sql");
+        assert_eq!(
+            &source[query.attrs[0].name_span.0..query.attrs[0].name_span.1],
+            "sql"
+        );
 
         let plot = &file.blocks[1];
         assert_eq!(plot.kind, "plot");
@@ -730,9 +728,15 @@ plot "latency" {
         let site = &plot.attrs[1].refs[0];
         assert_eq!(site.segments.len(), 2);
         assert_eq!((site.segments[0].line, site.segments[0].col), (13, 12));
-        assert_eq!(&source[site.segments[0].span.0..site.segments[0].span.1], "query");
+        assert_eq!(
+            &source[site.segments[0].span.0..site.segments[0].span.1],
+            "query"
+        );
         assert_eq!((site.segments[1].line, site.segments[1].col), (13, 18));
-        assert_eq!(&source[site.segments[1].span.0..site.segments[1].span.1], "latency");
+        assert_eq!(
+            &source[site.segments[1].span.0..site.segments[1].span.1],
+            "latency"
+        );
     }
 
     #[test]
@@ -770,7 +774,11 @@ H
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].segments[0].name, "a");
         assert_eq!(
-            refs[1].segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            refs[1]
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
             ["b", "c"]
         );
     }
@@ -782,8 +790,14 @@ H
         assert_eq!(attrs[0].name, "x");
         assert_eq!(attrs[1].name, "y");
         assert_eq!(attrs[1].line, 2);
-        assert_eq!((attrs[0].line, attrs[0].col, attrs[0].name_span), (1, 12, (11, 12)));
-        assert_eq!((attrs[1].line, attrs[1].col, attrs[1].name_span), (2, 1, (17, 18)));
+        assert_eq!(
+            (attrs[0].line, attrs[0].col, attrs[0].name_span),
+            (1, 12, (11, 12))
+        );
+        assert_eq!(
+            (attrs[1].line, attrs[1].col, attrs[1].name_span),
+            (2, 1, (17, 18))
+        );
     }
 
     #[test]

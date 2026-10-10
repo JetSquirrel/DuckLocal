@@ -132,7 +132,8 @@ fn scan(source: &str) -> Scan {
                             scan.sql.push(body_start..closing_line);
                         }
                         let delimiter_end = delimiter_start + delimiter.len();
-                        scan.runs.push((delimiter_start..delimiter_end, "string.special"));
+                        scan.runs
+                            .push((delimiter_start..delimiter_end, "string.special"));
                         ix = delimiter_end;
                     }
                     None => {
@@ -325,7 +326,8 @@ impl InputHighlighter for DashHighlighter {
 /// highlighter, anything else none.
 pub fn factory() -> InputHighlighterFactory {
     Rc::new(|language| {
-        (language == LANGUAGE).then(|| Box::new(DashHighlighter::new()) as Box<dyn InputHighlighter>)
+        (language == LANGUAGE)
+            .then(|| Box::new(DashHighlighter::new()) as Box<dyn InputHighlighter>)
     })
 }
 

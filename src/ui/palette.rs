@@ -29,7 +29,11 @@ const DARK: [u32; SLOTS] = [
 
 /// The palette for the current theme's mode, slot 0 first.
 pub fn series(cx: &App) -> [Hsla; SLOTS] {
-    let hexes = if cx.theme().mode.is_dark() { DARK } else { LIGHT };
+    let hexes = if cx.theme().mode.is_dark() {
+        DARK
+    } else {
+        LIGHT
+    };
     hexes.map(|hex| rgb(hex).into())
 }
 

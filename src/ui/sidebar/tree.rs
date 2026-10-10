@@ -188,11 +188,7 @@ fn recents_group(
             TreeItem::new(row_id, doc.title.clone())
         })
         .collect();
-    Some(
-        TreeItem::new(group_id, label)
-            .expanded(true)
-            .children(rows),
-    )
+    Some(TreeItem::new(group_id, label).expanded(true).children(rows))
 }
 
 /// One registered data file: labelled by its view name — what a query names —
@@ -390,10 +386,7 @@ mod file_hint_tests {
         let orders = doc("dashboard", "/ex/orders_dashboard/dashboard.dash");
         let sales = doc("Sales", "/ex/sales.dash");
         // Most recent first, as stored, in either order: the sidebar agrees.
-        for stored in [
-            vec![&usage, &orders, &sales],
-            vec![&sales, &orders, &usage],
-        ] {
+        for stored in [vec![&usage, &orders, &sales], vec![&sales, &orders, &usage]] {
             let mut shown = stored;
             sort_documents(&mut shown);
             let paths: Vec<&str> = shown.iter().map(|doc| doc.path.as_str()).collect();

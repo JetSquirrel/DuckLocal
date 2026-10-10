@@ -59,14 +59,16 @@ impl Render for StatusBarView {
 
         let mono = cx.theme().mono_font_family.clone();
 
-        let mut bar = StatusBar::new().h(crate::ui::scale::design(32.)).left(if opening {
-            h_flex()
-                .gap_1p5()
-                .items_center()
-                .child(Spinner::new().xsmall())
-                .child(tr("status_bar.opening"))
-                .into_any_element()
-        } else if connected {
+        let mut bar = StatusBar::new()
+            .h(crate::ui::scale::design(32.))
+            .left(if opening {
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(Spinner::new().xsmall())
+                    .child(tr("status_bar.opening"))
+                    .into_any_element()
+            } else if connected {
                 h_flex()
                     .gap_1p5()
                     .items_center()
@@ -168,11 +170,19 @@ fn update_status(cx: &App) -> AnyElement {
         status => {
             let (label, hint) = match status {
                 Status::UpToDate => (
-                    format!("{version}{}{}", crate::i18n::sep(), tr("status_bar.update.latest")),
+                    format!(
+                        "{version}{}{}",
+                        crate::i18n::sep(),
+                        tr("status_bar.update.latest")
+                    ),
                     tr("status_bar.update.check").to_string(),
                 ),
                 Status::Failed(error) => (
-                    format!("{version}{}{}", crate::i18n::sep(), tr("status_bar.update.failed")),
+                    format!(
+                        "{version}{}{}",
+                        crate::i18n::sep(),
+                        tr("status_bar.update.failed")
+                    ),
                     error,
                 ),
                 _ => (version, tr("status_bar.update.check").to_string()),

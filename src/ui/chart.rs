@@ -579,7 +579,10 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
         .enumerate()
         .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
         .collect();
-    ((!notices.is_empty()).then(|| notices.join(crate::i18n::sep())), legend)
+    (
+        (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
+        legend,
+    )
 }
 
 fn render_map(geo: Arc<GeoData>, cx: &App) -> AnyElement {

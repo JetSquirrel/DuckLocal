@@ -93,9 +93,8 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
 
     let parsed = model::parse(&source)
         .map_err(|error| spec_error(&path_display, error.line, &error.message))?;
-    let spec = model::validate(&parsed).map_err(|diagnostics| {
-        spec_error_all(&path_display, diagnostics)
-    })?;
+    let spec = model::validate(&parsed)
+        .map_err(|diagnostics| spec_error_all(&path_display, diagnostics))?;
 
     // SQL is checked with the real parser on a throwaway connection: nothing
     // executes, so no table needs to exist and no side effect can happen.
@@ -131,7 +130,10 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let mut failures = Vec::new();
     for (index, query) in spec.queries.iter().enumerate() {
         let located = |message: String| {
-            format!("{}:{}: query {:?}: {message}", path_display, query.line, query.name)
+            format!(
+                "{}:{}: query {:?}: {message}",
+                path_display, query.line, query.name
+            )
         };
         // What runs is the query with the sources it names in front of
         // it — the same SQL the dashboard runs, with nothing picked.
@@ -148,7 +150,8 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         match outcome {
             Ok(columns) => query_columns[index] = Some(columns),
             Err(message) if database.is_none() && names_a_missing_table(&message) => {
-                unresolved.push(json!({"query": query.name, "line": query.line, "reason": message}));
+                unresolved
+                    .push(json!({"query": query.name, "line": query.line, "reason": message}));
             }
             Err(message) => failures.push(located(message)),
         }
@@ -290,10 +293,7 @@ fn names_a_missing_table(message: &str) -> bool {
 }
 
 /// The columns a query returns, per DuckDB's own description of it.
-fn describe(
-    connection: &duckdb::Connection,
-    sql: &str,
-) -> Result<Vec<(String, String)>, String> {
+fn describe(connection: &duckdb::Connection, sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut statement = connection
         .prepare(&format!("DESCRIBE {sql}"))
         .map_err(|e| e.to_string())?;

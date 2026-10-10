@@ -112,7 +112,10 @@ fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
         }
         ValueRef::Float(v) => cli_float(v.into()),
         ValueRef::Double(v) => cli_float(v),
-        ValueRef::Decimal(v) => tagged([("encoding", json!("decimal")), ("value", json!(v.to_string()))]),
+        ValueRef::Decimal(v) => tagged([
+            ("encoding", json!("decimal")),
+            ("value", json!(v.to_string())),
+        ]),
         ValueRef::Text(v) => json!(std::str::from_utf8(v)?),
         ValueRef::Enum(..) => json!(value.as_str().map_err(|e| anyhow::anyhow!("{e:?}"))?),
         ValueRef::Blob(v) | ValueRef::Geometry(v) => {
@@ -1274,7 +1277,10 @@ mod tests {
         );
         // The line number must exist in the SQL that was run.
         assert_eq!(
-            error_byte_range("select 1", "Parser Error: ...\n\nLINE 9: select 1\n               ^"),
+            error_byte_range(
+                "select 1",
+                "Parser Error: ...\n\nLINE 9: select 1\n               ^"
+            ),
             None
         );
     }
@@ -1414,7 +1420,8 @@ mod tests {
     #[test]
     fn explain_never_runs_a_statement_before_the_last() {
         let conn = mem();
-        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i").unwrap();
+        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i")
+            .unwrap();
         assert!(explain_of(&conn, "DELETE FROM t; SELECT 1").is_err());
         assert!(explain_of(&conn, "SELECT 1; DELETE FROM t").is_err());
         // Explaining a write plans it without running it.
@@ -1428,7 +1435,8 @@ mod tests {
     #[test]
     fn profile_runs_every_kind_of_query() {
         let conn = mem();
-        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i").unwrap();
+        conn.execute_batch("CREATE TABLE t AS SELECT 1 AS i")
+            .unwrap();
         for sql in [
             "WITH s AS (SELECT 2 AS i) SELECT * FROM s",
             "FROM t -- trailing comment",
