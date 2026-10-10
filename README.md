@@ -19,7 +19,7 @@ ducklocal warehouse.duckdb    # or an existing DuckDB database
 
 CSV, TSV, Parquet, JSON, and Excel files are queryable as soon as the window opens. You can also drag them onto the window or pick them from the file dialog; the workspace is remembered for the next launch.
 
-Your data stays on your machine, and there is no account. The only optional network use is the OpenStreetMap base map for map charts (View → Online base map, off by default), and S3 when you configure it.
+Your data stays on your machine, and there is no account. The only optional network use is the OpenStreetMap base map for map charts (View → Online base map, off by default), the update check (a click on the version in the status bar, or DuckLocal → Check for Updates at Launch, off by default), and S3 when you configure it.
 
 ## Features
 
