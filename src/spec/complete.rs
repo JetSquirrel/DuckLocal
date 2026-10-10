@@ -13,8 +13,8 @@
 use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
-/// them: the common ones first, a map's and a card's own after.
-pub(crate) const PLOT_ATTRS: [&str; 14] = [
+/// them: the common ones first, a map's, a card's and a text panel's own after.
+pub(crate) const PLOT_ATTRS: [&str; 17] = [
     "type",
     "query",
     "x",
@@ -29,6 +29,9 @@ pub(crate) const PLOT_ATTRS: [&str; 14] = [
     "size_scale",
     "tooltip",
     "value",
+    "note",
+    "tone",
+    "text",
 ];
 
 /// The block kinds, in the order completion offers them at the top level.
@@ -110,10 +113,11 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .collect();
     }
 
-    // The two attributes whose value is one of a fixed set of strings.
+    // The attributes whose value is one of a fixed set of strings.
     let choices = [
         ("type", model::PLOT_TYPES, "plot type"),
         ("size_scale", model::SIZE_SCALES, "size scale"),
+        ("tone", model::TONES, "card tone"),
     ];
     if let Some((quoted, values, detail)) = choices
         .iter()

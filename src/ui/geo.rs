@@ -391,20 +391,11 @@ pub(crate) fn guess_coordinate_columns<'a>(
 }
 
 fn category_color(slot: usize, is_other: bool, cx: &App) -> Hsla {
-    let theme = cx.theme();
     if is_other {
-        return theme.muted_foreground;
+        return cx.theme().muted_foreground;
     }
-    [
-        // Distinct hues, not the `chart_*` ramp: those are shades of one
-        // blue, fine for ordered series, indistinguishable as categories on
-        // a map.
-        theme.blue,
-        theme.red,
-        theme.green,
-        theme.magenta,
-        theme.yellow,
-    ][slot % MAX_CATEGORIES]
+    // The series palette's first slots, as every chart colours its series.
+    crate::ui::palette::color(slot % MAX_CATEGORIES, cx)
 }
 
 /// The words of a column name, lowercased: split at anything not a letter or

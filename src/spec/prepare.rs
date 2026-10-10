@@ -11,7 +11,8 @@
 //! its slices must add up to the whole — then folded into its largest
 //! slices. A `map` skips the matrix: it is the results chart's `GeoData`,
 //! over the columns the spec names. A `card` is one cell: its column's value
-//! in the first row, grouped by thousands when it is a plain number.
+//! in the first row, grouped by thousands when it is a plain number, with a
+//! note under it. A `text` panel draws no query: its words are the spec's.
 //!
 //! A `bar` over a DATE column is a time axis, not a list of categories: the
 //! days the query returned nothing for come back as empty bands, so a quiet
@@ -25,7 +26,7 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 
-use super::model::Plot;
+use super::model::{Note, Plot};
 use crate::i18n::trf;
 use crate::query::QueryResult;
 use crate::query::ColumnKind;
@@ -37,7 +38,7 @@ use crate::ui::geo::{is_lat_name, is_lng_name, GeoData, MapStyle, SizeScale};
 const MAX_POINTS: usize = 1_500;
 /// Adjacent bands cannot be meaningfully merged, so surplus bars are dropped.
 const MAX_BARS: usize = 200;
-/// The palette holds five colors; past a dozen series a chart is unreadable.
+/// The palette holds eight colors; past a dozen series a chart is unreadable.
 const MAX_SERIES: usize = 12;
 
 #[derive(Debug)]
@@ -73,6 +74,13 @@ pub struct PreparedPlot {
     pub geo: Option<Arc<GeoData>>,
     /// A `card`'s value, ready to show.
     pub card: Option<SharedString>,
+    /// The line under a `card`'s value: the spec's words, or its column's
+    /// value from the card's row.
+    pub note: Option<SharedString>,
+    /// A `card`'s tone, as the spec names it.
+    pub tone: Option<String>,
+    /// A `text` panel's words under its title.
+    pub text: Option<SharedString>,
     /// Grid columns the plot spans, default applied.
     pub width: u8,
     /// Whether `x` is a date or time column: its bands are points in time,
@@ -104,11 +112,22 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie: Vec::new(),
         geo: None,
         card: None,
+        note: None,
+        tone: plot.tone.clone(),
+        text: None,
         width: plot.width(),
         time_axis: false,
         notice: None,
         failure,
     };
+    if plot.kind == "text" {
+        return PreparedPlot {
+            // A text panel without a title is its words alone, not its name.
+            title: plot.title.clone().unwrap_or_default(),
+            text: plot.text.clone().map(SharedString::from),
+            ..base(None)
+        };
+    }
     let Some(result) = result else {
         return base(Some(trf("dashboard.query_missing", &[&plot.query])));
     };
@@ -136,6 +155,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             }
             None => 0,
         };
+        let note = match &plot.note {
+            Some(Note::Text(words)) => Some(words.clone()),
+            Some(Note::Column(name)) => match column(name) {
+                Some(ix) => result.rows.first().and_then(|row| row.get(ix)).map(|cell| group_thousands(cell)),
+                None => return base(Some(missing_column(name, result))),
+            },
+            None => None,
+        };
         let (value, notice) = match result.rows.first() {
             Some(row) => (
                 group_thousands(row.get(ix).map(String::as_str).unwrap_or("")),
@@ -147,6 +174,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         return PreparedPlot {
             label_name: result.columns[ix].name.clone(),
             card: Some(SharedString::from(value)),
+            note: note.map(SharedString::from),
             notice,
             ..base(None)
         };
@@ -432,6 +460,9 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie,
         geo: None,
         card: None,
+        note: None,
+        tone: plot.tone.clone(),
+        text: None,
         width: plot.width(),
         time_axis,
         notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
@@ -595,6 +626,9 @@ mod tests {
             size_scale: None,
             tooltip: None,
             value: None,
+            note: None,
+            tone: None,
+            text: None,
             width: None,
             line: 1,
             col: 1,
@@ -926,6 +960,45 @@ mod tests {
         let missing = prepare(&card(Some("nope")), Some(&data()));
         assert!(missing.failure.unwrap().contains("nope"));
         assert_eq!(prepare(&plot("line", Some("y"), None), Some(&data())).width, 12);
+    }
+
+    #[test]
+    fn a_card_note_is_words_or_its_rows_cell() {
+        let data = || {
+            Ok(result(
+                vec![
+                    column("n", ColumnKind::Numeric),
+                    column("day", ColumnKind::Text),
+                ],
+                vec![vec!["2999", "Sat, Jul 11"]],
+            ))
+        };
+        let card = |note: Note| Plot {
+            value: Some("n".into()),
+            note: Some(note),
+            tone: Some("accent".into()),
+            ..plot("card", None, None)
+        };
+        let from_column = prepare(&card(Note::Column("day".into())), Some(&data()));
+        assert_eq!(from_column.note.as_deref(), Some("Sat, Jul 11"));
+        assert_eq!(from_column.tone.as_deref(), Some("accent"));
+        let words = prepare(&card(Note::Text("All riders".into())), Some(&data()));
+        assert_eq!(words.note.as_deref(), Some("All riders"));
+        let missing = prepare(&card(Note::Column("nope".into())), Some(&data()));
+        assert!(missing.failure.unwrap().contains("nope"));
+    }
+
+    #[test]
+    fn a_text_panel_needs_no_result() {
+        let text = Plot {
+            query: String::new(),
+            text: Some("24 stations".into()),
+            ..plot("text", None, None)
+        };
+        let shown = prepare::<QueryResult>(&text, None);
+        assert!(shown.failure.is_none(), "{:?}", shown.failure);
+        assert_eq!(shown.title, "", "no title is no heading, not the plot's name");
+        assert_eq!(shown.text.as_deref(), Some("24 stations"));
     }
 
     #[test]

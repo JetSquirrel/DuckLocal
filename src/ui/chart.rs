@@ -75,7 +75,7 @@ impl PieSlice {
 /// per-minute metrics reaches millions of plotted values, which is enough to
 /// wedge the GPU renderer.
 const MAX_POINTS: usize = 1_500;
-/// The palette holds five colors; past a dozen lines a chart is unreadable
+/// The palette holds eight colors; past a dozen lines a chart is unreadable
 /// whatever the cost of drawing it.
 const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
@@ -424,13 +424,7 @@ impl RenderOnce for ChartPanel {
             return render_pie(data, cx);
         }
 
-        let palette = [
-            cx.theme().chart_1,
-            cx.theme().chart_2,
-            cx.theme().chart_3,
-            cx.theme().chart_4,
-            cx.theme().chart_5,
-        ];
+        let palette = crate::ui::palette::series(cx);
         let row_count = data.rows.len();
         // Cloning the `Rc`s hands the chart its own `Vec` without copying any
         // row data.
@@ -626,13 +620,7 @@ pub(crate) fn pie_parts(
     id: impl Into<ElementId>,
     cx: &App,
 ) -> (AnyElement, Vec<(Hsla, SharedString)>, f64) {
-    let palette = [
-        cx.theme().chart_1,
-        cx.theme().chart_2,
-        cx.theme().chart_3,
-        cx.theme().chart_4,
-        cx.theme().chart_5,
-    ];
+    let palette = crate::ui::palette::series(cx);
     let muted = cx.theme().muted_foreground;
     // Past the palette, slices reuse its colors at lower strength so
     // neighbours still differ.

@@ -88,8 +88,13 @@ const PLOT_MIN: f32 = 160.;
 const PLOT_MAX: f32 = 800.;
 /// A row of nothing but cards holds one number each: it starts short.
 const CARD_DEFAULT: f32 = 104.;
+/// A card with a note under its value needs a line more.
+const CARD_NOTED: f32 = 124.;
 const CARD_MIN: f32 = 80.;
 const CARD_MAX: f32 = 400.;
+/// A row of nothing but text panels heads what follows: a title and a line.
+const TEXT_DEFAULT: f32 = 76.;
+const TEXT_MIN: f32 = 40.;
 
 /// What a sortable header's arrow takes beside the column name.
 const SORT_ICON_WIDTH: f32 = 20.;
@@ -794,6 +799,8 @@ impl Dashboard {
                     cx.notify();
                 }
             }));
+        // A text panel runs no query: there is no SQL to show.
+        let has_sql = self.plots[ix].kind != "text";
         let comments = self.render_comment_button(ix, window, cx);
         let open = self.comments.open_on(&name);
         let commenting = self.comment_open.as_deref() == Some(name.as_str());
@@ -816,12 +823,14 @@ impl Dashboard {
                     .right_2()
                     .gap_0p5()
                     .child(hover_only(div(), open > 0 || commenting).child(comments))
-                    .child(
-                        hover_only(div(), shown)
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().background)
-                            .child(toggle),
-                    ),
+                    .when(has_sql, |this| {
+                        this.child(
+                            hover_only(div(), shown)
+                                .rounded(cx.theme().radius)
+                                .bg(cx.theme().background)
+                                .child(toggle),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -994,6 +1003,9 @@ impl Dashboard {
                 .unwrap_or_else(|| self.card_value_size(ix));
             return render_card(&self.plots[ix], size, cx);
         }
+        if self.plots[ix].kind == "text" {
+            return render_text(&self.plots[ix], cx);
+        }
         let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
             let is_empty = match plot.kind.as_str() {
@@ -1040,7 +1052,20 @@ impl Dashboard {
                     legend = pie_parts(&plot.pie, series.clone().into(), "dashboard-pie-key", cx).1;
                     trf("chart.pie.title", &[&series, &plot.label_name])
                 }
-                _ => trf("chart.title.by", &[&series, &plot.label_name]),
+                _ => {
+                    // Several series need a key; one is named in the title.
+                    if plot.series_names.len() > 1 {
+                        legend = plot
+                            .series_names
+                            .iter()
+                            .enumerate()
+                            .map(|(s, name)| {
+                                (crate::ui::palette::color(s, cx), SharedString::from(name.clone()))
+                            })
+                            .collect();
+                    }
+                    trf("chart.title.by", &[&series, &plot.label_name])
+                }
             }
         });
 
@@ -1466,9 +1491,17 @@ impl Render for Dashboard {
             let panels = rows
                 .iter()
                 .map(|row| {
-                    let cards = row.iter().all(|&ix| self.plots[ix].kind == "card");
-                    let (default, min, max) = if cards {
-                        (CARD_DEFAULT, CARD_MIN, CARD_MAX)
+                    let all = |kind: &str| row.iter().all(|&ix| self.plots[ix].kind == kind);
+                    // A heading row with a card beside it is a row of cards.
+                    let cards = row
+                        .iter()
+                        .all(|&ix| matches!(self.plots[ix].kind.as_str(), "card" | "text"));
+                    let (default, min, max) = if all("text") {
+                        (TEXT_DEFAULT, TEXT_MIN, CARD_MAX)
+                    } else if cards {
+                        let noted = row.iter().any(|&ix| self.plots[ix].note.is_some());
+                        let default = if noted { CARD_NOTED } else { CARD_DEFAULT };
+                        (default, CARD_MIN, CARD_MAX)
                     } else if let Some(height) = self.table_row_height(row) {
                         // A row of short tables is as tall as its rows, not
                         // a chart's height of empty space under them.
@@ -1672,13 +1705,7 @@ fn picks_for(
 /// One plot's chart element, built from the prepared data on each frame;
 /// cloning the `Arc`s is a refcount bump, not a copy of the row set.
 fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
-    let palette = [
-        cx.theme().chart_1,
-        cx.theme().chart_2,
-        cx.theme().chart_3,
-        cx.theme().chart_4,
-        cx.theme().chart_5,
-    ];
+    let palette = crate::ui::palette::series(cx);
     let id = ("dashboard-chart", plot_ix);
     // The hand-built plots key their hover state and path caches on the
     // plot's name — unique after validation — which survives reordering the
@@ -1801,6 +1828,10 @@ fn card_value_size(value: &str, room: Option<f32>) -> f32 {
 
 fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
     let value = plot.card.clone().unwrap_or_default();
+    let tone = plot
+        .tone
+        .as_deref()
+        .and_then(|name| crate::ui::palette::tone(name, cx));
     v_flex()
         .size_full()
         .px_4()
@@ -1808,6 +1839,9 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
         .gap_1()
         .justify_center()
         .overflow_hidden()
+        // A toned card says so across its top, the way a status strip does;
+        // the label underneath says what the colour means.
+        .when_some(tone, |this, (rule, _)| this.border_t_3().border_color(rule))
         .child(
             div()
                 .text_sm()
@@ -1824,8 +1858,18 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .whitespace_nowrap()
                 .text_ellipsis()
+                .when_some(tone, |this, (_, ink)| this.text_color(ink))
                 .child(value),
         )
+        .when_some(plot.note.clone(), |this, note| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_ellipsis()
+                    .child(note),
+            )
+        })
         .when_some(plot.notice.clone(), |this, notice| {
             this.child(
                 div()
@@ -1833,6 +1877,36 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                     .text_color(cx.theme().muted_foreground)
                     .text_ellipsis()
                     .child(notice),
+            )
+        })
+        .into_any_element()
+}
+
+/// A `text` panel: a heading and the words under it, left-aligned like the
+/// cards' labels so a dashboard's sections read down one edge.
+fn render_text(plot: &PreparedPlot, cx: &App) -> AnyElement {
+    v_flex()
+        .size_full()
+        .px_4()
+        .py_3()
+        .gap_1()
+        .justify_center()
+        .overflow_hidden()
+        .when(!plot.title.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_ellipsis()
+                    .child(plot.title.clone()),
+            )
+        })
+        .when_some(plot.text.clone(), |this, text| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text),
             )
         })
         .into_any_element()

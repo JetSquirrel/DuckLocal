@@ -36,15 +36,18 @@ use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
 /// x/y for the continuous ones and `pie`, anything tabular for `table`,
-/// coordinates for `map`.
+/// coordinates for `map`, words and no query at all for `text`.
 pub(crate) const PLOT_TYPES: &[&str] =
-    &["line", "bar", "area", "scatter", "pie", "map", "table", "card"];
+    &["line", "bar", "area", "scatter", "pie", "map", "table", "card", "text"];
 
 /// The attributes only a `map` takes.
 const MAP_ATTRS: &[&str] = &["lat", "lng", "color", "size", "size_scale", "tooltip"];
 
 /// The attributes only a `card` takes.
-const CARD_ATTRS: &[&str] = &["value"];
+const CARD_ATTRS: &[&str] = &["value", "note", "tone"];
+
+/// What a `card`'s `tone` may say: the series accent, or a status.
+pub(crate) const TONES: &[&str] = &["accent", "good", "warning", "critical"];
 
 /// The dashboard's grid: a row is this many columns wide.
 pub(crate) const GRID_COLUMNS: u8 = 12;
@@ -116,6 +119,12 @@ pub(crate) struct Plot {
     pub tooltip: Option<Vec<String>>,
     /// The column a `card` shows; `None` shows the first.
     pub value: Option<String>,
+    /// The line under a `card`'s value.
+    pub note: Option<Note>,
+    /// A `card`'s colour, one of [`TONES`]; `None` is plain ink.
+    pub tone: Option<String>,
+    /// A `text` panel's words under its title.
+    pub text: Option<String>,
     /// Grid columns spanned as written; `Plot::width` applies the default.
     pub width: Option<u8>,
     /// Line and column of the block's kind keyword.
@@ -125,6 +134,14 @@ pub(crate) struct Plot {
     pub span: (usize, usize),
     /// The quoted name's span, quotes included: the definition target.
     pub name_span: (usize, usize),
+}
+
+/// A `card`'s note: words as written, or a column's value from the row the
+/// card shows — so "Sat, Jul 11" can come from the same query as its number.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Note {
+    Text(String),
+    Column(String),
 }
 
 /// A value a click on one plot picks, for the queries that read `$name`.
@@ -691,6 +708,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut size_scale = None;
     let mut tooltip = None;
     let mut value = None;
+    let mut note = None;
+    let mut tone = None;
+    let mut text = None;
     let mut width = None;
     let mut seen: HashSet<&str> = HashSet::new();
     for attr in &block.attrs {
@@ -745,11 +765,29 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             },
             "tooltip" => tooltip = columns(attr, diagnostics),
             "value" => value = column(attr, diagnostics),
+            // A string is the note itself; a bare identifier names a column.
+            "note" => match &attr.value {
+                Value::Str(words) => note = Some(Note::Text(words.clone())),
+                _ => note = column(attr, diagnostics).map(Note::Column),
+            },
+            "tone" => match string(attr, diagnostics) {
+                Some(word) if TONES.contains(&word.as_str()) => tone = Some(word),
+                Some(word) => diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    format!("Unknown tone: {word:?}; one of {}", TONES.join(", ")),
+                )),
+                None => {}
+            },
+            // A paragraph reads better as a heredoc; its lines are kept.
+            "text" => match &attr.value {
+                Value::Heredoc(words) => text = Some(words.trim().to_string()),
+                _ => text = string(attr, diagnostics),
+            },
             "width" => width = grid_width(attr, diagnostics),
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, width, for a map lat, lng, color, size, size_scale, tooltip, and for a card value; unknown attribute: {other}"
+                    "A plot block holds type, query, x, y, series, title, width, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, and for a text panel text; unknown attribute: {other}"
                 ),
             )),
         }
@@ -757,12 +795,19 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let kind_name = kind.clone().unwrap_or_default();
     let is_map = kind_name == "map";
     let is_card = kind_name == "card";
+    let is_text = kind_name == "text";
     // Attributes the type has no use for are mistakes, not no-ops: a map's
     // `x` or a line's `lat` says the author expects something that will not
     // happen.
     for attr in &block.attrs {
         let name = attr.name.as_str();
-        let misplaced = if is_map {
+        let misplaced = if is_text {
+            (!matches!(name, "type" | "title" | "text" | "width")).then(|| {
+                format!("A text panel holds a title and text, and draws no query; it takes no {name}")
+            })
+        } else if name == "text" && !kind_name.is_empty() {
+            Some(format!("text is for text panels; this plot is a {kind_name} (its label is title)"))
+        } else if is_map {
             matches!(name, "x" | "y" | "series")
                 .then(|| format!("A map plot places points by lat and lng; it takes no {name}"))
         } else if is_card && (matches!(name, "x" | "y" | "series") || MAP_ATTRS.contains(&name)) {
@@ -787,7 +832,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         }
     }
     // A table shows every column its query returns: it has no axis to name.
-    let required: &[&str] = if is_map || is_card || kind_name == "table" {
+    let required: &[&str] = if is_text {
+        &["type"]
+    } else if is_map || is_card || kind_name == "table" {
         &["type", "query"]
     } else {
         &["type", "query", "x"]
@@ -800,11 +847,17 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             ));
         }
     }
+    if is_text && !seen.contains("title") && !seen.contains("text") {
+        diagnostics.push(Diagnostic::at_block(
+            block,
+            format!("text panel {:?} shows nothing: give it a title, text, or both", block.name),
+        ));
+    }
     // A present-but-invalid type already earned its own diagnostic; "requires"
     // is only for attributes never written. y is required once the type is
     // known to need one.
     let kind = kind.unwrap_or_default();
-    if !kind.is_empty() && !matches!(kind.as_str(), "table" | "map" | "card") && y.is_none() {
+    if !kind.is_empty() && !matches!(kind.as_str(), "table" | "map" | "card" | "text") && y.is_none() {
         diagnostics.push(Diagnostic::at_block(
             block,
             format!("plot block {:?} requires y", block.name),
@@ -825,6 +878,9 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         size_scale,
         tooltip,
         value,
+        note,
+        tone,
+        text,
         width,
         line: block.line,
         col: block.col,
@@ -1027,6 +1083,13 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
             ("color", plot.color.as_deref()),
             ("size", plot.size.as_deref()),
             ("value", plot.value.as_deref()),
+            (
+                "note",
+                match &plot.note {
+                    Some(Note::Column(column)) => Some(column.as_str()),
+                    _ => None,
+                },
+            ),
         ]
         .into_iter()
         .chain(
@@ -1651,6 +1714,55 @@ plot "half" { type = "bar" query = query.q x = n y = n width = 6 }
         assert_eq!(spec.plots[1].value, None, "a card may leave its column out");
         let widths: Vec<u8> = spec.plots.iter().map(Plot::width).collect();
         assert_eq!(widths, [3, 3, 6]);
+    }
+
+    #[test]
+    fn cards_take_a_note_and_a_tone_and_text_panels_take_no_query() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 2999 AS n, 'Sat, Jul 11' AS day" }
+plot "head" {
+  type  = "text"
+  title = "System overview"
+  text  = "24 stations, Oct 2025 to Sep 2026"
+}
+plot "busiest" { type = "card" query = query.q value = n note = day }
+plot "trips" { type = "card" query = query.q note = "All riders" tone = "warning" }
+plot "line" { type = "text" text = <<T
+  A heading needs no title.
+T
+}
+"#,
+        );
+        assert_eq!(spec.plots[0].kind, "text");
+        assert_eq!(spec.plots[0].query, "", "a text panel draws no query");
+        assert_eq!(spec.plots[0].width(), 12);
+        assert_eq!(spec.plots[1].note, Some(Note::Column("day".into())));
+        assert_eq!(spec.plots[2].note, Some(Note::Text("All riders".into())));
+        assert_eq!(spec.plots[2].tone.as_deref(), Some("warning"));
+        assert!(spec.plots[3].title.is_none());
+    }
+
+    #[test]
+    fn note_tone_and_text_mistakes_are_said() {
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1 AS n" }
+plot "a" { type = "card" query = query.q tone = "red" }
+plot "b" { type = "line" query = query.q x = n y = n note = "x" tone = "good" }
+plot "c" { type = "text" query = query.q title = "T" }
+plot "d" { type = "text" }
+plot "e" { type = "bar" query = query.q x = n y = n text = "words" }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
+        assert!(has("Unknown tone: \"red\""), "{messages:?}");
+        assert!(has("note is for card plots"), "{messages:?}");
+        assert!(has("tone is for card plots"), "{messages:?}");
+        assert!(has("A text panel holds a title and text, and draws no query; it takes no query"), "{messages:?}");
+        assert!(has("text panel \"d\" shows nothing"), "{messages:?}");
+        assert!(has("text is for text panels"), "{messages:?}");
     }
 
     #[test]

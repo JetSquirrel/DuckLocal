@@ -27,7 +27,7 @@ Your data stays on your machine, and there is no account. The only optional netw
 - Schema sidebar: browse tables and columns, generate SELECTs, change a column's type; attach more DuckDB or SQLite databases beside the open one, kept across launches
 - Extensions tab: list, install, load and update DuckDB extensions
 - Results grid with filtering, copy, CSV/Parquet export, built-in charts, and an Overview tab that summarizes every column (nulls, distinct values, range, distribution)
-- Dashboards as `.dash` files: line, bar, area, scatter, pie and map plots, tables and cards, with cross-filtering
+- Dashboards as `.dash` files: line, bar, area, scatter, pie and map plots, tables, cards with notes and tones, and text panels, with cross-filtering
 - On macOS, Parquet and DuckDB files open from Finder with a double-click, and Quick Look previews Parquet, DuckDB, CSV, TSV and JSON Lines files with the Space bar
 - A database file that will not open says why (a newer DuckDB, an old storage format, SQLite) and what to run instead; the status bar shows the oldest DuckDB that reads the open file and the release that wrote it
 - Query history, S3 via httpfs (session-only credentials)

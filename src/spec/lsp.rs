@@ -478,7 +478,7 @@ fn validate(source: &str) -> Option<Spec> {
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {
         "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
-        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`.",
+        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`, `text`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
         "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map` or a `card`, and optional for a `table`.",
         "y" => "**y**\n\nThe numeric column the plot draws; a `pie`'s slice sizes. Optional for `table`, not for a `map`.",
@@ -489,9 +489,12 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "size" => "**size**\n\nOptional, for a `map`: a numeric column its points are sized by — the area follows the value, so twice the value is twice the ink. A key in the corner reads sizes back.",
         "size_scale" => "**size_scale**\n\nOptional, with `size`: `\"sqrt\"` (the default, area follows value) or `\"log\"`, for values spanning orders of magnitude.",
         "tooltip" => "**tooltip**\n\nOptional, for a `map`: the columns its tooltip lists, in order — `tooltip = [place, requests, ips]`. Left out, it lists the size column and the other numbers, then the coordinates.",
-        "title" => "**title**\n\nOptional: the plot's title; a `card`'s label.",
+        "title" => "**title**\n\nOptional: the plot's title; a `card`'s label; a `text` panel's heading.",
         "width" => "**width**\n\nOptional: how many of the dashboard's 12 columns the plot spans, 1 to 12. Plots fill a row left to right and wrap. Default 12, or 3 for a `card`.",
         "value" => "**value**\n\nOptional, for a `card`: the column it shows, from the query's first row. Left out, the first column.",
+        "note" => "**note**\n\nOptional, for a `card`: the line under its value. A string is shown as written (`note = \"All riders\"`); a bare identifier names a column, whose value in the card's row is shown (`note = busiest_day`).",
+        "tone" => "**tone**\n\nOptional, for a `card`: `\"accent\"`, `\"good\"`, `\"warning\"` or `\"critical\"` — a coloured rule across the card's top and its value in that hue. Let the card's title say what the colour means.",
+        "text" => "**text**\n\nFor a `text` panel: the words under its `title`, as a string or heredoc. A text panel takes no query.",
         "plot" => "**plot**\n\nThe plot a click picks a value on: `plot = plot.some_name`, a `bar` or a `table`.",
         "column" => "**column**\n\nOptional for a bar, required for a table: the column whose value the click picks, and that `$name` compares. Default: the bar's `x`.",
         "path" => "**path**\n\nThe source's data: a `.csv`, `.tsv`, `.parquet` or `.json` file, or a glob of them read as one relation. Relative to this `.dash` file.",

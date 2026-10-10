@@ -223,6 +223,12 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "size_scale": p.size_scale,
             "tooltip": p.tooltip,
             "value": p.value,
+            "note": p.note.as_ref().map(|note| match note {
+                model::Note::Text(words) => json!({"text": words}),
+                model::Note::Column(column) => json!({"column": column}),
+            }),
+            "tone": p.tone,
+            "text": p.text,
             "title": p.title,
             "width": p.width(),
             "line": p.line,

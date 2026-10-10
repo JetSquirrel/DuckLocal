@@ -27,7 +27,7 @@ CSV / TSV / Parquet / JSON / Excel 文件在窗口打开时即可查询。也可
 - Schema 侧栏：浏览表和列、一键生成 SELECT、修改列类型；在已打开的数据库旁附加更多 DuckDB 或 SQLite 数据库，下次启动仍保留
 - 扩展标签页：列出、安装、加载和更新 DuckDB 扩展
 - 结果表格：筛选、复制、CSV/Parquet 导出、内置图表，以及汇总每一列（空值、不同值、范围、分布）的“概览”标签页
-- `.dash` 文件定义的 Dashboard：折线、柱状、面积、散点、饼图、地图、表格和指标卡，支持交叉筛选
+- `.dash` 文件定义的 Dashboard：折线、柱状、面积、散点、饼图、地图、表格、带注释与色调的指标卡和文字面板，支持交叉筛选
 - macOS 上可在访达里双击打开 Parquet 和 DuckDB 文件，按空格用快速查看（Quick Look）预览 Parquet、DuckDB、CSV、TSV 和 JSON Lines 文件
 - 数据库文件打不开时会说明原因（更新版本的 DuckDB、旧的存储格式、SQLite）和该怎么做；状态栏显示能读当前文件的最低 DuckDB 版本和写入它的版本
 - 查询历史；通过 httpfs 支持 S3（凭据仅当前会话有效）

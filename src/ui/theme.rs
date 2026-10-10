@@ -8,7 +8,8 @@
 //!
 //! - syntax colours after One Light / One Dark, softer than the stock ones;
 //! - DuckDB's yellow, used sparingly, for selections and the selected row;
-//! - a lighter current-line band in the editor.
+//! - a lighter current-line band in the editor;
+//! - distinct chart hues ([`crate::ui::palette`]) for the stock blue ramp.
 //!
 //! `Theme::change` reapplies whichever of the two configs is current, so
 //! installing them once makes every later light/dark switch use them.
@@ -68,8 +69,14 @@ fn merge(target: &mut Value, patch: Value) {
 }
 
 fn light_overrides() -> Value {
+    let [c1, c2, c3, c4, c5] = crate::ui::palette::theme_hexes(false);
     json!({
         "colors": {
+            "chart.1": c1,
+            "chart.2": c2,
+            "chart.3": c3,
+            "chart.4": c4,
+            "chart.5": c5,
             "selection.background": "#fde68a",
             "list.active.background": "#fef3c7",
             "list.active.border": "#f59e0b",
@@ -96,8 +103,14 @@ fn light_overrides() -> Value {
 }
 
 fn dark_overrides() -> Value {
+    let [c1, c2, c3, c4, c5] = crate::ui::palette::theme_hexes(true);
     json!({
         "colors": {
+            "chart.1": c1,
+            "chart.2": c2,
+            "chart.3": c3,
+            "chart.4": c4,
+            "chart.5": c5,
             "selection.background": "#a16207",
             "list.active.background": "#78350f66",
             "list.active.border": "#d97706",

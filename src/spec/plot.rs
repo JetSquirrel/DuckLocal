@@ -67,17 +67,9 @@ fn axis_gap() -> f32 {
     axis_gutter(px(LABEL_SIZE))
 }
 
-/// The dashboard's chart palette: series cycle `chart_1..chart_5`, as at the
-/// catalog call sites.
-fn palette(cx: &App) -> [Hsla; 5] {
-    let theme = cx.theme();
-    [
-        theme.chart_1,
-        theme.chart_2,
-        theme.chart_3,
-        theme.chart_4,
-        theme.chart_5,
-    ]
+/// The dashboard's chart palette, shared with the results panel's charts.
+fn palette(cx: &App) -> [Hsla; crate::ui::palette::SLOTS] {
+    crate::ui::palette::series(cx)
 }
 
 /// Within a band of `band_width`, the width of one of `series` side-by-side
