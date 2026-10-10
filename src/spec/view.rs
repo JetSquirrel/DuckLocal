@@ -34,7 +34,7 @@
 //! rather than a silent overwrite; with a clean buffer it just reloads.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -148,7 +148,17 @@ pub struct Dashboard {
     /// Row-selection subscriptions of the pickable tables, by table entity;
     /// dropped with them.
     table_subscriptions: Vec<(EntityId, Subscription)>,
+    /// The plots turned over to show their SQL, by plot name.
+    sql_shown: HashSet<String>,
 }
+
+/// What a dashboard asks of the workspace around it.
+pub enum DashboardEvent {
+    /// Open this SQL in a new query tab, under this title.
+    OpenSql { sql: String, title: String },
+}
+
+impl EventEmitter<DashboardEvent> for Dashboard {}
 
 /// Each query's outcome by name, with the SQL that ran.
 type Outcomes = HashMap<String, (String, Result<Arc<QueryResult>, String>)>;
@@ -180,6 +190,7 @@ impl Dashboard {
             refilter_pending: false,
             plot_bounds: HashMap::new(),
             table_subscriptions: Vec::new(),
+            sql_shown: HashSet::new(),
         };
         this.watch(cx);
         this.reload(cx);
@@ -616,7 +627,140 @@ impl Dashboard {
         )
     }
 
+    /// One panel of the grid: the plot, or — turned over by the SQL button
+    /// that shows in its top-right corner on hover — the SQL behind it.
     fn render_plot(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let group = SharedString::from(format!("dashboard-plot-{ix}"));
+        let shown = self.sql_shown.contains(&self.plots[ix].name);
+        let face = if shown {
+            self.render_sql(ix, cx)
+        } else {
+            self.render_plot_face(ix, window, cx)
+        };
+        let name = self.plots[ix].name.clone();
+        let toggle = Button::new(("dashboard-sql", ix))
+            .xsmall()
+            .outline()
+            .label(if shown { tr("dashboard.sql.hide") } else { "SQL" })
+            .tooltip(if shown {
+                tr("dashboard.sql.hide_tooltip")
+            } else {
+                tr("dashboard.sql.show_tooltip")
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.sql_shown.remove(&name) {
+                    this.sql_shown.insert(name.clone());
+                }
+                cx.notify();
+            }));
+        div()
+            .size_full()
+            .relative()
+            .group(group.clone())
+            .child(face)
+            .child(
+                div()
+                    .absolute()
+                    .top_1p5()
+                    .right_2()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    // Out of the way until the pointer is over the plot; a
+                    // plot showing its SQL keeps the way back in sight.
+                    .when(!shown, |this| {
+                        this.opacity(0.).group_hover(group, |style| style.opacity(1.))
+                    })
+                    .child(toggle),
+            )
+            .into_any_element()
+    }
+
+    /// The SQL a plot's query last ran — sources and the current picks
+    /// included, so it runs as it stands in a query tab — or, before it has
+    /// run, the query as written.
+    fn render_sql(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let plot = &self.plots[ix];
+        let title = plot.title.clone();
+        let sql = self
+            .outcomes
+            .get(&plot.query)
+            .map(|(sql, _)| sql.clone())
+            .or_else(|| {
+                self.spec.as_ref().and_then(|spec| {
+                    spec.queries
+                        .iter()
+                        .find(|q| q.name == plot.query)
+                        .map(|q| q.sql.clone())
+                })
+            })
+            .unwrap_or_default();
+        let sql = sql.trim().to_string();
+        let copied = sql.clone();
+        let opened = sql.clone();
+        let tab_title = title.clone();
+        v_flex()
+            .size_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_ellipsis()
+                    .pr_16()
+                    .child(title),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new(("dashboard-sql-copy", ix))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Copy)
+                            .label(tr("dashboard.sql.copy"))
+                            .on_click(move |_, _, cx: &mut App| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
+                            }),
+                    )
+                    .child(
+                        Button::new(("dashboard-sql-open", ix))
+                            .xsmall()
+                            .ghost()
+                            .label(tr("dashboard.sql.open"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(DashboardEvent::OpenSql {
+                                    sql: opened.clone(),
+                                    title: tab_title.clone(),
+                                })
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("dashboard-sql-text", ix))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .child(sql),
+            )
+            .into_any_element()
+    }
+
+    fn render_plot_face(
         &mut self,
         ix: usize,
         window: &mut Window,

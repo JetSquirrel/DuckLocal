@@ -30,7 +30,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use crate::i18n::{tr, trf};
 use crate::query::QueryOutcome;
 use crate::spec::tabs::OpenDocument;
-use crate::spec::view::Dashboard;
+use crate::spec::view::{Dashboard, DashboardEvent};
 use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
@@ -74,6 +74,8 @@ pub struct DashboardTab {
     /// when it is next shown rather than competing with the query that
     /// changed it.
     pub stale: bool,
+    /// What the dashboard asks of the workspace; dropped with the tab.
+    _events: Subscription,
 }
 
 pub enum WorkspaceTab {
@@ -372,12 +374,18 @@ impl Workspace {
         self.next_tab_id += 1;
         let title = crate::spec::tabs::title_for(&path);
         let host = cx.new(|cx| Dashboard::new(id, path.clone(), cx));
+        let events = cx.subscribe_in(&host, window, |this, _, event, window, cx| match event {
+            DashboardEvent::OpenSql { sql, title } => {
+                this.open_query_tab(sql.clone(), Some(title.clone()), window, cx)
+            }
+        });
         self.tabs.push(WorkspaceTab::Dashboard(DashboardTab {
             id,
             title: title.clone().into(),
             path: path.clone(),
             host,
             stale: false,
+            _events: events,
         }));
         self.active = self.tabs.len() - 1;
         self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
