@@ -9,6 +9,10 @@
 //! every series onto shared point and value scales, connecting a series'
 //! points (a `line`) or not (a `scatter`).
 //!
+//! Every `bar` draws here, one series or several: the catalog's bar chart
+//! colours bar by bar and thins a category axis's labels, and a bar's colour
+//! should name its series, its label its category.
+//!
 //! Composition follows the catalog charts — same axis gutter, grid, label
 //! stride, palette, crosshair and tooltip — so a dashboard reads as one family
 //! whichever kind a plot is. Like them, a plot here is a value rebuilt on
@@ -20,9 +24,11 @@
 use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::plot::label::{Text, TEXT_GAP, TEXT_SIZE};
+use gpui_kit::component::plot::label::{
+    Text, TEXT_GAP, TEXT_HEIGHT, TEXT_SIZE, truncate_text_to_width,
+};
 use gpui_kit::component::plot::scale::{Scale, ScaleBand, ScaleLinear, ScalePoint};
-use gpui_kit::component::plot::shape::{Bar, Line};
+use gpui_kit::component::plot::shape::{Bar, BarAlignment, Line};
 use gpui_kit::component::plot::tooltip::{CrossLine, Dot, Tooltip, TooltipState};
 use gpui_kit::component::plot::{
     AxisText, Grid, PathCaches, Plot, PlotAxis, PlotElement, PlotLabel, axis_gutter,
@@ -133,15 +139,23 @@ fn point_label_align(i: usize, len: usize) -> TextAlign {
     }
 }
 
-/// A multi-series `bar`: one chart, one band per x value, the series side by
-/// side within the band — the layout the catalog's single-series `BarChart`
-/// cannot express. Bars are plain quads, cheap enough to paint uncached; the
-/// hover band and the tooltip come from the plot's id.
+/// A `bar` plot, one series or several: one band per x value, a group's
+/// series side by side within it. Every bar plot draws here — one series is
+/// one colour, as one series of a line is one stroke — so a colour only ever
+/// says which series a bar is. Bars are plain quads, cheap enough to paint
+/// uncached; the hover band and the tooltip come from the plot's id.
+///
+/// A category's label is never dropped: when the labels do not fit under
+/// their bars the plot lies on its side ([`Layout::Rows`]), each label left of
+/// its bar. Only a time axis thins its labels, because a skipped date can be
+/// read off its neighbours and a skipped category cannot.
 pub(crate) struct GroupedBars {
     id: ElementId,
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
     label_count: usize,
+    /// Whether the bands are points in time: always upright, labels thinned.
+    time_axis: bool,
     /// The band a filter has picked: it keeps its colour and the rest fade,
     /// so the plot says what the dashboard is narrowed to.
     selected: Option<SharedString>,
@@ -149,10 +163,35 @@ pub(crate) struct GroupedBars {
 
 /// How much of its opacity a bar outside the picked band keeps.
 const UNPICKED_OPACITY: f32 = 0.3;
+/// The space kept between a label and its neighbour, or its bar.
+const LABEL_PAD: f32 = 8.;
+/// A lying plot's label column: at least this wide, at most this share of the
+/// plot, so a long path cannot squeeze its bars to nothing.
+const MIN_GUTTER: f32 = 40.;
+const MAX_GUTTER_SHARE: f32 = 0.4;
+
+/// How a bar plot lies in a given box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Layout {
+    /// Bands across, bars up from the baseline, labels underneath.
+    Columns,
+    /// Bands down, bars rightwards: the labels in a `gutter` on the left,
+    /// `room` kept right of the longest bar for its value.
+    Rows { gutter: f32, room: f32 },
+}
+
+/// Roughly how wide `text` draws at the axis font, a wide (CJK) character
+/// counting twice. An estimate rather than a measurement, so the layout can be
+/// decided where no window is at hand — a click, a hover — and agree there
+/// with what was painted.
+fn label_width(text: &str) -> f32 {
+    use unicode_width::UnicodeWidthStr;
+    text.width() as f32 * TEXT_SIZE * 0.62
+}
 
 impl GroupedBars {
     pub(crate) fn new(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::of(id, plot.points.clone(), &plot.series_names)
+        Self::of(id, plot.points.clone(), &plot.series_names).time_axis(plot.time_axis)
     }
 
     /// Bars over `points` directly, for a caller that holds no `PreparedPlot`
@@ -167,8 +206,14 @@ impl GroupedBars {
             label_count: x_label_count(&points),
             points,
             series: series_names.iter().map(SharedString::from).collect(),
+            time_axis: false,
             selected: None,
         }
+    }
+
+    pub(crate) fn time_axis(mut self, time_axis: bool) -> Self {
+        self.time_axis = time_axis;
+        self
     }
 
     pub(crate) fn selected(mut self, band: Option<SharedString>) -> Self {
@@ -176,20 +221,62 @@ impl GroupedBars {
         self
     }
 
+    /// One series labels each bar with its value; several would crowd the
+    /// band, and the tooltip lists them.
+    fn values_shown(&self) -> bool {
+        self.series.len() == 1
+    }
+
+    /// Upright when every band's label — and its value, when shown — fits
+    /// across its band; on its side otherwise. A time axis stays upright.
+    fn layout(&self, bounds: Bounds<Pixels>) -> Layout {
+        if self.time_axis || self.points.is_empty() {
+            return Layout::Columns;
+        }
+        let width = bounds.size.width.as_f32();
+        let widest = |text: fn(&PlotPoint) -> &str| {
+            self.points
+                .iter()
+                .map(|d| label_width(text(d)))
+                .fold(0., f32::max)
+        };
+        let band = widest(|d| &d.band);
+        let value = if self.values_shown() { widest(|d| &d.label) } else { 0. };
+        let step = width / self.points.len() as f32;
+        if band.max(value) + LABEL_PAD <= step {
+            return Layout::Columns;
+        }
+        Layout::Rows {
+            gutter: (band + LABEL_PAD).clamp(MIN_GUTTER, width * MAX_GUTTER_SHARE),
+            room: value + LABEL_PAD,
+        }
+    }
+
     /// The band under `position` — relative to the plot's origin, as the
-    /// tooltip's is — for a click to pick. The axis labels below the baseline
-    /// are not a band.
+    /// tooltip's is — for a click to pick. An upright plot's axis labels
+    /// below the baseline are not a band; a lying plot's labels are their row.
     pub(crate) fn band_at(
         &self,
         position: Point<Pixels>,
         bounds: Bounds<Pixels>,
     ) -> Option<SharedString> {
-        let baseline = bounds.size.height.as_f32() - axis_gap();
-        if position.y.as_f32() > baseline || position.y.as_f32() < 0. {
-            return None;
-        }
+        let (x, y) = (position.x.as_f32(), position.y.as_f32());
         let (band_scale, _) = self.scales(bounds);
-        let index = band_scale.nearest_index(position.x.as_f32());
+        let index = match self.layout(bounds) {
+            Layout::Columns => {
+                let baseline = bounds.size.height.as_f32() - axis_gap();
+                if y > baseline || y < 0. {
+                    return None;
+                }
+                band_scale.nearest_index(x)
+            }
+            Layout::Rows { .. } => {
+                if y < 0. || y > bounds.size.height.as_f32() {
+                    return None;
+                }
+                band_scale.nearest_index(y)
+            }
+        };
         self.points.get(index).map(|d| d.band.clone())
     }
 
@@ -197,25 +284,44 @@ impl GroupedBars {
     /// tooltip so the bars and the hover band stay aligned. The value scale
     /// spans the data and zero, so a bar always grows from the zero line.
     fn scales(&self, bounds: Bounds<Pixels>) -> (ScaleBand<SharedString>, ScaleLinear<f64>) {
-        let baseline = bounds.size.height.as_f32() - axis_gap();
+        let width = bounds.size.width.as_f32();
+        let height = bounds.size.height.as_f32();
+        let (band_range, value_range) = match self.layout(bounds) {
+            Layout::Columns => {
+                let top = TOP_GAP + if self.values_shown() { TEXT_HEIGHT } else { 0. };
+                ([0., width], [height - axis_gap(), top])
+            }
+            Layout::Rows { gutter, room } => ([0., height], [gutter, (width - room).max(gutter)]),
+        };
         // The paddings are the catalog `BarChart`'s, so a band sits where a
         // single-series chart would put it; the cap keeps each bar of the
         // group at most MAX_BAR_WIDTH, however wide the plot.
-        let band = ScaleBand::new(
-            self.points.iter().map(|d| d.band.clone()),
-            [0., bounds.size.width.as_f32()],
-        )
-        .padding_inner(0.4)
-        .padding_outer(0.2)
-        .max_band_width(MAX_BAR_WIDTH * self.series.len().max(1) as f32);
+        let band = ScaleBand::new(self.points.iter().map(|d| d.band.clone()), band_range)
+            .padding_inner(0.4)
+            .padding_outer(0.2)
+            .max_band_width(MAX_BAR_WIDTH * self.series.len().max(1) as f32);
         let value = ScaleLinear::new(
             self.points
                 .iter()
                 .flat_map(|d| d.values.iter().copied())
                 .chain(Some(0.)),
-            [baseline, TOP_GAP],
+            value_range,
         );
         (band, value)
+    }
+
+    /// Only the cells the query returned: a series a band lacks draws no bar
+    /// there, rather than a zero the data never stated.
+    fn bars(&self) -> Vec<(Arc<PlotPoint>, usize)> {
+        let mut bars = Vec::new();
+        for d in &self.points {
+            for s in 0..self.series.len() {
+                if d.present.get(s).copied().unwrap_or(false) {
+                    bars.push((d.clone(), s));
+                }
+            }
+        }
+        bars
     }
 }
 
@@ -229,78 +335,159 @@ impl IntoElement for GroupedBars {
 
 impl Plot for GroupedBars {
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let layout = self.layout(bounds);
         let (band_scale, value_scale) = self.scales(bounds);
         let band_width = band_scale.band_width();
+        let width = bounds.size.width.as_f32();
         let height = bounds.size.height.as_f32();
-        let baseline = height - axis_gap();
-        let zero = value_scale.tick(&0.).unwrap_or(baseline);
+        let zero_default = match layout {
+            Layout::Columns => height - axis_gap(),
+            Layout::Rows { gutter, .. } => gutter,
+        };
+        let zero = value_scale.tick(&0.).unwrap_or(zero_default);
         let palette = palette(cx);
+        let muted = cx.theme().muted_foreground;
         let n = self.series.len();
         let selected = self.selected.clone();
+        let fill = move |d: &(Arc<PlotPoint>, usize), _: Bounds<f32>, _: BarAlignment| {
+            let color = palette[d.1 % palette.len()];
+            match &selected {
+                Some(band) if *band != d.0.band => color.opacity(UNPICKED_OPACITY),
+                _ => color,
+            }
+        };
+        let (bar_width, _) = group_slot(band_width, n, 0);
+        match layout {
+            Layout::Columns => {
+                let baseline = height - axis_gap();
+                // The axis line sits at zero, which is mid-plot when the data
+                // crosses it; the band labels stay at the bottom, clear of any
+                // bar.
+                PlotAxis::new()
+                    .stroke(cx.theme().border)
+                    .x(px(zero))
+                    .paint(&bounds, window, cx);
+                let shown = if self.time_axis {
+                    labeled(self.points.len(), self.label_count)
+                } else {
+                    vec![true; self.points.len()]
+                };
+                let labels = self
+                    .points
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| shown[*i])
+                    .filter_map(|(_, d)| {
+                        let tick = band_scale.tick(&d.band)?;
+                        Some(
+                            Text::new(
+                                d.band.clone(),
+                                point(px(tick + band_width / 2.), px(baseline + TEXT_GAP)),
+                                muted,
+                            )
+                            .align(TextAlign::Center),
+                        )
+                    })
+                    .collect();
+                PlotLabel::new(labels).paint(&bounds, window, cx);
 
-        // The axis line sits at zero, which is mid-plot when the data crosses
-        // it; the band labels stay at the bottom, clear of any bar.
-        PlotAxis::new()
-            .stroke(cx.theme().border)
-            .x(px(zero))
-            .paint(&bounds, window, cx);
-        let shown = labeled(self.points.len(), self.label_count);
-        let labels = self
-            .points
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| shown[*i])
-            .filter_map(|(_, d)| {
-                let tick = band_scale.tick(&d.band)?;
-                Some(
-                    Text::new(
-                        d.band.clone(),
-                        point(px(tick + band_width / 2.), px(baseline + TEXT_GAP)),
-                        cx.theme().muted_foreground,
-                    )
-                    .align(TextAlign::Center),
-                )
-            })
-            .collect();
-        PlotLabel::new(labels).paint(&bounds, window, cx);
+                // The grid skips the baseline, which the axis line already draws.
+                let top = TOP_GAP + if self.values_shown() { TEXT_HEIGHT } else { 0. };
+                let ticks = value_ticks(top, baseline, TICK_COUNT);
+                Grid::new()
+                    .y(ticks[..ticks.len() - 1].to_vec())
+                    .stroke(cx.theme().chart_grid)
+                    .dash_array(&[px(4.), px(2.)])
+                    .paint(&bounds, window);
 
-        // The grid skips the baseline, which the axis line already draws.
-        let ticks = value_ticks(TOP_GAP, baseline, TICK_COUNT);
-        Grid::new()
-            .y(ticks[..ticks.len() - 1].to_vec())
-            .stroke(cx.theme().chart_grid)
-            .dash_array(&[px(4.), px(2.)])
-            .paint(&bounds, window);
-
-        // Only the cells the query returned: a series a band lacks draws no
-        // bar there, rather than a zero the data never stated.
-        let mut bars = Vec::new();
-        for d in &self.points {
-            for s in 0..n {
-                if d.present.get(s).copied().unwrap_or(false) {
-                    bars.push((d.clone(), s));
+                let mut bar = Bar::new()
+                    .data(self.bars())
+                    .band_width(bar_width)
+                    .cross(move |d: &(Arc<PlotPoint>, usize)| {
+                        band_scale
+                            .tick(&d.0.band)
+                            .map(|tick| tick + group_slot(band_width, n, d.1).1)
+                    })
+                    .base(move |_| zero)
+                    .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
+                    .fill(fill);
+                if self.values_shown() {
+                    bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
+                        vec![Text::new(d.0.label.clone(), at, muted).align(TextAlign::Center)]
+                    });
                 }
+                bar.paint(&bounds, window, cx);
+            }
+            Layout::Rows { gutter, room } => {
+                PlotAxis::new()
+                    .stroke(cx.theme().border)
+                    .y(px(zero))
+                    .y_axis(true)
+                    .paint(&bounds, window, cx);
+                // Every label while a row is a line of text tall; past that,
+                // every k-th, as many as the rows can hold.
+                let step = band_scale.step().max(1.);
+                let every = (TEXT_HEIGHT / step).ceil().max(1.) as usize;
+                let room_for_label = gutter - LABEL_PAD;
+                let labels = self
+                    .points
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % every == 0)
+                    .filter_map(|(_, d)| {
+                        let tick = band_scale.tick(&d.band)?;
+                        let text =
+                            truncate_text_to_width(&d.band, px(TEXT_SIZE), room_for_label, window);
+                        Some(
+                            Text::new(
+                                text,
+                                point(
+                                    px(gutter - LABEL_PAD / 2.),
+                                    px(tick + band_width / 2. - TEXT_SIZE / 2.),
+                                ),
+                                muted,
+                            )
+                            .align(TextAlign::Right),
+                        )
+                    })
+                    .collect();
+                PlotLabel::new(labels).paint(&bounds, window, cx);
+
+                // Vertical grid lines at the value ticks, the axis excluded.
+                let ticks = value_ticks((width - room).max(gutter), gutter, TICK_COUNT);
+                Grid::new()
+                    .x(ticks[..ticks.len() - 1].to_vec())
+                    .stroke(cx.theme().chart_grid)
+                    .dash_array(&[px(4.), px(2.)])
+                    .paint(&bounds, window);
+
+                let mut bar = Bar::new()
+                    .data(self.bars())
+                    .alignment(BarAlignment::Left)
+                    .band_width(bar_width)
+                    .cross(move |d: &(Arc<PlotPoint>, usize)| {
+                        band_scale
+                            .tick(&d.0.band)
+                            .map(|tick| tick + group_slot(band_width, n, d.1).1)
+                    })
+                    .base(move |_| zero)
+                    .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
+                    .fill(fill);
+                if self.values_shown() {
+                    bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
+                        // A negative bar ends left of zero; its value reads
+                        // leftwards from there.
+                        let align = if d.0.values[d.1] < 0. {
+                            TextAlign::Right
+                        } else {
+                            TextAlign::Left
+                        };
+                        vec![Text::new(d.0.label.clone(), at, muted).align(align)]
+                    });
+                }
+                bar.paint(&bounds, window, cx);
             }
         }
-        let (bar_width, _) = group_slot(band_width, n, 0);
-        Bar::new()
-            .data(bars)
-            .band_width(bar_width)
-            .cross(move |d: &(Arc<PlotPoint>, usize)| {
-                band_scale
-                    .tick(&d.0.band)
-                    .map(|tick| tick + group_slot(band_width, n, d.1).1)
-            })
-            .base(move |_| zero)
-            .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-            .fill(move |d: &(Arc<PlotPoint>, usize), _, _| {
-                let color = palette[d.1 % palette.len()];
-                match &selected {
-                    Some(band) if *band != d.0.band => color.opacity(UNPICKED_OPACITY),
-                    _ => color,
-                }
-            })
-            .paint(&bounds, window, cx);
     }
 
     fn id(&self) -> Option<ElementId> {
@@ -313,16 +500,26 @@ impl Plot for GroupedBars {
         bounds: Bounds<Pixels>,
         _cx: &App,
     ) -> Option<TooltipState> {
-        // The axis labels below the baseline are not a band.
-        let baseline = bounds.size.height.as_f32() - axis_gap();
-        if position.y.as_f32() > baseline {
-            return None;
-        }
         let (band_scale, _) = self.scales(bounds);
-        let index = band_scale.nearest_index(position.x.as_f32());
-        let d = self.points.get(index)?;
-        let center = band_scale.tick(&d.band)? + band_scale.band_width() / 2.;
-        Some(TooltipState::new(index, point(px(center), position.y), vec![]))
+        match self.layout(bounds) {
+            Layout::Columns => {
+                // The axis labels below the baseline are not a band.
+                let baseline = bounds.size.height.as_f32() - axis_gap();
+                if position.y.as_f32() > baseline {
+                    return None;
+                }
+                let index = band_scale.nearest_index(position.x.as_f32());
+                let d = self.points.get(index)?;
+                let center = band_scale.tick(&d.band)? + band_scale.band_width() / 2.;
+                Some(TooltipState::new(index, point(px(center), position.y), vec![]))
+            }
+            Layout::Rows { .. } => {
+                let index = band_scale.nearest_index(position.y.as_f32());
+                let d = self.points.get(index)?;
+                let center = band_scale.tick(&d.band)? + band_scale.band_width() / 2.;
+                Some(TooltipState::new(index, point(position.x, px(center)), vec![]))
+            }
+        }
     }
 
     fn tooltip(
@@ -335,18 +532,20 @@ impl Plot for GroupedBars {
     ) -> Option<AnyElement> {
         let d = self.points.get(state.index)?;
         let (band_scale, _) = self.scales(bounds);
-        let baseline = bounds.size.height.as_f32() - axis_gap();
         let palette = palette(cx);
 
         // The hovered band highlights whole, the way the catalog's bar chart
         // highlights its bar; the tooltip lists the series the band has.
+        let cross_line = match self.layout(bounds) {
+            Layout::Columns => CrossLine::new(state.cross_line)
+                .span(0., bounds.size.height.as_f32() - axis_gap()),
+            Layout::Rows { gutter, .. } => CrossLine::new(state.cross_line)
+                .horizontal()
+                .h_span(gutter, bounds.size.width.as_f32() - gutter),
+        };
         let mut tooltip = Tooltip::new(cursor, bounds.size)
             .gap(px(8.))
-            .cross_line(
-                CrossLine::new(state.cross_line)
-                    .span(0., baseline)
-                    .band(px(band_scale.band_width())),
-            )
+            .cross_line(cross_line.band(px(band_scale.band_width())))
             .title(d.band.clone());
         for (s, name) in self.series.iter().enumerate() {
             if d.present.get(s).copied().unwrap_or(false) {
@@ -629,7 +828,7 @@ mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
-        GROUP_GAP, GroupedBars, group_slot, labeled, point_label_align, value_ticks,
+        GROUP_GAP, GroupedBars, Layout, group_slot, labeled, point_label_align, value_ticks,
         x_label_count,
     };
     use crate::spec::prepare::PlotPoint;
@@ -659,6 +858,47 @@ mod tests {
         assert_eq!(at(290., 100.).as_deref(), Some("c"));
         // The axis labels under the baseline are not a bar.
         assert_eq!(at(150., 199.), None);
+    }
+
+    fn bars(bands: &[&str]) -> GroupedBars {
+        let points = bands
+            .iter()
+            .enumerate()
+            .map(|(ix, band)| {
+                Arc::new(PlotPoint {
+                    band: SharedString::from(*band),
+                    label: SharedString::from("1,234"),
+                    values: vec![1.0],
+                    present: vec![true],
+                    ix,
+                })
+            })
+            .collect();
+        GroupedBars::of("t", points, &["y".to_string()])
+    }
+
+    #[test]
+    fn categories_that_do_not_fit_lie_on_their_side() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(240.)));
+        // Six short kinds fit across 400px: upright, every label shown.
+        let kinds = bars(&["fix", "feature", "docs", "refactor", "test", "build"]);
+        assert_eq!(kinds.layout(bounds), Layout::Columns);
+        // Fourteen paths do not: on its side, the labels in a left gutter
+        // no wider than 40% of the plot.
+        let areas: Vec<String> = (0..14).map(|i| format!("src/app_export_{i} (removed)")).collect();
+        let areas = bars(&areas.iter().map(String::as_str).collect::<Vec<_>>());
+        let Layout::Rows { gutter, room } = areas.layout(bounds) else {
+            panic!("fourteen long labels cannot stand upright in 400px");
+        };
+        assert!((40.0..=160.).contains(&gutter), "{gutter}");
+        assert!(room > 0.);
+        // A click on a row, or on its label, picks that row's band.
+        let at = |y: f32| areas.band_at(point(px(10.), px(y)), bounds);
+        assert_eq!(at(1.).as_deref(), Some("src/app_export_0 (removed)"));
+        assert_eq!(at(239.).as_deref(), Some("src/app_export_13 (removed)"));
+        // The same labels on a time axis stay upright, to be thinned.
+        let areas = areas.time_axis(true);
+        assert_eq!(areas.layout(bounds), Layout::Columns);
     }
 
     #[test]

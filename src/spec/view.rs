@@ -13,7 +13,7 @@
 //! dashboard — the previous one stays up and the reason appears above it.
 //!
 //! One chart note: the catalog's `BarChart` and `LineChart` draw a single
-//! series and its one multi-series chart fills areas, so a pivoted `bar`, a
+//! series and its one multi-series chart fills areas, so every `bar`, a
 //! pivoted `line` and every `scatter` are drawn by the plots in `plot.rs` —
 //! grouped bars, bare lines, unconnected dots — on the same primitives the
 //! catalog charts compose.
@@ -42,7 +42,7 @@ use std::time::Instant;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
+use gpui_kit::component::chart::{AreaChart, LineChart};
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize,
 };
@@ -1292,18 +1292,9 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
             Some(geo) => GeoPlot::new(named_id(), geo.clone()).into_any_element(),
             None => empty_chart(cx),
         },
-        "bar" if single => BarChart::new(plot.points.clone())
-            .band(|d: &Arc<PlotPoint>| d.band.clone())
-            .value(|d: &Arc<PlotPoint>| d.values[0])
-            .fill(move |d: &Arc<PlotPoint>, _, _, _| palette[d.ix % palette.len()])
-            .label(|d: &Arc<PlotPoint>| d.label.clone())
-            .tooltip_value(|d: &Arc<PlotPoint>, _| d.label.clone())
-            .band_tick_count(x_labels)
-            .id(id)
-            .name(name)
-            .into_any_element(),
-        // A band scale cannot group a single-series BarChart's bars, so a
-        // pivoted bar draws on the hand-built grouped chart instead.
+        // Every bar draws on the hand-built chart, one series or several: it
+        // colours by series, and lays a category axis on its side rather than
+        // drop the labels that do not fit.
         "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
         "area" if single => {
             let color = palette[0];

@@ -13,7 +13,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::chart::{AreaChart, BarChart, PieChart};
+use gpui_kit::component::chart::{AreaChart, PieChart};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::{h_flex, v_flex, Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
@@ -443,9 +443,6 @@ impl RenderOnce for ChartPanel {
                 SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
                     .into_any_element()
             }
-            ChartKind::Bar if data.series_names.len() > 1 => {
-                GroupedBars::of("results-chart-bars", rows, &data.series_names).into_any_element()
-            }
             ChartKind::Area => {
                 // One area series per numeric column; ~10 x labels on dense data.
                 // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
@@ -467,13 +464,10 @@ impl RenderOnce for ChartPanel {
                 }
                 chart.tick_margin(tick_margin).into_any_element()
             }
-            _ => BarChart::new(rows)
-                .band(|d: &Arc<PlotPoint>| d.band.clone())
-                .value(|d: &Arc<PlotPoint>| d.values[0])
-                .fill(move |d: &Arc<PlotPoint>, _, _, _| palette[d.ix % palette.len()])
-                .label(|d: &Arc<PlotPoint>| d.label.clone())
-                .id("results-chart")
-                .name(data.series_names[0].clone())
+            // One series or several, bars colour by series and keep every
+            // category's label; see `GroupedBars`.
+            _ => GroupedBars::of("results-chart-bars", rows, &data.series_names)
+                .time_axis(data.is_time_series)
                 .into_any_element(),
         };
 
