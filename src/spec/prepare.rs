@@ -496,8 +496,9 @@ fn day_of(band: &str) -> Option<chrono::NaiveDate> {
 }
 
 /// A cell as a card shows it: a plain decimal number with its integer part
-/// grouped by thousands (`1859708` → `1,859,708`), anything else — a date, a
-/// word, an exponent — exactly as the database wrote it.
+/// grouped by thousands (`1859708` → `1,859,708`) and a long fraction rounded
+/// (see [`round_fraction`]), anything else — a date, a word, an exponent —
+/// exactly as the database wrote it.
 fn group_thousands(cell: &str) -> String {
     let (sign, unsigned) = match cell.strip_prefix('-') {
         Some(rest) => ("-", rest),
@@ -511,6 +512,11 @@ fn group_thousands(cell: &str) -> String {
     if !digits(int) || frac.is_some_and(|f| !digits(f)) {
         return cell.to_string();
     }
+    // Round first: rounding can carry into the integer part (`9.999` → `10`).
+    let (int, frac) = match frac {
+        Some(frac) => round_fraction(int, frac),
+        None => (int.to_string(), String::new()),
+    };
     let mut grouped = String::with_capacity(int.len() + int.len() / 3);
     for (ix, ch) in int.chars().enumerate() {
         if ix > 0 && (int.len() - ix) % 3 == 0 {
@@ -518,10 +524,33 @@ fn group_thousands(cell: &str) -> String {
         }
         grouped.push(ch);
     }
-    match frac {
-        Some(frac) => format!("{sign}{grouped}.{frac}"),
-        None => format!("{sign}{grouped}"),
+    if frac.is_empty() {
+        format!("{sign}{grouped}")
+    } else {
+        format!("{sign}{grouped}.{frac}")
     }
+}
+
+/// A fraction as a headline number needs it. Two digits or fewer are the
+/// database's own (a `DECIMAL(10,2)`'s `12.50` keeps its zero); a longer one
+/// is mostly a float's binary noise (`11439704.020000005`), so it is rounded
+/// to two places at 1 or more, and to three significant digits below 1
+/// (`0.000123456` → `0.000123`), trailing zeros dropped.
+fn round_fraction(int: &str, frac: &str) -> (String, String) {
+    if frac.len() <= 2 {
+        return (int.to_string(), frac.to_string());
+    }
+    let places = if int.trim_start_matches('0').is_empty() {
+        frac.len().min(frac.bytes().take_while(|&b| b == b'0').count() + 3)
+    } else {
+        2
+    };
+    let Ok(value) = format!("{int}.{frac}").parse::<f64>() else {
+        return (int.to_string(), frac.to_string());
+    };
+    let rounded = format!("{value:.places$}");
+    let (int, frac) = rounded.split_once('.').unwrap_or((&rounded, ""));
+    (int.to_string(), frac.trim_end_matches('0').to_string())
 }
 
 /// Why a `map` with no `lat` or `lng` has nothing to place.
@@ -901,7 +930,13 @@ mod tests {
 
     #[test]
     fn only_plain_numbers_are_grouped() {
-        assert_eq!(group_thousands("1234567.891"), "1,234,567.891");
+        assert_eq!(group_thousands("1234567.891"), "1,234,567.89");
+        // A float's noise is rounded away; a decimal's own digits are kept.
+        assert_eq!(group_thousands("11439704.020000005"), "11,439,704.02");
+        assert_eq!(group_thousands("12.50"), "12.50");
+        assert_eq!(group_thousands("-0.000123456"), "-0.000123");
+        assert_eq!(group_thousands("999999.999"), "1,000,000");
+        assert_eq!(group_thousands("3.10000001"), "3.1");
         assert_eq!(group_thousands("-1000"), "-1,000");
         assert_eq!(group_thousands("999"), "999");
         assert_eq!(group_thousands("1e10"), "1e10");
