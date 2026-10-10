@@ -19,12 +19,12 @@
 //! src/spec/lsp.rs      `ducklocal lsp`, the language server half
 //! ```
 //!
-//! `ducklocal check FILE` validates a spec without touching a database: parse,
-//! references, required attributes, and each query's SQL through the real
-//! DuckDB parser (parse-only, nothing executes). With `--database PATH` it
-//! also runs every query on that database, read-only — so an error that only
-//! shows once rows are read fails the check, not the dashboard — and checks
-//! each plot's `x`/`y`/`series` against the columns the query returns. The view
+//! `ducklocal check FILE` validates a spec: parse, references, required
+//! attributes, and each query's SQL through the real DuckDB parser. Then it
+//! runs every query, read-only — on `--database PATH`, or in memory, which is
+//! all a dashboard over its own `source` files needs — so an error that only
+//! shows once rows are read fails the check, not the dashboard, and checks
+//! each plot's columns against the ones its query returns. The view
 //! half runs the same parse and validation before drawing anything, so a file
 //! that fails `check` opens as its diagnostics, not as a broken chart.
 
@@ -107,57 +107,77 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         })?;
     }
 
-    // Against a database every query is described — its result columns, for
-    // the column check — and then run, the way opening the dashboard runs it.
-    // DESCRIBE only plans: a cast the build cannot perform or a value deep in
-    // the data that will not convert surfaces only once rows are read, and a
-    // check that passes a dashboard the GUI then cannot draw is no check. The
-    // SQL has been shown read-only above and the connection is read-only, so
+    // Every query is described — its result columns, for the column check —
+    // and then run, the way opening the dashboard runs it: on the database
+    // when one is named, on an in-memory one otherwise, which is all a
+    // dashboard over its own `source` files needs. DESCRIBE only plans: a
+    // cast the build cannot perform or a value deep in the data that will
+    // not convert surfaces only once rows are read, and a check that passes a
+    // dashboard the GUI then cannot draw is no check. The SQL has been shown
+    // read-only above and the connection is read-only (or holds nothing), so
     // running it changes nothing; it goes through the view's own `run_of`, so
     // the two stop at the same row budget and fail on the same statements.
     // Every failing query is reported, not only the first.
+    //
+    // In memory, a query reading a table no source defines may be meant for
+    // a database the check was not given: it is listed as `unresolved`, not
+    // failed, and its plots' columns go unchecked.
     let mut query_columns: Vec<Option<Vec<(String, String)>>> = vec![None; spec.queries.len()];
+    let mut unresolved = Vec::new();
     let base = source::base_of(&file);
-    if let Some(database) = &database {
-        let connection = crate::cli::open(Some(database.clone()), false)?;
-        let mut failures = Vec::new();
-        for (index, query) in spec.queries.iter().enumerate() {
-            let located = |message: String| {
-                format!("{}:{}: query {:?}: {message}", path_display, query.line, query.name)
-            };
-            // What runs is the query with the sources it names in front of
-            // it — the same SQL the dashboard runs, with nothing picked.
-            let sql = source::expand(&filter::neutral(&query.sql), &spec.sources, &base);
-            match describe(&connection, &sql) {
-                Ok(columns) => query_columns[index] = Some(columns),
-                Err(message) => {
-                    failures.push(located(message));
-                    continue;
-                }
-            }
-            match crate::query::run_of(&connection, &sql) {
-                Ok(crate::query::QueryOutcome::Rows(_)) => {}
-                Ok(crate::query::QueryOutcome::Affected { .. }) => {
-                    failures.push(located("returns no rows to plot".to_string()));
-                }
-                Err(error) => failures.push(located(format!("{error:#}"))),
-            }
-        }
-        if !failures.is_empty() {
-            return Err(CliError::failure("sql", failures.join("\n")));
-        }
-        let lookup = |name: &str| -> Result<Vec<(String, String)>, String> {
-            let index = spec
-                .queries
-                .iter()
-                .position(|q| q.name == name)
-                .ok_or_else(|| format!("no query named {name:?}"))?;
-            Ok(query_columns[index].clone().unwrap_or_default())
+    let connection = crate::cli::open(database.clone(), false)?;
+    let mut failures = Vec::new();
+    for (index, query) in spec.queries.iter().enumerate() {
+        let located = |message: String| {
+            format!("{}:{}: query {:?}: {message}", path_display, query.line, query.name)
         };
-        let diagnostics = model::check_columns(&spec, &lookup);
-        if !diagnostics.is_empty() {
-            return Err(spec_error_all(&path_display, diagnostics));
+        // What runs is the query with the sources it names in front of
+        // it — the same SQL the dashboard runs, with nothing picked.
+        let sql = source::expand(&filter::neutral(&query.sql), &spec.sources, &base);
+        let outcome = describe(&connection, &sql).and_then(|columns| {
+            match crate::query::run_of(&connection, &sql) {
+                Ok(crate::query::QueryOutcome::Rows(_)) => Ok(columns),
+                Ok(crate::query::QueryOutcome::Affected { .. }) => {
+                    Err("returns no rows to plot".to_string())
+                }
+                Err(error) => Err(format!("{error:#}")),
+            }
+        });
+        match outcome {
+            Ok(columns) => query_columns[index] = Some(columns),
+            Err(message) if database.is_none() && names_a_missing_table(&message) => {
+                unresolved.push(json!({"query": query.name, "line": query.line, "reason": message}));
+            }
+            Err(message) => failures.push(located(message)),
         }
+    }
+    if !failures.is_empty() {
+        return Err(CliError::failure("sql", failures.join("\n")));
+    }
+    let ran = |name: &str| {
+        spec.queries
+            .iter()
+            .position(|q| q.name == name)
+            .is_some_and(|index| query_columns[index].is_some())
+    };
+    let mut checked = spec.clone();
+    checked.plots.retain(|plot| ran(&plot.query));
+    checked.filters.retain(|filter| {
+        spec.plots
+            .iter()
+            .any(|plot| plot.name == filter.plot && ran(&plot.query))
+    });
+    let lookup = |name: &str| -> Result<Vec<(String, String)>, String> {
+        let index = spec
+            .queries
+            .iter()
+            .position(|q| q.name == name)
+            .ok_or_else(|| format!("no query named {name:?}"))?;
+        Ok(query_columns[index].clone().unwrap_or_default())
+    };
+    let diagnostics = model::check_columns(&checked, &lookup);
+    if !diagnostics.is_empty() {
+        return Err(spec_error_all(&path_display, diagnostics));
     }
 
     Ok(json!({
@@ -191,7 +211,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "name": p.name,
             "type": p.kind,
             "query": p.query,
-            "x": p.x,
+            "x": (!p.x.is_empty()).then_some(&p.x),
             "y": p.y,
             "series": p.series,
             "lat": p.lat,
@@ -206,6 +226,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "line": p.line,
         })).collect::<Vec<_>>(),
         "database": database.as_ref().map(|p| p.display().to_string()),
+        "unresolved": unresolved,
     })
     .to_string())
 }
@@ -250,6 +271,14 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
             .to_string());
     }
     Ok(())
+}
+
+/// Whether DuckDB refused a query for naming a table or view it does not
+/// have — in memory, one that may live in a database the check was not given.
+fn names_a_missing_table(message: &str) -> bool {
+    message.contains("Catalog Error")
+        && (message.contains("Table with name") || message.contains("View with name"))
+        && message.contains("does not exist")
 }
 
 /// The columns a query returns, per DuckDB's own description of it.

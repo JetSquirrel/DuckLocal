@@ -480,7 +480,7 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
         "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
-        "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map`.",
+        "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map` or a `card`, and optional for a `table`.",
         "y" => "**y**\n\nThe numeric column the plot draws; a `pie`'s slice sizes. Optional for `table`, not for a `map`.",
         "series" => "**series**\n\nOptional: the column that splits the plot into one line or bar group per value. Not for a `pie` or a `map`.",
         "lat" => "**lat**\n\nA `map`'s latitude column, in degrees. Optional when a column's name says it (`lat`, `geo_lat`, `latitude`).",

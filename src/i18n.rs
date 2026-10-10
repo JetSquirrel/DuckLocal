@@ -825,6 +825,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.filter.label", "筛选", "Filtered by"),
     ("dashboard.filter.clear", "清除此筛选", "Clear this filter"),
     ("dashboard.filter.clear_all", "全部清除", "Clear all"),
+    ("dashboard.sql.hide", "图表", "Chart"),
+    ("dashboard.sql.show_tooltip", "查看这张图的 SQL", "Show this plot's SQL"),
+    ("dashboard.sql.hide_tooltip", "回到图表", "Back to the plot"),
+    ("dashboard.sql.copy", "复制", "Copy"),
+    ("dashboard.sql.open", "在查询页打开", "Open in a query tab"),
     (
         "dashboard.filter.hint",
         "点击可筛选其他图表",

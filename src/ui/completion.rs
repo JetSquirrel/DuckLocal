@@ -517,7 +517,6 @@ mod tests {
                     name: format!("orders_{ix}"),
                     kind: NodeKind::Table,
                     estimated_rows: None,
-                    comment: None,
                     columns: Vec::from([ColumnInfo {
                         name: format!("amount_{ix}"),
                         data_type: "DOUBLE".into(),

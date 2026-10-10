@@ -747,7 +747,7 @@ query "shape" { sql = "SUMMARIZE orders;" }
 plot "total"  { type = "card" query = query.total value = total title = "Revenue" }
 plot "orders" { type = "card" query = query.total value = n }
 plot "chart"  { type = "bar" query = query.by_channel x = channel y = amount width = 6 }
-plot "stats"  { type = "table" query = query.shape x = column_name width = 6 }
+plot "stats"  { type = "table" query = query.shape width = 6 }
 "#,
     )
     .unwrap();
@@ -791,14 +791,33 @@ plot "stats"  { type = "table" query = query.shape x = column_name width = 6 }
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("value = \"revenue\""), "{message}");
 
-    // A path that matches nothing fails when the query runs, not statically.
+    // A path that matches nothing fails when the query runs — in memory as
+    // on a database.
     std::fs::write(
         dash.join("gone.dash"),
         "source \"o\" { path = \"missing/*.csv\" }\nquery \"q\" { sql = \"FROM o\" }\n",
     )
     .unwrap();
-    s.object(&["check", "dash/gone.dash"]);
+    s.error(&["check", "dash/gone.dash"], 1, "sql");
     s.error(&["check", "dash/gone.dash", "--database", "data.duckdb"], 1, "sql");
+
+    // In memory, the sources are all there is: a query over them runs and its
+    // columns are checked, and one over a table no source defines is
+    // unresolved — perhaps a database's — rather than failed.
+    let out = s.object(&["check", "dash/board.dash"]);
+    assert_eq!(out["queries"][1]["columns"][0]["name"], "channel");
+    assert_eq!(out["unresolved"].as_array().unwrap().len(), 0);
+    std::fs::write(
+        dash.join("mixed.dash"),
+        "source \"orders\" { path = \"exports/orders-*.csv\" }\nquery \"a\" { sql = \"FROM orders\" }\nquery \"b\" { sql = \"FROM warehouse_sales\" }\nplot \"p\" { type = \"table\" query = query.b }\n",
+    )
+    .unwrap();
+    let out = s.object(&["check", "dash/mixed.dash"]);
+    let unresolved = out["unresolved"].as_array().unwrap();
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0]["query"], "b");
+    assert!(out["queries"][1].get("columns").is_none());
+    s.error(&["check", "dash/mixed.dash", "--database", "data.duckdb"], 1, "sql");
 
     // Statically: a workbook, a name SQL cannot read bare, a width off the grid.
     std::fs::write(

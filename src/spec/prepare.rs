@@ -13,6 +13,10 @@
 //! over the columns the spec names. A `card` is one cell: its column's value
 //! in the first row, grouped by thousands when it is a plain number.
 //!
+//! A `bar` over a DATE column is a time axis, not a list of categories: the
+//! days the query returned nothing for come back as empty bands, so a quiet
+//! stretch reads as a gap rather than vanishing between two bars.
+//!
 //! Everything here is pure and tested as such; the view (`view.rs`) only
 //! renders what this prepares.
 
@@ -46,7 +50,7 @@ pub struct PlotPoint {
     /// Which series actually had a value at this band; the rest read as 0 but
     /// were never in the result, and `present` is how a renderer tells.
     pub present: Vec<bool>,
-    /// Source order, for the bar palette.
+    /// The band's position on the axis.
     pub ix: usize,
 }
 
@@ -71,6 +75,9 @@ pub struct PreparedPlot {
     pub card: Option<SharedString>,
     /// Grid columns the plot spans, default applied.
     pub width: u8,
+    /// Whether `x` is a date or time column: its bands are points in time,
+    /// in order, whose labels may be thinned — a category's never are.
+    pub time_axis: bool,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
@@ -98,6 +105,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         geo: None,
         card: None,
         width: plot.width(),
+        time_axis: false,
         notice: None,
         failure,
     };
@@ -330,6 +338,13 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         ));
     }
 
+    let time_axis = result.columns[x_ix].kind == ColumnKind::Temporal;
+    if plot.kind == "bar" && time_axis {
+        if let Some(filled) = fill_missing_days(&points, series_names.len()) {
+            points = filled;
+        }
+    }
+
     let source_points = points.len();
     if plot.kind == "pie" {
         // Every band stays: the slices fold below, and a merged or dropped
@@ -384,16 +399,16 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         points = reduced;
     }
 
-    // Labels render once, here, rather than on every frame.
+    // Labels render once, here, rather than on every frame. A band no series
+    // has — a day the query skipped — says nothing, not zero.
     for point in points.iter_mut() {
-        let first = point
+        point.label = point
             .values
             .iter()
             .zip(&point.present)
             .find(|(_, present)| **present)
-            .map(|(value, _)| *value)
-            .unwrap_or(0.0);
-        point.label = SharedString::from(format_value(first));
+            .map(|(value, _)| SharedString::from(format_value(*value)))
+            .unwrap_or_default();
     }
 
     let points: Vec<Arc<PlotPoint>> = points.into_iter().map(Arc::new).collect();
@@ -418,9 +433,66 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         geo: None,
         card: None,
         width: plot.width(),
+        time_axis,
         notice: (!notices.is_empty()).then(|| notices.join(" · ")),
         failure: None,
     }
+}
+
+/// `points` with an empty band for every day the query skipped, when every
+/// band is a day (a DATE, or a midnight TIMESTAMP) and the days run one way,
+/// in the order the query sorted them. `None` leaves the bands as they are: a
+/// band that is not a day, days out of order, or a span past `MAX_BARS` days,
+/// which the gaps would only push off the end of the chart.
+fn fill_missing_days(points: &[PlotPoint], series: usize) -> Option<Vec<PlotPoint>> {
+    let days = points
+        .iter()
+        .map(|p| day_of(&p.band))
+        .collect::<Option<Vec<_>>>()?;
+    let (first, last) = (*days.first()?, *days.last()?);
+    let ascending = first <= last;
+    let ordered = days
+        .windows(2)
+        .all(|w| if ascending { w[0] < w[1] } else { w[0] > w[1] });
+    let span = (last - first).num_days().unsigned_abs() as usize + 1;
+    if !ordered || span == days.len() || span > MAX_BARS {
+        return None;
+    }
+    let step = chrono::Duration::days(if ascending { 1 } else { -1 });
+    let mut filled = Vec::with_capacity(span);
+    let mut given = points.iter().zip(&days).peekable();
+    let mut day = first;
+    for ix in 0..span {
+        match given.next_if(|(_, d)| **d == day) {
+            Some((point, _)) => filled.push(PlotPoint {
+                band: point.band.clone(),
+                label: point.label.clone(),
+                values: point.values.clone(),
+                present: point.present.clone(),
+                ix,
+            }),
+            None => filled.push(PlotPoint {
+                band: SharedString::from(day.format("%Y-%m-%d").to_string()),
+                label: SharedString::new(""),
+                values: vec![0.0; series],
+                present: vec![false; series],
+                ix,
+            }),
+        }
+        day += step;
+    }
+    Some(filled)
+}
+
+/// The day a band names: `2026-10-02`, or `2026-10-02 00:00:00` — a
+/// timestamp truncated to its day. Any other time of day is not a day.
+fn day_of(band: &str) -> Option<chrono::NaiveDate> {
+    let (date, rest) = band.split_at_checked(10)?;
+    let rest = rest.trim_start_matches([' ', 'T']);
+    if !(rest.is_empty() || rest.trim_end_matches(['0', ':', '.']).is_empty()) {
+        return None;
+    }
+    chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
 /// A cell as a card shows it: a plain decimal number with its integer part
@@ -520,6 +592,72 @@ mod tests {
             elapsed_ms: 0,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn a_bar_over_dates_keeps_the_quiet_days() {
+        let data = |rows: Vec<Vec<&str>>| {
+            result(
+                vec![
+                    column("day", ColumnKind::Temporal),
+                    column("y", ColumnKind::Numeric),
+                ],
+                rows,
+            )
+        };
+        let mut bar = plot("bar", Some("y"), None);
+        bar.x = "day".into();
+        let bands = |prepared: &PreparedPlot| {
+            prepared
+                .points
+                .iter()
+                .map(|p| (p.band.to_string(), p.present[0], p.label.to_string()))
+                .collect::<Vec<_>>()
+        };
+
+        let prepared = prepare(
+            &bar,
+            Some(&Ok(data(vec![vec!["2026-10-02", "3"], vec!["2026-10-05", "4"]]))),
+        );
+        assert!(prepared.time_axis);
+        assert_eq!(
+            bands(&prepared),
+            [
+                ("2026-10-02".into(), true, "3".into()),
+                ("2026-10-03".into(), false, String::new()),
+                ("2026-10-04".into(), false, String::new()),
+                ("2026-10-05".into(), true, "4".into()),
+            ]
+        );
+
+        // Newest first stays newest first; midnight timestamps are days too.
+        let prepared = prepare(
+            &bar,
+            Some(&Ok(data(vec![
+                vec!["2026-10-05 00:00:00", "4"],
+                vec!["2026-10-03 00:00:00", "3"],
+            ]))),
+        );
+        let days: Vec<_> = bands(&prepared).into_iter().map(|b| b.0).collect();
+        assert_eq!(days, ["2026-10-05 00:00:00", "2026-10-04", "2026-10-03 00:00:00"]);
+
+        // A time of day, or days out of order, are left as the query gave them.
+        for rows in [
+            vec![vec!["2026-10-02 12:30:00", "1"], vec!["2026-10-05 08:00:00", "2"]],
+            vec![vec!["2026-10-05", "1"], vec!["2026-10-02", "2"], vec!["2026-10-09", "3"]],
+        ] {
+            let prepared = prepare(&bar, Some(&Ok(data(rows))));
+            assert!(prepared.points.iter().all(|p| p.present[0]));
+        }
+
+        // A text x is a category, however much it looks like a date.
+        let text = result(
+            vec![column("day", ColumnKind::Text), column("y", ColumnKind::Numeric)],
+            vec![vec!["2026-10-02", "1"], vec!["2026-10-05", "2"]],
+        );
+        let prepared = prepare(&bar, Some(&Ok(text)));
+        assert!(!prepared.time_axis);
+        assert_eq!(prepared.points.len(), 2);
     }
 
     #[test]

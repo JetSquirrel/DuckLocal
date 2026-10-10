@@ -6,8 +6,9 @@
 //! * a `source` block names data files: one `path` (a file or a glob, relative
 //!   to the `.dash` file), and its name is a relation every query may read;
 //! * a `query` block holds one `sql` attribute — one statement, nothing else;
-//! * a `plot` block holds `type`, `query`, `x`, and (unless a table) `y`,
-//!   plus an optional `series` and `title`;
+//! * a `plot` block holds `type`, `query`, `x` and `y`, plus an optional
+//!   `series` and `title`; a `table` shows its query's every column and
+//!   needs neither `x` nor `y`;
 //! * a `pie` takes `x` (the slices) and `y` (their sizes), and no `series`;
 //! * a `map` takes `lat` and `lng` instead of `x` and `y` — either may be left
 //!   out when a column's name says what it is (`geo_lat`, `longitude`) — and
@@ -785,7 +786,8 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             ));
         }
     }
-    let required: &[&str] = if is_map || is_card {
+    // A table shows every column its query returns: it has no axis to name.
+    let required: &[&str] = if is_map || is_card || kind_name == "table" {
         &["type", "query"]
     } else {
         &["type", "query", "x"]
@@ -1014,7 +1016,7 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                 }
             }
         }
-        let x = !matches!(plot.kind.as_str(), "map" | "card");
+        let x = !matches!(plot.kind.as_str(), "map" | "card") && !plot.x.is_empty();
         let x = x.then_some(plot.x.as_str());
         for (name, column) in [
             ("x", x),
@@ -1162,7 +1164,6 @@ plot "channels" {
 plot "list" {
   type = "table"
   query = query.rows
-  x = id
 }
 plot "daily" {
   type = "line"

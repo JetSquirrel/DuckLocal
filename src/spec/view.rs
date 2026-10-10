@@ -13,7 +13,7 @@
 //! dashboard — the previous one stays up and the reason appears above it.
 //!
 //! One chart note: the catalog's `BarChart` and `LineChart` draw a single
-//! series and its one multi-series chart fills areas, so a pivoted `bar`, a
+//! series and its one multi-series chart fills areas, so every `bar`, a
 //! pivoted `line` and every `scatter` are drawn by the plots in `plot.rs` —
 //! grouped bars, bare lines, unconnected dots — on the same primitives the
 //! catalog charts compose.
@@ -34,7 +34,7 @@
 //! rather than a silent overwrite; with a clean buffer it just reloads.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ use std::time::Instant;
 
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
+use gpui_kit::component::chart::{AreaChart, LineChart};
 use gpui_kit::component::input::{
     CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize,
 };
@@ -50,7 +50,9 @@ use gpui_kit::component::label::Label;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableEvent, TableState};
+use gpui_kit::component::table::{
+    Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
+};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
 use gpui_kit::prelude::FluentBuilder;
 
@@ -69,7 +71,7 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
-use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
+use crate::ui::chart::{format_value, legend_row, map_notes, parse_number, pie_parts};
 use crate::ui::geo::GeoPlot;
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::ui::completion::starts_with_ignore_case;
@@ -146,7 +148,17 @@ pub struct Dashboard {
     /// Row-selection subscriptions of the pickable tables, by table entity;
     /// dropped with them.
     table_subscriptions: Vec<(EntityId, Subscription)>,
+    /// The plots turned over to show their SQL, by plot name.
+    sql_shown: HashSet<String>,
 }
+
+/// What a dashboard asks of the workspace around it.
+pub enum DashboardEvent {
+    /// Open this SQL in a new query tab, under this title.
+    OpenSql { sql: String, title: String },
+}
+
+impl EventEmitter<DashboardEvent> for Dashboard {}
 
 /// Each query's outcome by name, with the SQL that ran.
 type Outcomes = HashMap<String, (String, Result<Arc<QueryResult>, String>)>;
@@ -178,6 +190,7 @@ impl Dashboard {
             refilter_pending: false,
             plot_bounds: HashMap::new(),
             table_subscriptions: Vec::new(),
+            sql_shown: HashSet::new(),
         };
         this.watch(cx);
         this.reload(cx);
@@ -614,7 +627,140 @@ impl Dashboard {
         )
     }
 
+    /// One panel of the grid: the plot, or — turned over by the SQL button
+    /// that shows in its top-right corner on hover — the SQL behind it.
     fn render_plot(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let group = SharedString::from(format!("dashboard-plot-{ix}"));
+        let shown = self.sql_shown.contains(&self.plots[ix].name);
+        let face = if shown {
+            self.render_sql(ix, cx)
+        } else {
+            self.render_plot_face(ix, window, cx)
+        };
+        let name = self.plots[ix].name.clone();
+        let toggle = Button::new(("dashboard-sql", ix))
+            .xsmall()
+            .outline()
+            .label(if shown { tr("dashboard.sql.hide") } else { "SQL" })
+            .tooltip(if shown {
+                tr("dashboard.sql.hide_tooltip")
+            } else {
+                tr("dashboard.sql.show_tooltip")
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.sql_shown.remove(&name) {
+                    this.sql_shown.insert(name.clone());
+                }
+                cx.notify();
+            }));
+        div()
+            .size_full()
+            .relative()
+            .group(group.clone())
+            .child(face)
+            .child(
+                div()
+                    .absolute()
+                    .top_1p5()
+                    .right_2()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    // Out of the way until the pointer is over the plot; a
+                    // plot showing its SQL keeps the way back in sight.
+                    .when(!shown, |this| {
+                        this.opacity(0.).group_hover(group, |style| style.opacity(1.))
+                    })
+                    .child(toggle),
+            )
+            .into_any_element()
+    }
+
+    /// The SQL a plot's query last ran — sources and the current picks
+    /// included, so it runs as it stands in a query tab — or, before it has
+    /// run, the query as written.
+    fn render_sql(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let plot = &self.plots[ix];
+        let title = plot.title.clone();
+        let sql = self
+            .outcomes
+            .get(&plot.query)
+            .map(|(sql, _)| sql.clone())
+            .or_else(|| {
+                self.spec.as_ref().and_then(|spec| {
+                    spec.queries
+                        .iter()
+                        .find(|q| q.name == plot.query)
+                        .map(|q| q.sql.clone())
+                })
+            })
+            .unwrap_or_default();
+        let sql = sql.trim().to_string();
+        let copied = sql.clone();
+        let opened = sql.clone();
+        let tab_title = title.clone();
+        v_flex()
+            .size_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_ellipsis()
+                    .pr_16()
+                    .child(title),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new(("dashboard-sql-copy", ix))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Copy)
+                            .label(tr("dashboard.sql.copy"))
+                            .on_click(move |_, _, cx: &mut App| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
+                            }),
+                    )
+                    .child(
+                        Button::new(("dashboard-sql-open", ix))
+                            .xsmall()
+                            .ghost()
+                            .label(tr("dashboard.sql.open"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(DashboardEvent::OpenSql {
+                                    sql: opened.clone(),
+                                    title: tab_title.clone(),
+                                })
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("dashboard-sql-text", ix))
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .child(sql),
+            )
+            .into_any_element()
+    }
+
+    fn render_plot_face(
         &mut self,
         ix: usize,
         window: &mut Window,
@@ -795,15 +941,34 @@ impl Dashboard {
             let plot = self.plots[ix].name.clone();
             if self.is_pickable(&plot) {
                 // A row selected — by click or by the arrow keys — is a pick;
-                // the table's own highlight is what shows it.
+                // the table's own highlight is what shows it. The row is a
+                // position in the shown order, which a sort may have changed.
                 let picked_from = result.clone();
-                let subscription = cx.subscribe(&table, move |this, _, event: &TableEvent, cx| {
-                    if let TableEvent::SelectRow(row) = event {
-                        this.pick_row(&plot, &picked_from, *row, false, cx);
-                    }
-                });
+                let subscription =
+                    cx.subscribe(&table, move |this, table, event: &TableEvent, cx| {
+                        if let TableEvent::SelectRow(row) = event {
+                            let row = table.read(cx).delegate().source_row(*row);
+                            this.pick_row(&plot, &picked_from, row, false, cx);
+                        }
+                    });
                 self.table_subscriptions.push((table.entity_id(), subscription));
             }
+            // After a sort, the selected row moves to where its row went.
+            let subscription = cx.observe(&table, |_, table, cx| {
+                table.update(cx, |table, cx| {
+                    let Some(before) = table.delegate_mut().resorted.take() else {
+                        return;
+                    };
+                    let Some(selected) = table.selected_row() else {
+                        return;
+                    };
+                    let row = before.get(selected).copied().unwrap_or(selected);
+                    if let Some(shown) = table.delegate().order.iter().position(|&r| r == row) {
+                        table.set_selected_row(shown, cx);
+                    }
+                });
+            });
+            self.table_subscriptions.push((table.entity_id(), subscription));
             self.tables[ix] = Some(table);
         }
         let table = self.tables[ix].clone().expect("built just above");
@@ -811,6 +976,9 @@ impl Dashboard {
         let row_count = result.rows.len();
         let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
         let wheel = self.wheel.clone();
+        // Where the table sits, for the wheel to tell whether it is on screen.
+        let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+        let record = bounds.clone();
         v_flex()
             .size_full()
             .when(truncated, |this| {
@@ -827,10 +995,11 @@ impl Dashboard {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .relative()
                     // Runs after the table's own scrolling and before the
                     // stack's, so it decides whether the stack moves too.
                     .on_scroll_wheel(move |event, window, cx| {
-                        if wheel.table_scrolled(ix, &rows, event, window) {
+                        if wheel.table_scrolled(ix, &rows, bounds.get(), event, window) {
                             cx.stop_propagation();
                         }
                     })
@@ -839,6 +1008,13 @@ impl Dashboard {
                             .small()
                             .stripe(true)
                             .scrollbar_visible(true, true),
+                    )
+                    .child(
+                        canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
                     ),
             )
             .into_any_element()
@@ -1027,33 +1203,8 @@ impl Dashboard {
     }
 }
 
-// TEMP frame trace
-pub(crate) static TRACE_WHEEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-fn trace_frame(started: Instant) {
-    use std::sync::Mutex;
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    if !*ON.get_or_init(|| std::env::var_os("DUCKLOCAL_TRACE_FRAMES").is_some()) {
-        return;
-    }
-    let mut last = LAST.lock().unwrap();
-    let dt = last.map(|l| started.duration_since(l).as_secs_f64() * 1000.).unwrap_or(0.);
-    *last = Some(started);
-    let wheels = TRACE_WHEEL.swap(0, std::sync::atomic::Ordering::Relaxed);
-    eprintln!("FRAME dt={dt:.2} render={:.3} wheels={wheels}", started.elapsed().as_secs_f64() * 1000.);
-}
-
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let __started = Instant::now();
-        let __out = self.render_inner(window, cx);
-        trace_frame(__started);
-        __out
-    }
-}
-
-impl Dashboard {
-    fn render_inner(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let body = if self.showing_source {
             // The source view stands on its own, spec error or not: the text
             // of a broken spec is exactly what one opens the source to fix.
@@ -1107,20 +1258,32 @@ impl Dashboard {
             // neighbours; a tab taller than the stack is filled, as before.
             let stack = px(stack);
             let wheel = self.wheel.clone();
+            let viewport = self.wheel.viewport();
+            // The canvas sits outside the scrolling div, so its bounds are
+            // the viewport's, not the scrolled content's.
             div()
-                .id(format!("dashboard-scroll-{}", self.id))
                 .size_full()
-                .on_scroll_wheel(move |event, window, _| {
-                    TRACE_WHEEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    wheel.stack_scrolled(event, window)
-                })
-                .overflow_y_scrollbar()
+                .relative()
                 .child(
                     div()
-                        .w_full()
-                        .h(stack)
-                        .min_h_full()
-                        .child(v_resizable(format!("dashboard-{}", self.id)).children(panels)),
+                        .id(format!("dashboard-scroll-{}", self.id))
+                        .size_full()
+                        .on_scroll_wheel(move |event, window, _| {
+                            wheel.stack_scrolled(event, window)
+                        })
+                        .overflow_y_scrollbar()
+                        .child(
+                            div().w_full().h(stack).min_h_full().child(
+                                v_resizable(format!("dashboard-{}", self.id)).children(panels),
+                            ),
+                        ),
+                )
+                .child(
+                    canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {})
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
                 )
                 .into_any_element()
         };
@@ -1292,18 +1455,9 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
             Some(geo) => GeoPlot::new(named_id(), geo.clone()).into_any_element(),
             None => empty_chart(cx),
         },
-        "bar" if single => BarChart::new(plot.points.clone())
-            .band(|d: &Arc<PlotPoint>| d.band.clone())
-            .value(|d: &Arc<PlotPoint>| d.values[0])
-            .fill(move |d: &Arc<PlotPoint>, _, _, _| palette[d.ix % palette.len()])
-            .label(|d: &Arc<PlotPoint>| d.label.clone())
-            .tooltip_value(|d: &Arc<PlotPoint>, _| d.label.clone())
-            .band_tick_count(x_labels)
-            .id(id)
-            .name(name)
-            .into_any_element(),
-        // A band scale cannot group a single-series BarChart's bars, so a
-        // pivoted bar draws on the hand-built grouped chart instead.
+        // Every bar draws on the hand-built chart, one series or several: it
+        // colours by series, and lays a category axis on its side rather than
+        // drop the labels that do not fit.
         "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
         "area" if single => {
             let color = palette[0];
@@ -1454,6 +1608,13 @@ fn cell_paddings() -> Edges<Pixels> {
 struct SpecTableDelegate {
     columns: Vec<Column>,
     result: Arc<QueryResult>,
+    /// The result's rows in the order shown: `order[shown]` is the row of
+    /// `result`. The query's own order until a header sorts it.
+    order: Vec<usize>,
+    /// The order before the last sort, until the view has moved the selected
+    /// row along with it: the table keeps a selection by position, and a
+    /// pick is a row, not a position.
+    resorted: Option<Vec<usize>>,
 }
 
 impl SpecTableDelegate {
@@ -1464,7 +1625,9 @@ impl SpecTableDelegate {
             .enumerate()
             .map(|(ix, column)| {
                 let width = fit_column_width(&column.name, &result.rows, ix, 0.);
-                let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
+                let mut spec = Column::new(format!("c{ix}"), column.name.clone())
+                    .width(width)
+                    .sortable();
                 if column.kind == ColumnKind::Numeric {
                     spec = spec.text_right();
                 }
@@ -1472,8 +1635,58 @@ impl SpecTableDelegate {
                 spec
             })
             .collect();
-        Self { columns, result }
+        let order = (0..result.rows.len()).collect();
+        Self {
+            columns,
+            result,
+            order,
+            resorted: None,
+        }
     }
+
+    /// The row of the result shown at `shown`.
+    fn source_row(&self, shown: usize) -> usize {
+        self.order.get(shown).copied().unwrap_or(shown)
+    }
+}
+
+/// The rows of `result` ordered by column `col`: numerically for a number
+/// column, as text otherwise — ISO dates and times sort right as text. NULL
+/// sorts last either way, and equal cells keep the query's order.
+fn sorted_rows(result: &QueryResult, col: usize, sort: ColumnSort) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..result.rows.len()).collect();
+    if sort == ColumnSort::Default {
+        return order;
+    }
+    let cell = |row: usize| {
+        result
+            .rows
+            .get(row)
+            .and_then(|r| r.get(col))
+            .map(String::as_str)
+            .filter(|cell| *cell != "NULL")
+    };
+    let numeric = result
+        .columns
+        .get(col)
+        .is_some_and(|c| c.kind == ColumnKind::Numeric);
+    let compare = |a: &str, b: &str| {
+        if numeric {
+            if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
+                return a.total_cmp(&b);
+            }
+        }
+        a.cmp(b)
+    };
+    let descending = sort == ColumnSort::Descending;
+    order.sort_by(|&a, &b| match (cell(a), cell(b)) {
+        (Some(a), Some(b)) if descending => compare(b, a),
+        (Some(a), Some(b)) => compare(a, b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    order
 }
 
 impl TableDelegate for SpecTableDelegate {
@@ -1487,6 +1700,17 @@ impl TableDelegate for SpecTableDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        let order = sorted_rows(&self.result, col_ix, sort);
+        self.resorted = Some(std::mem::replace(&mut self.order, order));
     }
 
     fn render_th(
@@ -1520,7 +1744,7 @@ impl TableDelegate for SpecTableDelegate {
         let text = self
             .result
             .rows
-            .get(row_ix)
+            .get(self.source_row(row_ix))
             .and_then(|row| row.get(col_ix))
             .cloned()
             .unwrap_or_default();
@@ -1629,10 +1853,35 @@ impl CompletionProvider for SpecCompletionProvider {
 mod tests {
     // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro
     // shadows the built-in `#[test]`.
-    use super::{grid_rows, load, Pick, Run};
+    use super::{grid_rows, load, sorted_rows, Pick, Run};
+    use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+    use gpui_kit::component::table::ColumnSort;
     use std::collections::HashMap;
     use std::path::Path;
     use std::sync::Arc;
+
+    #[test]
+    fn a_table_sorts_numbers_as_numbers_and_nulls_last() {
+        let column = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind,
+        };
+        let result = QueryResult {
+            columns: vec![column("name", ColumnKind::Text), column("n", ColumnKind::Numeric)],
+            rows: [["b", "10"], ["a", "9"], ["c", "NULL"], ["d", "1,200"]]
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        };
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Ascending), [1, 0, 3, 2]);
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Descending), [3, 0, 1, 2]);
+        assert_eq!(sorted_rows(&result, 0, ColumnSort::Ascending), [1, 0, 2, 3]);
+        // A third click goes back to the query's own order.
+        assert_eq!(sorted_rows(&result, 1, ColumnSort::Default), [0, 1, 2, 3]);
+    }
 
     const BOARD: &str = r#"
 source "orders" { path = "orders.csv" }
