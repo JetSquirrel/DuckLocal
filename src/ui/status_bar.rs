@@ -168,11 +168,11 @@ fn update_status(cx: &App) -> AnyElement {
         status => {
             let (label, hint) = match status {
                 Status::UpToDate => (
-                    format!("{version} · {}", tr("status_bar.update.latest")),
+                    format!("{version}{}{}", crate::i18n::sep(), tr("status_bar.update.latest")),
                     tr("status_bar.update.check").to_string(),
                 ),
                 Status::Failed(error) => (
-                    format!("{version} · {}", tr("status_bar.update.failed")),
+                    format!("{version}{}{}", crate::i18n::sep(), tr("status_bar.update.failed")),
                     error,
                 ),
                 _ => (version, tr("status_bar.update.check").to_string()),

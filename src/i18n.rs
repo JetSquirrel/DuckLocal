@@ -44,6 +44,16 @@ impl Language {
 
 static CURRENT: RwLock<Language> = RwLock::new(Language::Zh);
 
+/// What joins the parts of a list in running text: `, ` in English, the
+/// full-width `，` in Chinese. The interface writes lists as text, never
+/// with a middle dot.
+pub fn sep() -> &'static str {
+    match current() {
+        Language::Zh => "，",
+        Language::En => ", ",
+    }
+}
+
 pub fn current() -> Language {
     *CURRENT.read().unwrap_or_else(|e| e.into_inner())
 }
@@ -208,7 +218,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     ("dialog.remove_file.confirm", "移除", "Remove"),
     ("dialog.alter_type.title", "修改 {} 的数据类型", "Change data type of {}"),
-    ("dialog.alter_type.current_type", "{}.{} · 当前类型 {}", "{}.{} · current type {}"),
+    ("dialog.alter_type.current_type", "{}.{}，当前类型 {}", "{}.{}, current type {}"),
     ("dialog.alter_type.confirm", "修改", "Change"),
     ("notify.alter_type.success", "已将 {} 的类型修改为 {}", "Changed type of {} to {}."),
     ("notify.alter_type.failed", "修改数据类型失败：{}", "Failed to change data type: {}"),
@@ -219,8 +229,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("results.tab.overview", "概览", "Overview"),
     (
         "results.overview.summary",
-        "{} · {} 行 · {} 列 · 耗时 {}",
-        "{} · {} rows · {} columns · took {}",
+        "{}：{} 行，{} 列，耗时 {}",
+        "{}: {} rows, {} columns, took {}",
     ),
     ("results.overview.query", "当前查询结果", "Current result"),
     ("results.overview.running", "正在统计每一列…", "Summarizing every column…"),
@@ -238,18 +248,18 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("results.overview.distinct", "约 {} 个不同值", "~{} distinct"),
     ("results.overview.median", "中位数 {}", "median {}"),
     ("results.overview.estimated", "高频值（估算）", "Common values (estimated)"),
-    ("results.summary", "{} 行 · {} 列", "{} rows · {} columns"),
+    ("results.summary", "{} 行，{} 列", "{} rows, {} columns"),
     ("results.export_csv", "导出 CSV", "Export CSV"),
     ("results.export_parquet", "导出 Parquet", "Export Parquet"),
     ("results.running", "正在运行查询…", "Running query…"),
     ("results.truncated", "结果已截断到 {} 行。", "Results truncated to {} rows."),
-    ("results.affected", "完成 · {} 行受影响 · 耗时 {}", "Done · {} rows affected · took {}"),
+    ("results.affected", "完成：{} 行受影响，耗时 {}", "Done: {} rows affected, took {}"),
     ("results.failed.title", "查询失败", "Query failed"),
-    ("results.explain.elapsed", "EXPLAIN · 耗时 {}", "EXPLAIN · took {}"),
+    ("results.explain.elapsed", "EXPLAIN，耗时 {}", "EXPLAIN, took {}"),
     (
         "results.profile.summary",
-        "性能分析 · 总耗时 {} · 算子合计 {}",
-        "Profile · took {} · operators {}",
+        "性能分析：总耗时 {}，算子合计 {}",
+        "Profile: took {}, operators {}",
     ),
     ("results.profile.hottest", "最耗时：{}（{}）", "Hottest: {} ({})"),
     ("results.profile.rows", "{} 行", "{} rows"),
@@ -676,8 +686,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("status_bar.opening", "正在打开数据源…", "Opening data source…"),
     (
         "status_bar.last_query",
-        "耗时 {} · {} 行 · {} 列",
-        "Took {} · {} rows · {} columns",
+        "耗时 {}，{} 行，{} 列",
+        "Took {}, {} rows, {} columns",
     ),
 
     // ── src/app.rs ──────────────────────────────────────────────────────

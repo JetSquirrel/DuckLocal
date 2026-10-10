@@ -236,7 +236,7 @@ impl ChartData {
             pie_skipped,
             geo,
             detected: Vec::new(),
-            notice: (!notices.is_empty()).then(|| notices.join(" · ")),
+            notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
         }
     }
 
@@ -393,12 +393,12 @@ impl RenderOnce for ChartPanel {
                 trf(
                     "chart.empty.detected_more",
                     &[
-                        &data.detected[..MAX_LISTED_COLUMNS].join(" · "),
+                        &data.detected[..MAX_LISTED_COLUMNS].join(crate::i18n::sep()),
                         &data.detected.len().to_string(),
                     ],
                 )
             } else {
-                data.detected.join(" · ")
+                data.detected.join(crate::i18n::sep())
             };
             return empty_chart_state(
                 tr("chart.empty.no_numeric"),
@@ -585,7 +585,7 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
         .enumerate()
         .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
         .collect();
-    ((!notices.is_empty()).then(|| notices.join(" · ")), legend)
+    ((!notices.is_empty()).then(|| notices.join(crate::i18n::sep())), legend)
 }
 
 fn render_map(geo: Arc<GeoData>, cx: &App) -> AnyElement {
@@ -648,7 +648,7 @@ pub(crate) fn pie_parts(
             let share = s.value as f64 / total * 100.;
             (
                 color(s),
-                SharedString::from(format!("{} · {share:.1}%", s.name)),
+                SharedString::from(format!("{} ({share:.1}%)", s.name)),
             )
         })
         .collect();
@@ -673,7 +673,7 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
     let notice = (data.pie_skipped > 0)
         .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
     let notice = match (data.notice.clone(), notice) {
-        (Some(a), Some(b)) => Some(format!("{a} · {b}")),
+        (Some(a), Some(b)) => Some(format!("{a}{}{b}", crate::i18n::sep())),
         (a, b) => a.or(b),
     };
     chart_frame(
