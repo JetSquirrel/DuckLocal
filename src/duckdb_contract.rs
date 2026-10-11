@@ -260,11 +260,12 @@ fn json_serialize_sql_refuses_all_but_reads() {
     assert!(crate::spec::validate_query_sql("SELECT 1; DROP TABLE t").is_err());
 }
 
-/// A PIVOT without an `IN` list is two statements to the C API — it must
-/// first find the values to pivot on — so `cli::validate_sql` refuses it,
-/// nested or not, as "found 2", before the carve-out above is reached. Only
-/// an `IN` list, UNPIVOT or the standard `PIVOT (… FOR … IN …)` gets
-/// through. A known gap, pinned as it is: the docs promise PIVOT.
+/// A PIVOT without an `IN` list is two statements to the C API — DuckDB
+/// first finds the values to pivot on — so `cli::validate_sql` refuses it,
+/// nested or not, before the carve-out above is reached, and says how to
+/// write it as one. It would run (a read-only database included): the gate
+/// refuses it rather than guess that the second statement is DuckDB's own.
+/// An `IN` list, UNPIVOT and the standard `PIVOT (… FOR … IN …)` get through.
 #[test]
 fn a_pivot_without_values_counts_as_two_statements() {
     for sql in [
@@ -276,11 +277,18 @@ fn a_pivot_without_values_counts_as_two_statements() {
             .unwrap_err()
             .message()
             .to_string();
-        assert_eq!(
-            message, "Expected exactly one SQL statement; found 2",
-            "{sql}"
+        assert!(
+            message.starts_with("Expected exactly one SQL statement; found 2. A PIVOT"),
+            "{sql}: {message}"
         );
+        assert!(message.contains("IN ('a', 'b')"), "{message}");
     }
+    // Two statements that are not a PIVOT get no PIVOT advice.
+    let message = crate::cli::validate_sql("SELECT 1; SELECT 2")
+        .unwrap_err()
+        .message()
+        .to_string();
+    assert_eq!(message, "Expected exactly one SQL statement; found 2");
 }
 
 /// How each type comes back through Arrow (`query.rs`'s

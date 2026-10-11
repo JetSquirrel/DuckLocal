@@ -280,7 +280,7 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if refused {
         return Err("a dashboard query must be a single read-only statement \
-                    (SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE, PIVOT)"
+                    (SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE,                     or a PIVOT that names its values with IN)"
             .to_string());
     }
     Ok(())

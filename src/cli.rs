@@ -441,6 +441,7 @@ impl Drop for ExtractedStatements {
 /// (say `COPY ... TO ...; SELECT 2`) is rejected before anything has a chance
 /// to run it.
 pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
+    let text = sql;
     let sql =
         CString::new(sql).map_err(|_| CliError::argument("SQL must not contain NUL bytes"))?;
     unsafe {
@@ -476,9 +477,17 @@ pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
             ));
         }
         if count != 1 {
-            return Err(CliError::argument(format!(
-                "Expected exactly one SQL statement; found {count}"
-            )));
+            let mut message = format!("Expected exactly one SQL statement; found {count}");
+            // A PIVOT without an IN list is two statements to the parser:
+            // DuckDB first finds the values to pivot on. The one statement
+            // the person wrote is not let through on a guess at that; they
+            // are told how to write it as one.
+            if count == 2 && text.to_ascii_lowercase().contains("pivot") {
+                message.push_str(
+                    ". A PIVOT counts as two unless it names its values:                      PIVOT t ON col IN ('a', 'b') USING sum(x)",
+                );
+            }
+            return Err(CliError::argument(message));
         }
     }
     Ok(())
