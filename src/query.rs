@@ -1183,22 +1183,47 @@ fn format_time(unit: TimeUnit, v: i64) -> String {
     )
 }
 
+/// An interval as DuckDB writes one (`CAST(… AS VARCHAR)`): `1 year 2
+/// months 3 days 04:05:06.789`, each part only when it is not zero, the
+/// time unbounded in hours and its fraction trimmed, and `00:00:00` for
+/// nothing at all. DuckDB keeps microseconds; Arrow hands over nanoseconds.
 fn format_interval(months: i32, days: i32, nanos: i64) -> String {
+    let unit = |n: i64, one: &str| {
+        if n.abs() == 1 {
+            format!("{n} {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
     let mut parts = Vec::new();
-    if months != 0 {
-        parts.push(format!("{months} months"));
+    let (years, months) = (months / 12, months % 12);
+    for (n, one) in [
+        (years as i64, "year"),
+        (months as i64, "month"),
+        (days as i64, "day"),
+    ] {
+        if n != 0 {
+            parts.push(unit(n, one));
+        }
     }
-    if days != 0 {
-        parts.push(format!("{days} days"));
+    let micros = nanos / 1_000;
+    if micros != 0 || parts.is_empty() {
+        let sign = if micros < 0 { "-" } else { "" };
+        let micros = micros.unsigned_abs();
+        let seconds = micros / 1_000_000;
+        let mut time = format!(
+            "{sign}{:02}:{:02}:{:02}",
+            seconds / 3_600,
+            seconds / 60 % 60,
+            seconds % 60
+        );
+        let fraction = micros % 1_000_000;
+        if fraction != 0 {
+            time.push_str(format!(".{fraction:06}").trim_end_matches('0'));
+        }
+        parts.push(time);
     }
-    if nanos != 0 {
-        parts.push(format!("{} ns", nanos));
-    }
-    if parts.is_empty() {
-        "0".to_string()
-    } else {
-        parts.join(" ")
-    }
+    parts.join(" ")
 }
 
 #[cfg(test)]
@@ -1628,6 +1653,50 @@ mod tests {
         assert!(may_change_catalog(
             "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x"
         ));
+    }
+
+    /// An interval reads the way DuckDB itself writes one (`CAST(… AS
+    /// VARCHAR)`, what its own shell shows): years, months and days in words,
+    /// the time as `HH:MM:SS`, and a fraction only when there is one.
+    #[test]
+    fn intervals_render_as_duckdb_writes_them() {
+        let conn = mem();
+        for literal in [
+            "INTERVAL 3 DAY",
+            "INTERVAL 1 DAY",
+            "INTERVAL '1 day 2 hours'",
+            "INTERVAL 0 SECOND",
+            "INTERVAL 90 MINUTE",
+            "INTERVAL 36 HOUR",
+            "INTERVAL 1 MONTH",
+            "INTERVAL 14 MONTH",
+            "INTERVAL 12 MONTH",
+            "INTERVAL 1 YEAR",
+            "INTERVAL '1 year 2 months 3 days 04:05:06.789'",
+            "INTERVAL 1500 MILLISECOND",
+            "INTERVAL 1 MICROSECOND",
+            "INTERVAL '-1 day'",
+            "INTERVAL '-2 hours'",
+            "INTERVAL '-1 day -02:30:00'",
+            "INTERVAL '1 day -02:00:00'",
+            "INTERVAL '-14 months'",
+            "INTERVAL '-1 month'",
+            "INTERVAL '-1 year'",
+            "INTERVAL '-0.5 seconds'",
+            "INTERVAL 1000 HOUR",
+            "TIMESTAMP '2026-09-02 10:00' - TIMESTAMP '2026-09-01 08:30'",
+        ] {
+            let QueryOutcome::Rows(ours) = run_of(&conn, &format!("SELECT {literal}")).unwrap()
+            else {
+                panic!("expected rows");
+            };
+            let duckdb: String = conn
+                .query_row(&format!("SELECT CAST({literal} AS VARCHAR)"), [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(ours.rows[0][0], duckdb, "{literal}");
+        }
     }
 
     #[test]
