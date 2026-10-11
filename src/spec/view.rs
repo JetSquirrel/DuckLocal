@@ -40,13 +40,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::chart::{AreaChart, LineChart};
-use gpui_kit::component::input::{
-    CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize,
-};
-use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::input::{CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
@@ -66,7 +64,6 @@ use lsp_types::{
     TextEdit,
 };
 
-use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::comment_card::CommentCard;
@@ -74,11 +71,12 @@ use crate::spec::comments::{self, Author, Comments};
 use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
-use crate::spec::plot::{GroupedBars, SeriesPlot, x_label_count};
-use crate::ui::chart::{format_value, legend_row, map_notes, parse_number, pie_parts};
-use crate::ui::geo::GeoPlot;
+use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
+use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
+use crate::ui::chart::{format_value, legend_row, map_notes, parse_number, pie_parts};
 use crate::ui::completion::starts_with_ignore_case;
+use crate::ui::geo::GeoPlot;
 use crate::ui::results::fit_column_width;
 
 /// The plot panels' default and drag bounds, in the spirit of the workspace's
@@ -88,8 +86,13 @@ const PLOT_MIN: f32 = 160.;
 const PLOT_MAX: f32 = 800.;
 /// A row of nothing but cards holds one number each: it starts short.
 const CARD_DEFAULT: f32 = 104.;
+/// A card with a note under its value needs a line more.
+const CARD_NOTED: f32 = 124.;
 const CARD_MIN: f32 = 80.;
 const CARD_MAX: f32 = 400.;
+/// A row of nothing but text panels heads what follows: a title and a line.
+const TEXT_DEFAULT: f32 = 76.;
+const TEXT_MIN: f32 = 40.;
 
 /// What a sortable header's arrow takes beside the column name.
 const SORT_ICON_WIDTH: f32 = 20.;
@@ -544,11 +547,15 @@ impl Dashboard {
                                     (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                                     _ => false,
                                 };
-                                same.then(|| this.tables.get(old).cloned().flatten()).flatten()
+                                same.then(|| this.tables.get(old).cloned().flatten())
+                                    .flatten()
                             })
                             .collect::<Vec<_>>();
                         this.table_subscriptions.retain(|(id, _)| {
-                            tables.iter().flatten().any(|table| table.entity_id() == *id)
+                            tables
+                                .iter()
+                                .flatten()
+                                .any(|table| table.entity_id() == *id)
                         });
                         this.tables = tables;
                         this.plots = run.plots;
@@ -613,11 +620,10 @@ impl Dashboard {
         else {
             return;
         };
-        let Some(row) = result
-            .rows
-            .iter()
-            .position(|row| row.get(x).is_some_and(|cell| cell.as_str() == band.as_ref()))
-        else {
+        let Some(row) = result.rows.iter().position(|row| {
+            row.get(x)
+                .is_some_and(|cell| cell.as_str() == band.as_ref())
+        }) else {
             return;
         };
         let name = plot.name.clone();
@@ -721,9 +727,7 @@ impl Dashboard {
                     .label(format!("{} = {value}", filter.column))
                     .icon(IconName::Close)
                     .tooltip(tr("dashboard.filter.clear"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.clear_picks(Some(&name), cx)
-                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.clear_picks(Some(&name), cx)))
             })
             .collect::<Vec<_>>();
         let several = chips.len() > 1;
@@ -779,7 +783,11 @@ impl Dashboard {
         let toggle = Button::new(("dashboard-sql", ix))
             .xsmall()
             .ghost()
-            .label(if shown { tr("dashboard.sql.hide") } else { "SQL" })
+            .label(if shown {
+                tr("dashboard.sql.hide")
+            } else {
+                "SQL"
+            })
             .tooltip(if shown {
                 tr("dashboard.sql.hide_tooltip")
             } else {
@@ -794,6 +802,8 @@ impl Dashboard {
                     cx.notify();
                 }
             }));
+        // A text panel runs no query: there is no SQL to show.
+        let has_sql = self.plots[ix].kind != "text";
         let comments = self.render_comment_button(ix, window, cx);
         let open = self.comments.open_on(&name);
         let commenting = self.comment_open.as_deref() == Some(name.as_str());
@@ -801,7 +811,8 @@ impl Dashboard {
             if keep {
                 this
             } else {
-                this.opacity(0.).group_hover(group.clone(), |style| style.opacity(1.))
+                this.opacity(0.)
+                    .group_hover(group.clone(), |style| style.opacity(1.))
             }
         };
         div()
@@ -816,12 +827,14 @@ impl Dashboard {
                     .right_2()
                     .gap_0p5()
                     .child(hover_only(div(), open > 0 || commenting).child(comments))
-                    .child(
-                        hover_only(div(), shown)
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().background)
-                            .child(toggle),
-                    ),
+                    .when(has_sql, |this| {
+                        this.child(
+                            hover_only(div(), shown)
+                                .rounded(cx.theme().radius)
+                                .bg(cx.theme().background)
+                                .child(toggle),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -880,7 +893,13 @@ impl Dashboard {
         };
         let button = Button::new(("dashboard-comments", ix))
             .xsmall()
-            .map(|this| if open > 0 { this.outline() } else { this.ghost() })
+            .map(|this| {
+                if open > 0 {
+                    this.outline()
+                } else {
+                    this.ghost()
+                }
+            })
             .icon(Icon::new(AssetIcon::MessageSquare))
             .when(open > 0, |this| this.label(open.to_string()))
             .tooltip(tr("dashboard.comments.show_tooltip"));
@@ -994,6 +1013,9 @@ impl Dashboard {
                 .unwrap_or_else(|| self.card_value_size(ix));
             return render_card(&self.plots[ix], size, cx);
         }
+        if self.plots[ix].kind == "text" {
+            return render_text(&self.plots[ix], cx);
+        }
         let (title, mut notice, failure, is_table, is_empty) = {
             let plot = &self.plots[ix];
             let is_empty = match plot.kind.as_str() {
@@ -1040,7 +1062,23 @@ impl Dashboard {
                     legend = pie_parts(&plot.pie, series.clone().into(), "dashboard-pie-key", cx).1;
                     trf("chart.pie.title", &[&series, &plot.label_name])
                 }
-                _ => trf("chart.title.by", &[&series, &plot.label_name]),
+                _ => {
+                    // Several series need a key; one is named in the title.
+                    if plot.series_names.len() > 1 {
+                        legend = plot
+                            .series_names
+                            .iter()
+                            .enumerate()
+                            .map(|(s, name)| {
+                                (
+                                    crate::ui::palette::color(s, cx),
+                                    SharedString::from(name.clone()),
+                                )
+                            })
+                            .collect();
+                    }
+                    trf("chart.title.by", &[&series, &plot.label_name])
+                }
             }
         });
 
@@ -1060,7 +1098,10 @@ impl Dashboard {
         } else if self.plots[ix].kind == "bar" && self.is_pickable(&self.plots[ix].name) {
             let picked = self.picked_band(&self.plots[ix]);
             let chart = GroupedBars::new(
-                (ElementId::from("dashboard-chart"), self.plots[ix].name.clone()),
+                (
+                    ElementId::from("dashboard-chart"),
+                    self.plots[ix].name.clone(),
+                ),
                 &self.plots[ix],
             )
             .selected(picked);
@@ -1142,7 +1183,9 @@ impl Dashboard {
                                 .child(axes),
                         )
                     })
-                    .when(!legend.is_empty(), |this| this.child(legend_row(legend, cx))),
+                    .when(!legend.is_empty(), |this| {
+                        this.child(legend_row(legend, cx))
+                    }),
             )
             .child(div().flex_1().min_h_0().child(body))
             .into_any_element()
@@ -1176,7 +1219,8 @@ impl Dashboard {
                             this.pick_row(&plot, &picked_from, row, false, cx);
                         }
                     });
-                self.table_subscriptions.push((table.entity_id(), subscription));
+                self.table_subscriptions
+                    .push((table.entity_id(), subscription));
             }
             // After a sort, the selected row moves to where its row went.
             let subscription = cx.observe(&table, |_, table, cx| {
@@ -1193,13 +1237,20 @@ impl Dashboard {
                     }
                 });
             });
-            self.table_subscriptions.push((table.entity_id(), subscription));
+            self.table_subscriptions
+                .push((table.entity_id(), subscription));
             self.tables[ix] = Some(table);
         }
         let table = self.tables[ix].clone().expect("built just above");
         let truncated = result.truncated;
         let row_count = result.rows.len();
-        let rows = table.read(cx).vertical_scroll_handle.0.borrow().base_handle.clone();
+        let rows = table
+            .read(cx)
+            .vertical_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone();
         // Stripes only once the rows fill the panel: striping pads a short
         // table with empty rows down to the panel's foot, which reads as
         // rows of nothing rather than as the end of the data.
@@ -1265,8 +1316,7 @@ impl Dashboard {
                                 tab_size: 2,
                                 hard_tabs: false,
                             });
-                        state.lsp_mut().completion_provider =
-                            Some(Rc::new(SpecCompletionProvider));
+                        state.lsp_mut().completion_provider = Some(Rc::new(SpecCompletionProvider));
                         // Installed before the editor first renders, so the
                         // component's tree-sitter factory — which has no
                         // `.dash` grammar — never takes the slot.
@@ -1434,104 +1484,115 @@ impl Dashboard {
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = if self.showing_source {
-            // The source view stands on its own, spec error or not: the text
-            // of a broken spec is exactly what one opens the source to fix.
-            self.render_source(window, cx)
-        } else if let Some(error) = self.spec_error.clone() {
-            self.render_spec_failure(error, cx)
-        } else if self.plots.is_empty() {
-            // The first run has not landed yet: loading, not empty. A spec
-            // that ran and has no plots is the empty state.
-            if self.running {
-                self.render_loading(cx)
+        let body =
+            if self.showing_source {
+                // The source view stands on its own, spec error or not: the text
+                // of a broken spec is exactly what one opens the source to fix.
+                self.render_source(window, cx)
+            } else if let Some(error) = self.spec_error.clone() {
+                self.render_spec_failure(error, cx)
+            } else if self.plots.is_empty() {
+                // The first run has not landed yet: loading, not empty. A spec
+                // that ran and has no plots is the empty state.
+                if self.running {
+                    self.render_loading(cx)
+                } else {
+                    self.render_empty(cx)
+                }
             } else {
-                self.render_empty(cx)
-            }
-        } else {
-            let rows = grid_rows(self.plots.iter().map(|plot| plot.width));
-            // Cards side by side share one value size: one shrunk alone left
-            // its number smaller and its label lower than its neighbours'.
-            self.card_sizes.clear();
-            for row in &rows {
-                let cards: Vec<usize> =
-                    row.iter().copied().filter(|&ix| self.plots[ix].kind == "card").collect();
-                let size = cards
+                let rows = grid_rows(self.plots.iter().map(|plot| plot.width));
+                // Cards side by side share one value size: one shrunk alone left
+                // its number smaller and its label lower than its neighbours'.
+                self.card_sizes.clear();
+                for row in &rows {
+                    let cards: Vec<usize> = row
+                        .iter()
+                        .copied()
+                        .filter(|&ix| self.plots[ix].kind == "card")
+                        .collect();
+                    let size = cards
+                        .iter()
+                        .map(|&ix| self.card_value_size(ix))
+                        .fold(CARD_VALUE_MAX, f32::min);
+                    self.card_sizes
+                        .extend(cards.into_iter().map(|ix| (ix, size)));
+                }
+                let mut stack = 0.;
+                let panels = rows
                     .iter()
-                    .map(|&ix| self.card_value_size(ix))
-                    .fold(CARD_VALUE_MAX, f32::min);
-                self.card_sizes.extend(cards.into_iter().map(|ix| (ix, size)));
-            }
-            let mut stack = 0.;
-            let panels = rows
-                .iter()
-                .map(|row| {
-                    let cards = row.iter().all(|&ix| self.plots[ix].kind == "card");
-                    let (default, min, max) = if cards {
-                        (CARD_DEFAULT, CARD_MIN, CARD_MAX)
-                    } else if let Some(height) = self.table_row_height(row) {
-                        // A row of short tables is as tall as its rows, not
-                        // a chart's height of empty space under them.
-                        (height, TABLE_MIN.min(height), PLOT_MAX)
-                    } else {
-                        (PLOT_DEFAULT, PLOT_MIN, PLOT_MAX)
-                    };
-                    stack += default;
-                    // A row short of twelve columns leaves the rest empty,
-                    // so a plot's width means the same on every row.
-                    let cells = row.iter().enumerate().map(|(position, &ix)| {
-                        let share = self.plots[ix].width as f32 / model::GRID_COLUMNS as f32;
+                    .map(|row| {
+                        let all = |kind: &str| row.iter().all(|&ix| self.plots[ix].kind == kind);
+                        // A heading row with a card beside it is a row of cards.
+                        let cards = row
+                            .iter()
+                            .all(|&ix| matches!(self.plots[ix].kind.as_str(), "card" | "text"));
+                        let (default, min, max) = if all("text") {
+                            (TEXT_DEFAULT, TEXT_MIN, CARD_MAX)
+                        } else if cards {
+                            let noted = row.iter().any(|&ix| self.plots[ix].note.is_some());
+                            let default = if noted { CARD_NOTED } else { CARD_DEFAULT };
+                            (default, CARD_MIN, CARD_MAX)
+                        } else if let Some(height) = self.table_row_height(row) {
+                            // A row of short tables is as tall as its rows, not
+                            // a chart's height of empty space under them.
+                            (height, TABLE_MIN.min(height), PLOT_MAX)
+                        } else {
+                            (PLOT_DEFAULT, PLOT_MIN, PLOT_MAX)
+                        };
+                        stack += default;
+                        // A row short of twelve columns leaves the rest empty,
+                        // so a plot's width means the same on every row.
+                        let cells = row.iter().enumerate().map(|(position, &ix)| {
+                            let share = self.plots[ix].width as f32 / model::GRID_COLUMNS as f32;
+                            div()
+                                .h_full()
+                                .w(relative(share))
+                                .min_w_0()
+                                .when(position > 0, |this| {
+                                    this.border_l_1().border_color(cx.theme().border)
+                                })
+                                .child(self.render_plot(ix, window, cx))
+                        });
+                        let cells = cells.collect::<Vec<_>>();
+                        resizable_panel()
+                            .size(px(default))
+                            .size_range(px(min)..px(max))
+                            .child(h_flex().size_full().children(cells))
+                    })
+                    .collect::<Vec<_>>();
+                // Every row keeps its default height and the tab scrolls, rather
+                // than a dozen plots squeezed into one screen and the rest clipped
+                // out of reach. Dragging a divider still trades height between
+                // neighbours; a tab taller than the stack is filled, as before.
+                let stack = px(stack);
+                let wheel = self.wheel.clone();
+                let viewport = self.wheel.viewport();
+                // The canvas sits outside the scrolling div, so its bounds are
+                // the viewport's, not the scrolled content's.
+                div()
+                    .size_full()
+                    .relative()
+                    .child(
                         div()
-                            .h_full()
-                            .w(relative(share))
-                            .min_w_0()
-                            .when(position > 0, |this| {
-                                this.border_l_1().border_color(cx.theme().border)
+                            .id(format!("dashboard-scroll-{}", self.id))
+                            .size_full()
+                            .on_scroll_wheel(move |event, window, _| {
+                                wheel.stack_scrolled(event, window)
                             })
-                            .child(self.render_plot(ix, window, cx))
-                    });
-                    let cells = cells.collect::<Vec<_>>();
-                    resizable_panel()
-                        .size(px(default))
-                        .size_range(px(min)..px(max))
-                        .child(h_flex().size_full().children(cells))
-                })
-                .collect::<Vec<_>>();
-            // Every row keeps its default height and the tab scrolls, rather
-            // than a dozen plots squeezed into one screen and the rest clipped
-            // out of reach. Dragging a divider still trades height between
-            // neighbours; a tab taller than the stack is filled, as before.
-            let stack = px(stack);
-            let wheel = self.wheel.clone();
-            let viewport = self.wheel.viewport();
-            // The canvas sits outside the scrolling div, so its bounds are
-            // the viewport's, not the scrolled content's.
-            div()
-                .size_full()
-                .relative()
-                .child(
-                    div()
-                        .id(format!("dashboard-scroll-{}", self.id))
-                        .size_full()
-                        .on_scroll_wheel(move |event, window, _| {
-                            wheel.stack_scrolled(event, window)
-                        })
-                        .overflow_y_scrollbar()
-                        .child(
-                            div().w_full().h(stack).min_h_full().child(
+                            .overflow_y_scrollbar()
+                            .child(div().w_full().h(stack).min_h_full().child(
                                 v_resizable(format!("dashboard-{}", self.id)).children(panels),
-                            ),
-                        ),
-                )
-                .child(
-                    canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {})
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full(),
-                )
-                .into_any_element()
-        };
+                            )),
+                    )
+                    .child(
+                        canvas(move |b, _, _| viewport.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    )
+                    .into_any_element()
+            };
 
         v_flex()
             .size_full()
@@ -1539,7 +1600,9 @@ impl Render for Dashboard {
             .text_color(cx.theme().foreground)
             .children(self.render_conflict_warning(cx))
             .children(self.render_stale_warning(cx))
-            .when(!self.showing_source, |this| this.children(self.render_picks(cx)))
+            .when(!self.showing_source, |this| {
+                this.children(self.render_picks(cx))
+            })
             .child(body)
             .into_any_element()
     }
@@ -1561,8 +1624,8 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let display = path.display().to_string();
     let spec = (|| -> Result<Spec, String> {
         let source = std::fs::read_to_string(path).map_err(|e| format!("{display}: {e}"))?;
-        let file = model::parse(&source)
-            .map_err(|e| format!("{display}:{}: {}", e.line, e.message))?;
+        let file =
+            model::parse(&source).map_err(|e| format!("{display}:{}: {}", e.line, e.message))?;
         model::validate(&file).map_err(|diagnostics| {
             diagnostics
                 .iter()
@@ -1626,7 +1689,10 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let results = outcomes
         .iter()
         .filter_map(|(name, (_, outcome))| {
-            outcome.as_ref().ok().map(|result| (name.clone(), result.clone()))
+            outcome
+                .as_ref()
+                .ok()
+                .map(|result| (name.clone(), result.clone()))
         })
         .collect();
 
@@ -1672,13 +1738,7 @@ fn picks_for(
 /// One plot's chart element, built from the prepared data on each frame;
 /// cloning the `Arc`s is a refcount bump, not a copy of the row set.
 fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
-    let palette = [
-        cx.theme().chart_1,
-        cx.theme().chart_2,
-        cx.theme().chart_3,
-        cx.theme().chart_4,
-        cx.theme().chart_5,
-    ];
+    let palette = crate::ui::palette::series(cx);
     let id = ("dashboard-chart", plot_ix);
     // The hand-built plots key their hover state and path caches on the
     // plot's name — unique after validation — which survives reordering the
@@ -1801,6 +1861,10 @@ fn card_value_size(value: &str, room: Option<f32>) -> f32 {
 
 fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
     let value = plot.card.clone().unwrap_or_default();
+    let tone = plot
+        .tone
+        .as_deref()
+        .and_then(|name| crate::ui::palette::tone(name, cx));
     v_flex()
         .size_full()
         .px_4()
@@ -1808,6 +1872,9 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
         .gap_1()
         .justify_center()
         .overflow_hidden()
+        // A toned card says so across its top, the way a status strip does;
+        // the label underneath says what the colour means.
+        .when_some(tone, |this, (rule, _)| this.border_t_3().border_color(rule))
         .child(
             div()
                 .text_sm()
@@ -1824,8 +1891,18 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .whitespace_nowrap()
                 .text_ellipsis()
+                .when_some(tone, |this, (_, ink)| this.text_color(ink))
                 .child(value),
         )
+        .when_some(plot.note.clone(), |this, note| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .text_ellipsis()
+                    .child(note),
+            )
+        })
         .when_some(plot.notice.clone(), |this, notice| {
             this.child(
                 div()
@@ -1833,6 +1910,36 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                     .text_color(cx.theme().muted_foreground)
                     .text_ellipsis()
                     .child(notice),
+            )
+        })
+        .into_any_element()
+}
+
+/// A `text` panel: a heading and the words under it, left-aligned like the
+/// cards' labels so a dashboard's sections read down one edge.
+fn render_text(plot: &PreparedPlot, cx: &App) -> AnyElement {
+    v_flex()
+        .size_full()
+        .px_4()
+        .py_3()
+        .gap_1()
+        .justify_center()
+        .overflow_hidden()
+        .when(!plot.title.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_ellipsis()
+                    .child(plot.title.clone()),
+            )
+        })
+        .when_some(plot.text.clone(), |this, text| {
+            this.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text),
             )
         })
         .into_any_element()
@@ -2140,7 +2247,10 @@ mod tests {
             kind,
         };
         let result = QueryResult {
-            columns: vec![column("name", ColumnKind::Text), column("n", ColumnKind::Numeric)],
+            columns: vec![
+                column("name", ColumnKind::Text),
+                column("n", ColumnKind::Numeric),
+            ],
             rows: [["b", "10"], ["a", "9"], ["c", "NULL"], ["d", "1,200"]]
                 .iter()
                 .map(|row| row.iter().map(|cell| cell.to_string()).collect())
@@ -2149,7 +2259,10 @@ mod tests {
             truncated: false,
         };
         assert_eq!(sorted_rows(&result, 1, ColumnSort::Ascending), [1, 0, 3, 2]);
-        assert_eq!(sorted_rows(&result, 1, ColumnSort::Descending), [3, 0, 1, 2]);
+        assert_eq!(
+            sorted_rows(&result, 1, ColumnSort::Descending),
+            [3, 0, 1, 2]
+        );
         assert_eq!(sorted_rows(&result, 0, ColumnSort::Ascending), [1, 0, 2, 3]);
         // A third click goes back to the query's own order.
         assert_eq!(sorted_rows(&result, 1, ColumnSort::Default), [0, 1, 2, 3]);
@@ -2178,8 +2291,11 @@ filter "channel" { plot = plot.channels }
             .join("target/view-tests")
             .join(format!("pick-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("orders.csv"), "channel,amount\nweb,10\nshop,20\nweb,5\n,1\n")
-            .unwrap();
+        std::fs::write(
+            dir.join("orders.csv"),
+            "channel,amount\nweb,10\nshop,20\nweb,5\n,1\n",
+        )
+        .unwrap();
         let path = dir.join("board.dash");
         std::fs::write(&path, BOARD).unwrap();
 
@@ -2213,7 +2329,10 @@ filter "channel" { plot = plot.channels }
 
         // A reload reuses nothing: every query runs.
         let reloaded = load(&path, &picks, &HashMap::new());
-        assert!(!Arc::ptr_eq(&fresh.results["count"], &reloaded.results["count"]));
+        assert!(!Arc::ptr_eq(
+            &fresh.results["count"],
+            &reloaded.results["count"]
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 

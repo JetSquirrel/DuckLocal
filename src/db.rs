@@ -31,6 +31,16 @@ pub fn interrupt() {
     }
 }
 
+/// Where every connection DuckLocal opens starts — the window's, the CLI's,
+/// the history store's — before each adds its own settings. DuckDB installs
+/// a known extension the first time a query needs one, which is a download
+/// from extensions.duckdb.org nobody asked for; DuckLocal makes no request
+/// nobody asked for, so that is off. An extension already installed (from
+/// the Extensions tab, or an explicit `INSTALL`) still loads on its own.
+pub(crate) fn config() -> duckdb::Result<duckdb::Config> {
+    duckdb::Config::default().with("autoinstall_known_extensions", "false")
+}
+
 /// How the current database was opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DatabaseTarget {
@@ -126,7 +136,7 @@ pub fn open_file(path: &str) -> Result<()> {
 fn open_without_a_second_instance(path: &str) -> Result<Connection> {
     let guard = lock()?;
     let Some(conn) = guard.as_ref() else {
-        return Ok(Connection::open(path)?);
+        return Ok(Connection::open_with_flags(path, config()?)?);
     };
     let canonical = crate::sources::canonical_file_path(path).ok();
     let databases = {
@@ -152,7 +162,7 @@ fn open_without_a_second_instance(path: &str) -> Result<Connection> {
             let attachment = &databases[ix];
             let current: String = conn.query_row("SELECT current_database()", [], |r| r.get(0))?;
             detach_database_of(conn, &attachment.alias)?;
-            match Connection::open(path) {
+            match Connection::open_with_flags(path, config()?) {
                 Ok(opened) => Ok(opened),
                 Err(error) => {
                     // A failed switch must not leave the old workspace with
@@ -163,13 +173,13 @@ fn open_without_a_second_instance(path: &str) -> Result<Connection> {
                 }
             }
         }
-        None => Ok(Connection::open(path)?),
+        None => Ok(Connection::open_with_flags(path, config()?)?),
     }
 }
 
 /// Open an in-memory database, replacing any current connection.
 pub fn open_memory() -> Result<()> {
-    replace(Some(Connection::open_in_memory()?))
+    replace(Some(Connection::open_in_memory_with_flags(config()?)?))
 }
 
 #[cfg(test)]
@@ -586,7 +596,10 @@ mod tests {
         conn.execute_batch(&format!("CREATE TABLE {alias}.events AS SELECT 1 AS id"))
             .unwrap();
         // Taken now: the next one gets a suffix.
-        assert_eq!(database_alias_of(&conn, path, &[]).unwrap(), "db_2026_10_logs_2");
+        assert_eq!(
+            database_alias_of(&conn, path, &[]).unwrap(),
+            "db_2026_10_logs_2"
+        );
 
         // Detaching the database in use moves the session off it first.
         conn.execute_batch(&format!("USE {alias}")).unwrap();
@@ -656,9 +669,10 @@ mod tests {
             conn.execute_batch("CREATE OR REPLACE TABLE retained AS SELECT 42 AS answer")
                 .unwrap();
         }
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        let mut permissions = original.clone();
         permissions.set_readonly(true);
-        std::fs::set_permissions(&path, permissions.clone()).unwrap();
+        std::fs::set_permissions(&path, permissions).unwrap();
         open_memory().unwrap();
         with_connection(|conn| {
             attach_database_of(
@@ -687,9 +701,38 @@ mod tests {
         assert_eq!(current, "logs");
         assert_eq!(answer, 42);
         close().unwrap();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&path, permissions).unwrap();
+        // Restored, not set_readonly(false): that would leave the file
+        // world-writable on Unix.
+        std::fs::set_permissions(&path, original).unwrap();
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The window's connection, in memory or on a file, never installs an
+    /// extension behind a query's back.
+    #[test]
+    fn the_window_never_installs_extensions_on_its_own() {
+        let _guard = connection_guard();
+        let autoinstall = || -> String {
+            with_connection(|conn| {
+                Ok(conn.query_row(
+                    "SELECT current_setting('autoinstall_known_extensions')::VARCHAR",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap()
+        };
+        open_memory().unwrap();
+        assert_eq!(autoinstall(), "false");
+        let path = std::env::temp_dir().join(format!(
+            "ducklocal_no_autoinstall_{}.duckdb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        open_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(autoinstall(), "false");
+        close().unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

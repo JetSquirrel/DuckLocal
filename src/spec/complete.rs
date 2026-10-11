@@ -13,8 +13,8 @@
 use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
-/// them: the common ones first, a map's and a card's own after.
-pub(crate) const PLOT_ATTRS: [&str; 14] = [
+/// them: the common ones first, a map's, a card's and a text panel's own after.
+pub(crate) const PLOT_ATTRS: [&str; 17] = [
     "type",
     "query",
     "x",
@@ -29,6 +29,9 @@ pub(crate) const PLOT_ATTRS: [&str; 14] = [
     "size_scale",
     "tooltip",
     "value",
+    "note",
+    "tone",
+    "text",
 ];
 
 /// The block kinds, in the order completion offers them at the top level.
@@ -78,10 +81,7 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
     let lines: Vec<&str> = source.lines().collect();
     // Past the last line the cursor sits at the top level of the file.
     let cursor_line = lines.get(line.saturating_sub(1)).copied().unwrap_or("");
-    let before: String = cursor_line
-        .chars()
-        .take(col.saturating_sub(1))
-        .collect();
+    let before: String = cursor_line.chars().take(col.saturating_sub(1)).collect();
 
     if inside_heredoc(&lines, line) {
         return Vec::new();
@@ -110,17 +110,15 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .collect();
     }
 
-    // The two attributes whose value is one of a fixed set of strings.
+    // The attributes whose value is one of a fixed set of strings.
     let choices = [
         ("type", model::PLOT_TYPES, "plot type"),
         ("size_scale", model::SIZE_SCALES, "size scale"),
+        ("tone", model::TONES, "card tone"),
     ];
-    if let Some((quoted, values, detail)) = choices
-        .iter()
-        .find_map(|(attr, values, detail)| {
-            after_attr_equals(&before, attr).map(|quoted| (quoted, *values, *detail))
-        })
-    {
+    if let Some((quoted, values, detail)) = choices.iter().find_map(|(attr, values, detail)| {
+        after_attr_equals(&before, attr).map(|quoted| (quoted, *values, *detail))
+    }) {
         return values
             .iter()
             .map(|ty| Completion {
@@ -145,7 +143,9 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .collect(),
         Some(kind) if kind == "query" => vec![attribute("sql", "query")],
         Some(kind) if kind == "source" => vec![attribute("path", "source")],
-        Some(kind) if kind == "filter" => vec![attribute("plot", "filter"), attribute("column", "filter")],
+        Some(kind) if kind == "filter" => {
+            vec![attribute("plot", "filter"), attribute("column", "filter")]
+        }
         // An unknown block kind has no known attributes to offer.
         Some(_) => Vec::new(),
         None => BLOCKS
@@ -384,9 +384,7 @@ mod tests {
     fn block_types_at_the_top_level() {
         let candidates = complete("", 1, 1);
         assert_eq!(labels(&candidates), BLOCKS);
-        assert!(candidates
-            .iter()
-            .all(|c| c.kind == CompletionKind::Block));
+        assert!(candidates.iter().all(|c| c.kind == CompletionKind::Block));
 
         // Between two blocks, and past the last one.
         assert_eq!(labels(&complete(SPEC, 6, 1)), BLOCKS);
@@ -398,10 +396,7 @@ mod tests {
         // Line 8 of SPEC is `  type = "bar"`, inside the plot block; a fresh
         // line inside it gets every plot attribute.
         let candidates = complete("plot \"p\" {\n  \n}", 2, 3);
-        assert_eq!(
-            labels(&candidates),
-            super::PLOT_ATTRS
-        );
+        assert_eq!(labels(&candidates), super::PLOT_ATTRS);
         assert!(candidates
             .iter()
             .all(|c| c.kind == CompletionKind::Attribute));
@@ -428,9 +423,7 @@ mod tests {
         // Inside an opened quote the insert text is the bare word.
         let candidates = complete("plot \"p\" {\n  type = \"li\n}", 2, 12);
         assert_eq!(labels(&candidates), model::PLOT_TYPES);
-        assert!(candidates
-            .iter()
-            .all(|c| c.kind == CompletionKind::Value));
+        assert!(candidates.iter().all(|c| c.kind == CompletionKind::Value));
         assert_eq!(candidates[0].insert_text, "line");
 
         // Without a quote the insert text brings its own.
@@ -456,7 +449,8 @@ mod tests {
 
     #[test]
     fn filter_attributes_and_plot_names() {
-        let source = "plot \"channels\" {\n  type = \"bar\"\n}\nfilter \"c\" {\n  plot = plot.\n}\n";
+        let source =
+            "plot \"channels\" {\n  type = \"bar\"\n}\nfilter \"c\" {\n  plot = plot.\n}\n";
         assert_eq!(labels(&complete(source, 5, 3)), ["plot", "column"]);
         assert_eq!(labels(&complete(source, 5, 15)), ["channels"]);
     }
@@ -472,10 +466,7 @@ mod tests {
         // The enclosing block is found by scanning backwards past the
         // unclosed query block to the plot opener.
         let source = "query \"q1\" {\n  sql = \"SELECT 1\"\n\nplot \"p\" {\n  t\n";
-        assert_eq!(
-            labels(&complete(source, 5, 3)),
-            super::PLOT_ATTRS
-        );
+        assert_eq!(labels(&complete(source, 5, 3)), super::PLOT_ATTRS);
     }
 
     #[test]

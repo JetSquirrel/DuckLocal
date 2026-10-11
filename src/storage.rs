@@ -133,7 +133,7 @@ pub fn library_version() -> &'static str {
 /// Whether DuckDB refused a file over its storage version: the two messages
 /// it opens a file with, for the header's version number and for the
 /// serialization a newer release wrote.
-fn refused_for_its_version(error: &str) -> bool {
+pub(crate) fn refused_for_its_version(error: &str) -> bool {
     error.contains("database file with version number")
         || error.contains("storage version greater than the latest version")
 }
@@ -236,15 +236,23 @@ mod tests {
         assert!(message.contains("STORAGE_VERSION"), "{message}");
 
         let same = write("ducklocal_storage_same.duckdb", &header(64, "v1.5.5"));
-        assert_eq!(explain_open_failure(&same, "v1.5.5", TOO_NEW, Language::En), None);
+        assert_eq!(
+            explain_open_failure(&same, "v1.5.5", TOO_NEW, Language::En),
+            None
+        );
 
         let ancient = write("ducklocal_storage_ancient.duckdb", &header(51, ""));
         assert!(explain_open_failure(&ancient, "v1.5.5", OLD_NUMBER, Language::En).is_some());
 
         let sqlite = write("ducklocal_storage.sqlite", b"SQLite format 3\0....");
-        assert!(explain_open_failure(&sqlite, "v1.5.5", "not a valid DuckDB database file", Language::En)
-            .unwrap()
-            .contains("sqlite"));
+        assert!(explain_open_failure(
+            &sqlite,
+            "v1.5.5",
+            "not a valid DuckDB database file",
+            Language::En
+        )
+        .unwrap()
+        .contains("sqlite"));
 
         for path in [newer, same, ancient, sqlite] {
             let _ = std::fs::remove_file(path);
@@ -263,7 +271,10 @@ mod tests {
         std::fs::write(&path, header(64, "v1.10.0")).unwrap();
         let path = path.to_str().unwrap().to_string();
         let locked = "IO Error: Could not set lock on file \"x.duckdb\": Conflicting lock is held";
-        assert_eq!(explain_open_failure(&path, "v1.5.5", locked, Language::En), None);
+        assert_eq!(
+            explain_open_failure(&path, "v1.5.5", locked, Language::En),
+            None
+        );
         assert!(explain_open_failure(&path, "v1.5.5", OLD_NUMBER, Language::En).is_some());
         let _ = std::fs::remove_file(path);
     }

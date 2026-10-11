@@ -312,7 +312,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// PNG or JPEG bytes to the BGRA frame GPUI draws.
 fn decode(bytes: &[u8]) -> anyhow::Result<Arc<RenderImage>> {
     let mut pixels = image::load_from_memory(bytes)?.into_rgba8();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(Arc::new(RenderImage::new([Frame::new(pixels)])))

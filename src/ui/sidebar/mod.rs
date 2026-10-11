@@ -28,7 +28,9 @@ use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{tree, TreeEvent, TreeState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -36,8 +38,8 @@ use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf};
 use crate::recents::RecentDocument;
 use crate::state::{
-    format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged,
-    HistoryChanged, RecentsChanged, S3ConfigChanged,
+    format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged, HistoryChanged,
+    RecentsChanged, S3ConfigChanged,
 };
 use crate::ui::workspace::Workspace;
 

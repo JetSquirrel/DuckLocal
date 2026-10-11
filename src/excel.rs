@@ -23,12 +23,7 @@ pub fn sheets(path: &str) -> Result<Vec<String>> {
 /// replacing a table of that name. Answers `false` — and creates nothing —
 /// when the sheet has no rows at all, so the caller can skip it rather than
 /// register a name for nothing.
-pub fn attach_sheet(
-    conn: &Connection,
-    path: &str,
-    sheet: &str,
-    table_name: &str,
-) -> Result<bool> {
+pub fn attach_sheet(conn: &Connection, path: &str, sheet: &str, table_name: &str) -> Result<bool> {
     import(conn, path, sheet, table_name, false)
 }
 
@@ -300,7 +295,9 @@ mod tests {
     fn column_types(conn: &Connection, table: &str) -> Vec<(String, String)> {
         conn.prepare(&format!("DESCRIBE {}", quote(table)))
             .unwrap()
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .unwrap()
             .collect::<std::result::Result<_, _>>()
             .unwrap()
@@ -449,4 +446,3 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 }
-

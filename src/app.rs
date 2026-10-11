@@ -105,24 +105,14 @@ impl DuckLocalApp {
                 // history store open.
                 let remembered_dashboards = crate::spec::tabs::restore();
                 let offer_setup = crate::setup::offer_once();
-                Ok::<_, anyhow::Error>((
-                    dashboards,
-                    remembered_dashboards,
-                    outcome,
-                    offer_setup,
-                ))
+                Ok::<_, anyhow::Error>((dashboards, remembered_dashboards, outcome, offer_setup))
             })
             .await;
 
             this.update_in(cx, |this, window, cx| {
                 this.started = true;
                 match result {
-                    Ok((
-                        dashboards,
-                        remembered_dashboards,
-                        outcome,
-                        offer_setup,
-                    )) => {
+                    Ok((dashboards, remembered_dashboards, outcome, offer_setup)) => {
                         apply_open_outcome(open_state, outcome, window, cx);
                         this.workspace.update(cx, |ws, cx| {
                             for path in dashboards {
@@ -159,8 +149,10 @@ impl DuckLocalApp {
                         }
                     }
                     Err(e) => {
-                        window
-                            .push_notification(trf("notify.init_memory.failed", &[&e.to_string()]), cx);
+                        window.push_notification(
+                            trf("notify.init_memory.failed", &[&e.to_string()]),
+                            cx,
+                        );
                     }
                 }
             })
@@ -183,9 +175,7 @@ impl DuckLocalApp {
                     Err(_) => break,
                 }
                 let paths: Vec<String> = std::mem::take(
-                    &mut *FINDER_OPENS
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner),
+                    &mut *FINDER_OPENS.lock().unwrap_or_else(PoisonError::into_inner),
                 );
                 let requests = crate::remote::take_pending();
                 let state_wanted = crate::remote::state_wanted();
@@ -228,7 +218,12 @@ impl DuckLocalApp {
     /// Finder opens with it: a `.dash` file opens a dashboard tab, and
     /// everything else is the same request the command line and the pickers
     /// make.
-    fn open_external(&mut self, requested: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_external(
+        &mut self,
+        requested: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (dashboards, data) = crate::spec::tabs::split(requested);
         for path in dashboards {
             self.workspace
@@ -253,8 +248,9 @@ impl DuckLocalApp {
         let Some(sql) = request.sql else {
             return;
         };
-        self.workspace
-            .update(cx, |ws, cx| ws.open_query_tab(sql, request.title, window, cx));
+        self.workspace.update(cx, |ws, cx| {
+            ws.open_query_tab(sql, request.title, window, cx)
+        });
         if !request.run {
             return;
         }

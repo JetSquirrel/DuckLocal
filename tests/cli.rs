@@ -727,7 +727,11 @@ fn check_runs_sources_from_the_specs_folder() {
     let s = Sandbox::new();
     let dash = s.0.join("dash");
     std::fs::create_dir_all(dash.join("exports")).unwrap();
-    std::fs::write(dash.join("exports/orders-1.csv"), "channel,amount\nweb,10\nshop,20\n").unwrap();
+    std::fs::write(
+        dash.join("exports/orders-1.csv"),
+        "channel,amount\nweb,10\nshop,20\n",
+    )
+    .unwrap();
     std::fs::write(dash.join("exports/orders-2.csv"), "channel,amount\nweb,5\n").unwrap();
     std::fs::write(
         dash.join("board.dash"),
@@ -768,7 +772,9 @@ plot "stats"  { type = "table" query = query.shape width = 6 }
     let resolved = out["sources"][0]["resolved"].as_str().unwrap();
     // A native path: `\` on Windows.
     assert!(
-        resolved.replace('\\', "/").ends_with("dash/exports/orders-*.csv"),
+        resolved
+            .replace('\\', "/")
+            .ends_with("dash/exports/orders-*.csv"),
         "{resolved}"
     );
     assert!(std::path::Path::new(resolved).is_absolute(), "{resolved}");
@@ -787,7 +793,11 @@ plot "stats"  { type = "table" query = query.shape width = 6 }
         "source \"orders\" { path = \"exports/orders-*.csv\" }\nquery \"q\" { sql = \"FROM orders\" }\nplot \"c\" { type = \"card\" query = query.q value = revenue }\n",
     )
     .unwrap();
-    let error = s.error(&["check", "dash/badcard.dash", "--database", "data.duckdb"], 2, "spec");
+    let error = s.error(
+        &["check", "dash/badcard.dash", "--database", "data.duckdb"],
+        2,
+        "spec",
+    );
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("value = \"revenue\""), "{message}");
 
@@ -799,7 +809,11 @@ plot "stats"  { type = "table" query = query.shape width = 6 }
     )
     .unwrap();
     s.error(&["check", "dash/gone.dash"], 1, "sql");
-    s.error(&["check", "dash/gone.dash", "--database", "data.duckdb"], 1, "sql");
+    s.error(
+        &["check", "dash/gone.dash", "--database", "data.duckdb"],
+        1,
+        "sql",
+    );
 
     // In memory, the sources are all there is: a query over them runs and its
     // columns are checked, and one over a table no source defines is
@@ -817,7 +831,11 @@ plot "stats"  { type = "table" query = query.shape width = 6 }
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0]["query"], "b");
     assert!(out["queries"][1].get("columns").is_none());
-    s.error(&["check", "dash/mixed.dash", "--database", "data.duckdb"], 1, "sql");
+    s.error(
+        &["check", "dash/mixed.dash", "--database", "data.duckdb"],
+        1,
+        "sql",
+    );
 
     // Statically: a workbook, a name SQL cannot read bare, a width off the grid.
     std::fs::write(
@@ -834,9 +852,15 @@ plot "c" { type = "card" query = query.q x = a }
     let error = s.error(&["check", "dash/bad.dash"], 2, "spec");
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("bad.dash:2: A workbook"), "{message}");
-    assert!(message.contains("bad.dash:3: source \"2026 orders\""), "{message}");
+    assert!(
+        message.contains("bad.dash:3: source \"2026 orders\""),
+        "{message}"
+    );
     assert!(message.contains("bad.dash:5: width"), "{message}");
-    assert!(message.contains("bad.dash:6: A card shows one value"), "{message}");
+    assert!(
+        message.contains("bad.dash:6: A card shows one value"),
+        "{message}"
+    );
 }
 
 /// `check` validates a dashboard spec the way the CLI validates everything:
@@ -928,7 +952,11 @@ plot "b" { type = "line" query = query.revenue x = channel y = channel }
 "#,
     )
     .unwrap();
-    let error = s.error(&["check", "bad.dash", "--database", "data.duckdb"], 2, "spec");
+    let error = s.error(
+        &["check", "bad.dash", "--database", "data.duckdb"],
+        2,
+        "spec",
+    );
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("\"nope\""), "{message}");
     assert!(message.contains("not numeric"), "{message}");
@@ -971,7 +999,11 @@ plot "where" { type = "map" query = query.stations lat = name }
 "#,
     )
     .unwrap();
-    let error = s.error(&["check", "badgeo.dash", "--database", "data.duckdb"], 2, "spec");
+    let error = s.error(
+        &["check", "badgeo.dash", "--database", "data.duckdb"],
+        2,
+        "spec",
+    );
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("lat = \"name\""), "{message}");
     assert!(message.contains("not numeric"), "{message}");
@@ -983,7 +1015,11 @@ plot "where" { type = "map" query = query.stations lat = name }
     s.error(&["check", "dashboard.dash", "extra.dash"], 2, "argument");
     std::fs::write(s.0.join("syntax.dash"), "plot {\n").unwrap();
     s.error(&["check", "syntax.dash"], 2, "spec");
-    std::fs::write(s.0.join("dangling.dash"), "plot \"p\" { type = \"line\" query = query.ghost x = a y = b }").unwrap();
+    std::fs::write(
+        s.0.join("dangling.dash"),
+        "plot \"p\" { type = \"line\" query = query.ghost x = a y = b }",
+    )
+    .unwrap();
     let error = s.error(&["check", "dangling.dash"], 2, "spec");
     assert!(error["error"]["message"]
         .as_str()
@@ -1001,8 +1037,16 @@ plot "where" { type = "map" query = query.stations lat = name }
         .contains("exactly one SQL statement"));
     // A query whose table does not exist describes nothing: a database
     // failure, not a spec mistake.
-    std::fs::write(s.0.join("absent.dash"), "query \"q\" { sql = \"SELECT * FROM absent\" }").unwrap();
-    s.error(&["check", "absent.dash", "--database", "data.duckdb"], 1, "sql");
+    std::fs::write(
+        s.0.join("absent.dash"),
+        "query \"q\" { sql = \"SELECT * FROM absent\" }",
+    )
+    .unwrap();
+    s.error(
+        &["check", "absent.dash", "--database", "data.duckdb"],
+        1,
+        "sql",
+    );
 
     // A query that plans but fails once rows are read — here a cast that the
     // data cannot satisfy — fails the check the way it would fail the
@@ -1025,10 +1069,20 @@ plot "cast_again" { type = "bar" query = query.cast_again x = channel y = n }
 "#,
     )
     .unwrap();
-    let error = s.error(&["check", "runtime.dash", "--database", "data.duckdb"], 1, "sql");
+    let error = s.error(
+        &["check", "runtime.dash", "--database", "data.duckdb"],
+        1,
+        "sql",
+    );
     let message = error["error"]["message"].as_str().unwrap();
-    assert!(message.contains("runtime.dash:5: query \"cast\""), "{message}");
-    assert!(message.contains("runtime.dash:8: query \"cast_again\""), "{message}");
+    assert!(
+        message.contains("runtime.dash:5: query \"cast\""),
+        "{message}"
+    );
+    assert!(
+        message.contains("runtime.dash:8: query \"cast_again\""),
+        "{message}"
+    );
     assert!(message.contains("Conversion Error"), "{message}");
     assert!(!message.contains("query \"ok\""), "{message}");
     // Without a database nothing runs, so the same file checks clean.
@@ -1044,7 +1098,9 @@ fn open_checks_its_arguments_and_never_starts_a_window_it_was_told_not_to() {
     let s = Sandbox::new();
     let output = s.run(&["open", "--help"], None);
     assert!(output.status.success());
-    assert!(String::from_utf8(output.stdout).unwrap().contains("--no-launch"));
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("--no-launch"));
     for args in [
         vec!["open"],
         vec!["open", "--no-launch"],
@@ -1072,7 +1128,11 @@ fn open_checks_its_arguments_and_never_starts_a_window_it_was_told_not_to() {
 fn schema_lists_files_and_databases_sized_for_a_prompt() {
     let s = Sandbox::new();
     std::fs::create_dir_all(s.0.join("data/nested")).unwrap();
-    std::fs::write(s.0.join("data/orders.csv"), "channel,amount\nweb,10\nshop,20\n").unwrap();
+    std::fs::write(
+        s.0.join("data/orders.csv"),
+        "channel,amount\nweb,10\nshop,20\n",
+    )
+    .unwrap();
     std::fs::write(s.0.join("data/nested/notes.txt"), "a,b\n1,2\n").unwrap();
     s.success(&[
         "query",
@@ -1089,7 +1149,14 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
         .iter()
         .map(|r| r["name"].as_str().unwrap().replace('\\', "/"))
         .collect();
-    assert_eq!(names, ["data/ids.parquet", "data/nested/notes.txt", "data/orders.csv"]);
+    assert_eq!(
+        names,
+        [
+            "data/ids.parquet",
+            "data/nested/notes.txt",
+            "data/orders.csv"
+        ]
+    );
     // Parquet knows its row count; a CSV would need a scan.
     assert_eq!(relations[0]["rows"], 7);
     assert!(relations[2]["rows"].is_null());
@@ -1102,7 +1169,10 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     let rows = s.success(&[
         "query",
         "--sql",
-        &format!("SELECT count(*) AS n FROM {}", relations[1]["from"].as_str().unwrap()),
+        &format!(
+            "SELECT count(*) AS n FROM {}",
+            relations[1]["from"].as_str().unwrap()
+        ),
     ]);
     assert_eq!(rows["rows"][0][0], 1);
 
@@ -1112,7 +1182,14 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
         ddl.push(format!("CREATE TABLE t{i} (a INTEGER, b VARCHAR)"));
     }
     for sql in &ddl {
-        s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", sql]);
+        s.success(&[
+            "query",
+            "--database",
+            "w.duckdb",
+            "--read-write",
+            "--sql",
+            sql,
+        ]);
     }
     let out = s.object(&["schema", "--database", "w.duckdb"]);
     assert_eq!(out["detail"], "summary");
@@ -1128,7 +1205,10 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     // A database named as a PATH is the same request.
     let one = s.object(&["schema", "w.duckdb", "--table", "t3"]);
     assert_eq!(one["relations"][0]["columns"][1]["type"], "VARCHAR");
-    assert_eq!(s.object(&["schema", "w.duckdb", "--full"])["without_columns"], 0);
+    assert_eq!(
+        s.object(&["schema", "w.duckdb", "--full"])["without_columns"],
+        0
+    );
 
     s.error(&["schema"], 2, "argument");
     s.error(&["schema", "missing.csv"], 2, "argument");
@@ -1142,12 +1222,32 @@ fn errors_say_what_to_do_next() {
     let error = s.error(&["query", "--limt", "5"], 2, "argument");
     assert_eq!(error["error"]["hint"], "Did you mean --limit?");
     let error = s.error(&["query", "--sql", "SELECT 1; SELECT 2"], 2, "argument");
-    assert!(error["error"]["hint"].as_str().unwrap().contains("one statement"));
+    assert!(error["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("one statement"));
     let error = s.error(&["query", "--sql", "SELECT * FROM missing_table"], 1, "sql");
-    assert!(error["error"]["hint"].as_str().unwrap().contains("ducklocal schema"));
-    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE t(a INT)"]);
-    let error = s.error(&["query", "--database", "w.duckdb", "--sql", "DROP TABLE t"], 1, "sql");
-    assert!(error["error"]["hint"].as_str().unwrap().contains("--read-write"));
+    assert!(error["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("ducklocal schema"));
+    s.success(&[
+        "query",
+        "--database",
+        "w.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE t(a INT)",
+    ]);
+    let error = s.error(
+        &["query", "--database", "w.duckdb", "--sql", "DROP TABLE t"],
+        1,
+        "sql",
+    );
+    assert!(error["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("--read-write"));
     // A syntax error has nothing to add to DuckDB's own message.
     let error = s.error(&["query", "--sql", "SELEC 1"], 1, "sql");
     assert!(error["error"].get("hint").is_none());
@@ -1157,9 +1257,14 @@ fn errors_say_what_to_do_next() {
 fn open_state_reads_a_running_window_and_never_starts_one() {
     let s = Sandbox::new();
     let output = s.run(&["open", "--help"], None);
-    assert!(String::from_utf8(output.stdout).unwrap().contains("--state"));
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("--state"));
     let error = s.error(&["open", "--state"], 1, "not_running");
-    assert!(error["error"]["hint"].as_str().unwrap().contains("ducklocal open"));
+    assert!(error["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("ducklocal open"));
     // It reads; mixed with something to open it is a mistake, not a guess.
     s.error(&["open", "--state", "--sql", "SELECT 1"], 2, "argument");
     s.error(&["open", "--state", "a.csv"], 2, "argument");
@@ -1168,7 +1273,11 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
 #[test]
 fn schema_stats_profiles_one_relation() {
     let s = Sandbox::new();
-    std::fs::write(s.0.join("orders.csv"), "day,amount\n2026-01-01,10.5\n2026-01-03,20\n").unwrap();
+    std::fs::write(
+        s.0.join("orders.csv"),
+        "day,amount\n2026-01-01,10.5\n2026-01-03,20\n",
+    )
+    .unwrap();
     std::fs::write(s.0.join("other.csv"), "a\n1\n").unwrap();
     let mut stats = s.object(&["schema", "orders.csv", "--stats"]);
     // The same report the deprecated `profile` gives, timing aside.
@@ -1182,10 +1291,28 @@ fn schema_stats_profiles_one_relation() {
     assert!(error["error"]["hint"].as_str().unwrap().contains("--table"));
     let picked = s.object(&["schema", ".", "--stats", "--table", "orders.csv"]);
     assert_eq!(picked["row_count"], 2);
-    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE t AS SELECT 1 AS n"]);
-    let table = s.object(&["schema", "--database", "w.duckdb", "--table", "t", "--stats"]);
+    s.success(&[
+        "query",
+        "--database",
+        "w.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE t AS SELECT 1 AS n",
+    ]);
+    let table = s.object(&[
+        "schema",
+        "--database",
+        "w.duckdb",
+        "--table",
+        "t",
+        "--stats",
+    ]);
     assert_eq!(table["row_count"], 1);
-    s.error(&["schema", "orders.csv", "--stats", "--full"], 2, "argument");
+    s.error(
+        &["schema", "orders.csv", "--stats", "--full"],
+        2,
+        "argument",
+    );
     // Help lists five commands; the rest stay callable.
     let help = String::from_utf8(s.run(&["--help"], None).stdout).unwrap();
     for gone in ["profile", "lsp", "state"] {
@@ -1216,7 +1343,14 @@ filter "day" {
 }
 "#;
     std::fs::write(s.0.join("board.dash"), spec).unwrap();
-    s.success(&["query", "--database", "w.duckdb", "--read-write", "--sql", "CREATE TABLE x(a INT)"]);
+    s.success(&[
+        "query",
+        "--database",
+        "w.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE x(a INT)",
+    ]);
     let out = s.object(&["check", "board.dash", "--database", "w.duckdb"]);
     let filters = out["filters"].as_array().unwrap();
     assert_eq!(filters[0]["name"], "channel");
@@ -1229,7 +1363,18 @@ filter "day" {
     std::fs::write(s.0.join("typo.dash"), spec.replace("AND $day", "AND $dy")).unwrap();
     let error = s.error(&["check", "typo.dash"], 2, "spec");
     assert!(error["error"]["message"].as_str().unwrap().contains("$dy"));
-    std::fs::write(s.0.join("column.dash"), spec.replace("column = day", "column = nope")).unwrap();
-    let error = s.error(&["check", "column.dash", "--database", "w.duckdb"], 2, "spec");
-    assert!(error["error"]["message"].as_str().unwrap().contains("\"nope\""));
+    std::fs::write(
+        s.0.join("column.dash"),
+        spec.replace("column = day", "column = nope"),
+    )
+    .unwrap();
+    let error = s.error(
+        &["check", "column.dash", "--database", "w.duckdb"],
+        2,
+        "spec",
+    );
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("\"nope\""));
 }

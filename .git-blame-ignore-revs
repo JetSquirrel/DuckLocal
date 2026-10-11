@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by `git blame` here and on GitHub.
+# Locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format the workspace with rustfmt
+dd119028aaff0822d88549eea914f37474c178c9

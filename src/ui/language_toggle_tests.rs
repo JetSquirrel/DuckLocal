@@ -15,9 +15,9 @@ use gpui_kit::test::TestWindowExt;
 // No `gpui_kit::*` glob here: it imports gpui's `test` attribute macro, which
 // shadows the built-in `#[test]` in the macro-generated code and recurses.
 use gpui_kit::{
-    AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Point, Render, Styled, TestAppContext, Window, WindowBounds, WindowOptions,
-    div, px, size,
+    div, px, size, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Point, Render, Styled, TestAppContext, Window, WindowBounds,
+    WindowOptions,
 };
 
 use crate::i18n::Language;

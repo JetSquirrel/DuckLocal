@@ -22,6 +22,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -30,6 +32,15 @@ jobs:
       # errors that names no cause, and this names it in a second.
       - name: Check dependency pinning
         run: ./scripts/check-deps.sh
+
+      # Seconds, and no build: a formatting slip fails here first.
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Warnings fail the run, so they cannot pile up again; the DuckDB 2.0
+      # upgrade will lean on a clean baseline to show what it changed.
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # --workspace: the Quick Look engine (quicklook/) is a crate of its
       # own, and a plain `cargo test` covers only the app.

@@ -73,14 +73,14 @@ impl PieSlice {
 /// points than this cannot show more detail — it only multiplies the
 /// primitives the renderer has to push. A wide `PIVOT` over a fortnight of
 /// per-minute metrics reaches millions of plotted values, which is enough to
-/// wedge the GPU renderer.
-const MAX_POINTS: usize = 1_500;
-/// The palette holds five colors; past a dozen lines a chart is unreadable
+/// wedge the GPU renderer. Dashboards (`spec::prepare`) cap at this too.
+pub(crate) const MAX_POINTS: usize = 1_500;
+/// The palette holds eight colors; past a dozen lines a chart is unreadable
 /// whatever the cost of drawing it.
-const MAX_SERIES: usize = 12;
+pub(crate) const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
 /// cannot be meaningfully merged — so surplus bars are dropped, not averaged.
-const MAX_BARS: usize = 200;
+pub(crate) const MAX_BARS: usize = 200;
 /// How many detected columns the "nothing to plot" message lists before
 /// summarizing the rest.
 const MAX_LISTED_COLUMNS: usize = 5;
@@ -424,13 +424,7 @@ impl RenderOnce for ChartPanel {
             return render_pie(data, cx);
         }
 
-        let palette = [
-            cx.theme().chart_1,
-            cx.theme().chart_2,
-            cx.theme().chart_3,
-            cx.theme().chart_4,
-            cx.theme().chart_5,
-        ];
+        let palette = crate::ui::palette::series(cx);
         let row_count = data.rows.len();
         // Cloning the `Rc`s hands the chart its own `Vec` without copying any
         // row data.
@@ -585,7 +579,10 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
         .enumerate()
         .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
         .collect();
-    ((!notices.is_empty()).then(|| notices.join(crate::i18n::sep())), legend)
+    (
+        (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
+        legend,
+    )
 }
 
 fn render_map(geo: Arc<GeoData>, cx: &App) -> AnyElement {
@@ -626,13 +623,7 @@ pub(crate) fn pie_parts(
     id: impl Into<ElementId>,
     cx: &App,
 ) -> (AnyElement, Vec<(Hsla, SharedString)>, f64) {
-    let palette = [
-        cx.theme().chart_1,
-        cx.theme().chart_2,
-        cx.theme().chart_3,
-        cx.theme().chart_4,
-        cx.theme().chart_5,
-    ];
+    let palette = crate::ui::palette::series(cx);
     let muted = cx.theme().muted_foreground;
     // Past the palette, slices reuse its colors at lower strength so
     // neighbours still differ.

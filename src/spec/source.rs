@@ -128,9 +128,17 @@ fn skip_comments(sql: &str) -> &str {
     let mut rest = sql.trim_start();
     loop {
         if let Some(after) = rest.strip_prefix("--") {
-            rest = after.find('\n').map(|ix| &after[ix + 1..]).unwrap_or("").trim_start();
+            rest = after
+                .find('\n')
+                .map(|ix| &after[ix + 1..])
+                .unwrap_or("")
+                .trim_start();
         } else if let Some(after) = rest.strip_prefix("/*") {
-            rest = after.find("*/").map(|ix| &after[ix + 2..]).unwrap_or("").trim_start();
+            rest = after
+                .find("*/")
+                .map(|ix| &after[ix + 2..])
+                .unwrap_or("")
+                .trim_start();
         } else {
             return rest;
         }
@@ -184,12 +192,11 @@ mod tests {
     fn a_named_source_becomes_a_cte_read_from_the_specs_folder() {
         let base = root().join("data").join("dash");
         let path = base.join("exports").join("o*.csv");
-        let sources = [source("orders", "exports/o*.csv"), source("unused", "u.parquet")];
-        let sql = expand(
-            "SELECT channel FROM ORDERS GROUP BY 1",
-            &sources,
-            &base,
-        );
+        let sources = [
+            source("orders", "exports/o*.csv"),
+            source("unused", "u.parquet"),
+        ];
+        let sql = expand("SELECT channel FROM ORDERS GROUP BY 1", &sources, &base);
         assert_eq!(
             sql,
             format!("WITH \"orders\" AS (SELECT * FROM read_csv_auto('{}'))\nSELECT channel FROM ORDERS GROUP BY 1", path.display())
@@ -230,7 +237,10 @@ mod tests {
         let escaped = base.join("it''s.csv");
         assert_eq!(
             sql,
-            format!("WITH \"o\" AS (SELECT * FROM read_csv_auto('{}'))\nFROM o", escaped.display())
+            format!(
+                "WITH \"o\" AS (SELECT * FROM read_csv_auto('{}'))\nFROM o",
+                escaped.display()
+            )
         );
     }
 

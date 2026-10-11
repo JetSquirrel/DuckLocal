@@ -167,7 +167,10 @@ fn initialize_advertises_the_four_features() {
     let response = lsp.initialize();
     let capabilities = &response["result"]["capabilities"];
     assert_eq!(capabilities["textDocumentSync"], 1, "{capabilities}");
-    assert!(capabilities["completionProvider"].is_object(), "{capabilities}");
+    assert!(
+        capabilities["completionProvider"].is_object(),
+        "{capabilities}"
+    );
     assert_eq!(capabilities["hoverProvider"], true, "{capabilities}");
     assert_eq!(capabilities["definitionProvider"], true, "{capabilities}");
 
@@ -252,11 +255,7 @@ fn a_full_document_change_republishes_diagnostics() {
     // publishes an empty list rather than going silent.
     lsp.change(uri, GOOD);
     let params = lsp.notification("textDocument/publishDiagnostics");
-    assert_eq!(
-        params["params"]["diagnostics"],
-        json!([]),
-        "{params}"
-    );
+    assert_eq!(params["params"]["diagnostics"], json!([]), "{params}");
 
     lsp.send(json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}));
     lsp.response(2);
@@ -344,7 +343,10 @@ fn completion_inside_a_plot_offers_its_attributes() {
             "size",
             "size_scale",
             "tooltip",
-            "value"
+            "value",
+            "note",
+            "tone",
+            "text"
         ],
         "{response}"
     );

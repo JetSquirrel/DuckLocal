@@ -67,7 +67,7 @@ pub fn init() -> Result<()> {
     let path = history_path()?;
     // A few small tables: one thread and a small memory limit, not the
     // defaults sized for analytical work on the main connection.
-    let config = duckdb::Config::default().threads(1)?.max_memory("64MB")?;
+    let config = crate::db::config()?.threads(1)?.max_memory("64MB")?;
     let conn = Connection::open_with_flags(path, config)?;
     prepare_schema(&conn)?;
     *guard = Some(conn);
@@ -89,7 +89,7 @@ pub(crate) fn with_test_history(f: impl FnOnce()) {
     f();
 }
 
-fn prepare_schema(conn: &Connection) -> Result<()> {
+pub(crate) fn prepare_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version(version BIGINT NOT NULL);")?;
     let version: i64 = conn
         .query_row("SELECT max(version) FROM schema_version", [], |r| {
@@ -569,7 +569,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_schema_is_idempotent() {        let conn = Connection::open_in_memory().unwrap();
+    fn prepare_schema_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
         prepare_schema(&conn).unwrap();
         prepare_schema(&conn).unwrap();
         register_attached_file_to(&conn, "/tmp/a.csv", "a", "csv").unwrap();

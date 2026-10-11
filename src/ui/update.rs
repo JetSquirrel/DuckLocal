@@ -61,8 +61,7 @@ pub fn at_launch(cx: &mut App) -> bool {
 pub fn toggle_at_launch(cx: &mut App) {
     let on = !at_launch(cx);
     cx.default_global::<Update>().at_launch = Some(on);
-    if let Err(error) = crate::history::set_setting("update_check", if on { "on" } else { "off" })
-    {
+    if let Err(error) = crate::history::set_setting("update_check", if on { "on" } else { "off" }) {
         tracing::warn!("update_check not saved: {error:#}");
     }
     if on {

@@ -61,11 +61,31 @@ fn wide() -> String {
 
 fn scenarios() -> Vec<Scenario> {
     vec![
-        Scenario { name: "100k x 8, 40 px/frame", sql: narrow(), step: (0., 40.) },
-        Scenario { name: "100k x 8, 800 px/frame", sql: narrow(), step: (0., 800.) },
-        Scenario { name: "60k x 30, 40 px/frame", sql: wide(), step: (0., 40.) },
-        Scenario { name: "60k x 30, 800 px/frame", sql: wide(), step: (0., 800.) },
-        Scenario { name: "60k x 30, diagonal 40/40", sql: wide(), step: (40., 40.) },
+        Scenario {
+            name: "100k x 8, 40 px/frame",
+            sql: narrow(),
+            step: (0., 40.),
+        },
+        Scenario {
+            name: "100k x 8, 800 px/frame",
+            sql: narrow(),
+            step: (0., 800.),
+        },
+        Scenario {
+            name: "60k x 30, 40 px/frame",
+            sql: wide(),
+            step: (0., 40.),
+        },
+        Scenario {
+            name: "60k x 30, 800 px/frame",
+            sql: wide(),
+            step: (0., 800.),
+        },
+        Scenario {
+            name: "60k x 30, diagonal 40/40",
+            sql: wide(),
+            step: (40., 40.),
+        },
     ]
 }
 

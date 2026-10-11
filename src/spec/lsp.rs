@@ -28,8 +28,8 @@ use lsp_types::{
     CompletionTextEdit, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability, Location,
-    MarkupContent, MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
+    MarkupContent, MarkupKind, OneOf, Position, PublishDiagnosticsParams, Range,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri as Url,
 };
 use serde_json::json;
 
@@ -117,21 +117,24 @@ fn serve(database: Option<PathBuf>) -> Result<i32, CliError> {
                         shutdown = true;
                         Response::new_ok(id, ())
                     }
-                    Completion::METHOD => {
-                        answer::<CompletionParams, _>(id, request.params, |_uri, position, source| {
-                            complete_at(source, position)
-                        }, &documents)
-                    }
-                    HoverRequest::METHOD => {
-                        answer::<HoverParams, _>(id, request.params, |_uri, position, source| {
-                            hover_at(source, position)
-                        }, &documents)
-                    }
-                    GotoDefinition::METHOD => {
-                        answer::<GotoDefinitionParams, _>(id, request.params, |uri, position, source| {
-                            definition_at(source, uri, position)
-                        }, &documents)
-                    }
+                    Completion::METHOD => answer::<CompletionParams, _>(
+                        id,
+                        request.params,
+                        |_uri, position, source| complete_at(source, position),
+                        &documents,
+                    ),
+                    HoverRequest::METHOD => answer::<HoverParams, _>(
+                        id,
+                        request.params,
+                        |_uri, position, source| hover_at(source, position),
+                        &documents,
+                    ),
+                    GotoDefinition::METHOD => answer::<GotoDefinitionParams, _>(
+                        id,
+                        request.params,
+                        |uri, position, source| definition_at(source, uri, position),
+                        &documents,
+                    ),
                     method => Response::new_err(
                         id,
                         ErrorCode::MethodNotFound as i32,
@@ -145,8 +148,7 @@ fn serve(database: Option<PathBuf>) -> Result<i32, CliError> {
             }
             Message::Notification(notification) => match notification.method.as_str() {
                 DidOpenTextDocument::METHOD => {
-                    match serde_json::from_value::<DidOpenTextDocumentParams>(notification.params)
-                    {
+                    match serde_json::from_value::<DidOpenTextDocumentParams>(notification.params) {
                         Ok(params) => {
                             let document = params.text_document;
                             documents.insert(document.uri.clone(), document.text);
@@ -235,16 +237,16 @@ fn publish(
         return;
     };
     let diagnostics = diagnose(source, database);
-    let _ = connection.sender.send(Message::Notification(
-        lsp_server::Notification::new(
+    let _ = connection
+        .sender
+        .send(Message::Notification(lsp_server::Notification::new(
             PublishDiagnostics::METHOD.to_string(),
             PublishDiagnosticsParams {
                 uri: uri.clone(),
                 diagnostics,
                 version: None,
             },
-        ),
-    ));
+        )));
 }
 
 /// Every complaint about the document, in the order `check` would list them:
@@ -367,10 +369,7 @@ impl PositionParams for GotoDefinitionParams {
 /// filters against its own typed text.
 fn complete_at(source: &str, position: Position) -> Option<CompletionResponse> {
     let (line, col) = line_col(source, position);
-    let line_text = source
-        .lines()
-        .nth(position.line as usize)
-        .unwrap_or("");
+    let line_text = source.lines().nth(position.line as usize).unwrap_or("");
     let (_, prefix_units) = ident_prefix(line_text, col.saturating_sub(1));
     let range = Range {
         start: Position::new(position.line, position.character - prefix_units),
@@ -456,7 +455,12 @@ fn definition_at(source: &str, uri: &Url, position: Position) -> Option<GotoDefi
         return None;
     }
     let target = match segments[0].as_str() {
-        "query" => spec.queries.iter().find(|q| q.name == segments[1])?.name_span,
+        "query" => {
+            spec.queries
+                .iter()
+                .find(|q| q.name == segments[1])?
+                .name_span
+        }
         "plot" => spec.plots.iter().find(|p| p.name == segments[1])?.name_span,
         _ => return None,
     };
@@ -478,7 +482,7 @@ fn validate(source: &str) -> Option<Spec> {
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {
         "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
-        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`.",
+        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`, `text`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
         "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map` or a `card`, and optional for a `table`.",
         "y" => "**y**\n\nThe numeric column the plot draws; a `pie`'s slice sizes. Optional for `table`, not for a `map`.",
@@ -489,9 +493,12 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "size" => "**size**\n\nOptional, for a `map`: a numeric column its points are sized by — the area follows the value, so twice the value is twice the ink. A key in the corner reads sizes back.",
         "size_scale" => "**size_scale**\n\nOptional, with `size`: `\"sqrt\"` (the default, area follows value) or `\"log\"`, for values spanning orders of magnitude.",
         "tooltip" => "**tooltip**\n\nOptional, for a `map`: the columns its tooltip lists, in order — `tooltip = [place, requests, ips]`. Left out, it lists the size column and the other numbers, then the coordinates.",
-        "title" => "**title**\n\nOptional: the plot's title; a `card`'s label.",
+        "title" => "**title**\n\nOptional: the plot's title; a `card`'s label; a `text` panel's heading.",
         "width" => "**width**\n\nOptional: how many of the dashboard's 12 columns the plot spans, 1 to 12. Plots fill a row left to right and wrap. Default 12, or 3 for a `card`.",
         "value" => "**value**\n\nOptional, for a `card`: the column it shows, from the query's first row. Left out, the first column.",
+        "note" => "**note**\n\nOptional, for a `card`: the line under its value. A string is shown as written (`note = \"All riders\"`); a bare identifier names a column, whose value in the card's row is shown (`note = busiest_day`).",
+        "tone" => "**tone**\n\nOptional, for a `card`: `\"accent\"`, `\"good\"`, `\"warning\"` or `\"critical\"` — a coloured rule across the card's top and its value in that hue. Let the card's title say what the colour means.",
+        "text" => "**text**\n\nFor a `text` panel: the words under its `title`, as a string or heredoc. A text panel takes no query.",
         "plot" => "**plot**\n\nThe plot a click picks a value on: `plot = plot.some_name`, a `bar` or a `table`.",
         "column" => "**column**\n\nOptional for a bar, required for a table: the column whose value the click picks, and that `$name` compares. Default: the bar's `x`.",
         "path" => "**path**\n\nThe source's data: a `.csv`, `.tsv`, `.parquet` or `.json` file, or a glob of them read as one relation. Relative to this `.dash` file.",
@@ -502,7 +509,11 @@ fn attr_doc(name: &str) -> Option<&'static str> {
 /// The first non-empty line of a query's SQL, cut to a readable length: the
 /// hover answers "which query is this", not "what does it say in full".
 fn sql_summary(sql: &str) -> String {
-    let line = sql.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = sql
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     const LIMIT: usize = 80;
     if line.chars().count() > LIMIT {
         format!("{}…", line.chars().take(LIMIT).collect::<String>())
@@ -518,7 +529,13 @@ fn sql_summary(sql: &str) -> String {
 fn ident_prefix(line: &str, char_col: usize) -> (usize, u32) {
     let mut chars = 0usize;
     let mut units = 0u32;
-    for ch in line.chars().take(char_col).collect::<Vec<_>>().into_iter().rev() {
+    for ch in line
+        .chars()
+        .take(char_col)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         if ch.is_ascii_alphanumeric() || ch == '_' {
             chars += 1;
             units += ch.len_utf16() as u32;
@@ -536,7 +553,10 @@ fn ident_prefix(line: &str, char_col: usize) -> (usize, u32) {
 /// text during edits.
 fn line_col(source: &str, position: Position) -> (usize, usize) {
     let line_text = source.lines().nth(position.line as usize).unwrap_or("");
-    (position.line as usize + 1, utf16_col_to_char_col(line_text, position.character) + 1)
+    (
+        position.line as usize + 1,
+        utf16_col_to_char_col(line_text, position.character) + 1,
+    )
 }
 
 /// A 0-based UTF-16 column as a 0-based character index.

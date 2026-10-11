@@ -5,10 +5,11 @@ pub mod completion;
 pub mod geo;
 #[cfg(test)]
 mod language_toggle_tests;
-#[cfg(feature = "scroll-bench")]
-pub mod scroll_bench;
+pub mod palette;
 pub mod results;
 pub mod scale;
+#[cfg(feature = "scroll-bench")]
+pub mod scroll_bench;
 pub mod setup_dialog;
 pub mod sidebar;
 pub mod status_bar;
@@ -162,8 +163,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("menu.zoom_out"), ZoomOut),
                 MenuItem::action(tr("menu.zoom_reset"), ZoomReset),
                 MenuItem::Separator,
-                MenuItem::action(tr("menu.base_map"), ToggleBaseMap)
-                    .checked(base_map),
+                MenuItem::action(tr("menu.base_map"), ToggleBaseMap).checked(base_map),
             ],
         ),
     ]);
@@ -355,7 +355,9 @@ pub fn apply_open_outcome(
         ),
         OpenOutcome::Attached(attach) => (None, attach),
     };
-    let database_error = connected.as_ref().and_then(|(_, _, error, _)| error.clone());
+    let database_error = connected
+        .as_ref()
+        .and_then(|(_, _, error, _)| error.clone());
     let AttachOutcome {
         report,
         catalog,

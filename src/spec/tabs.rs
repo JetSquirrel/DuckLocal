@@ -171,7 +171,10 @@ mod tests {
 
     #[test]
     fn the_remembered_list_survives_a_round_trip() {
-        let specs = vec![OpenDocument::new(PathBuf::from("/dash/sales.dash"), "Sales")];
+        let specs = vec![OpenDocument::new(
+            PathBuf::from("/dash/sales.dash"),
+            "Sales",
+        )];
         assert_eq!(from_json(&to_json(&specs)), specs);
         assert_eq!(from_json("not json"), Vec::new());
     }

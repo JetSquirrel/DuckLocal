@@ -241,8 +241,9 @@ fn read_table(conn: &Connection, relation: &str, name: Option<String>) -> Result
             .map(|(name, _)| format!("CAST({} AS VARCHAR)", quote(name)))
             .collect::<Vec<_>>()
             .join(", ");
-        let mut stmt =
-            conn.prepare(&format!("SELECT {select} FROM {relation} LIMIT {PREVIEW_ROWS}"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {select} FROM {relation} LIMIT {PREVIEW_ROWS}"
+        ))?;
         let mut result = stmt.query([])?;
         while let Some(row) = result.next()? {
             rows.push(
@@ -332,10 +333,7 @@ td.null { color: var(--null); font-style: italic; }
 
 impl Preview {
     fn html(&self) -> String {
-        let mut meta = vec![
-            self.format.label().to_string(),
-            human_size(self.file_size),
-        ];
+        let mut meta = vec![self.format.label().to_string(), human_size(self.file_size)];
         if let [table] = self.tables.as_slice() {
             if let Some(rows) = table.row_count {
                 meta.push(format!("{} rows", group_digits(rows)));
@@ -393,9 +391,7 @@ fn table_html(table: &Table) -> String {
         out.push_str("</tr>");
     }
     out.push_str("</tbody></table></div>");
-    let more = table
-        .row_count
-        .is_none_or(|n| n > table.rows.len() as i64);
+    let more = table.row_count.is_none_or(|n| n > table.rows.len() as i64);
     if table.rows.len() == PREVIEW_ROWS && more {
         out.push_str(&format!(
             "<p class=\"note\">First {PREVIEW_ROWS} rows. Open in DuckLocal for the rest.</p>"
@@ -480,9 +476,16 @@ mod tests {
         drop(conn);
         let before = std::fs::read(&db).unwrap();
         let html = preview_html(db.to_str().unwrap());
-        assert!(html.contains("<h2>orders") && html.contains("staging.raw"), "{html}");
+        assert!(
+            html.contains("<h2>orders") && html.contains("staging.raw"),
+            "{html}"
+        );
         assert!(html.contains("Readable by"), "{html}");
-        assert_eq!(std::fs::read(&db).unwrap(), before, "a preview never writes");
+        assert_eq!(
+            std::fs::read(&db).unwrap(),
+            before,
+            "a preview never writes"
+        );
     }
 
     #[test]

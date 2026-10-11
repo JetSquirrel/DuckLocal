@@ -120,9 +120,7 @@ fn branch(name: &str, data_type: &str, relation: &str) -> String {
         // what the declared scale says. `split_part` of a value with no point
         // is the empty string, so an integer column answers 0.
         Shape::Numeric => (
-            format!(
-                "CAST(max(length(split_part(CAST({column} AS VARCHAR), '.', 2))) AS BIGINT)"
-            ),
+            format!("CAST(max(length(split_part(CAST({column} AS VARCHAR), '.', 2))) AS BIGINT)"),
             // `quantile_disc`, not `quantile_cont`: the middle value the column
             // actually holds, at the precision it holds it. Interpolating
             // between two rows invents digits, and a profile that prints
@@ -177,7 +175,9 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
 
     let mut describe = conn.prepare(&format!("DESCRIBE SELECT * FROM {relation}"))?;
     let columns: Vec<(String, String)> = describe
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<std::result::Result<_, _>>()?;
     if columns.is_empty() {
         return Err(anyhow!("{target} has no columns"));

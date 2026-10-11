@@ -153,7 +153,12 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 
     let connection = crate::cli::open(database.clone(), false)?;
+    // Canonical, as the files are: on Windows a shell's `E:\proj` and the
+    // disk's `E:\Proj` are one folder, and only matching spellings strip.
     let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = crate::sources::canonical_file_path(&cwd.to_string_lossy())
+        .map(PathBuf::from)
+        .unwrap_or(cwd);
     let mut relations: Vec<Relation> = sources
         .files
         .iter()
@@ -254,7 +259,7 @@ fn entry(relation: &Relation, with_columns: bool) -> Value {
 /// rows, unknown counts after known ones, catalog order breaking ties.
 fn largest(relations: &[Relation], n: usize) -> Vec<bool> {
     let mut order: Vec<usize> = (0..relations.len()).collect();
-    order.sort_by_key(|&ix| std::cmp::Reverse(relations[ix].rows.map_or(-1, |rows| rows)));
+    order.sort_by_key(|&ix| std::cmp::Reverse(relations[ix].rows.unwrap_or(-1)));
     let mut keep = vec![false; relations.len()];
     for &ix in order.iter().take(n) {
         keep[ix] = true;

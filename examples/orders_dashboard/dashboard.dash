@@ -16,9 +16,23 @@ source "orders" {
 query "totals" {
   sql = <<SQL
     SELECT sum(revenue) AS revenue, sum(orders) AS orders,
-           count(DISTINCT channel) AS channels
+           count(DISTINCT channel) AS channels,
+           count(DISTINCT region) || ' regions, ' || count(DISTINCT date) || ' days' AS spread
     FROM orders
     WHERE $channel
+  SQL
+}
+
+// The busiest day, and the day it was, for one card: the number is the
+// value, the day its note.
+query "busiest" {
+  sql = <<SQL
+    SELECT sum(orders) AS orders, strftime(date, '%a, %b %-d') AS day
+    FROM orders
+    WHERE $channel
+    GROUP BY date
+    ORDER BY orders DESC
+    LIMIT 1
   SQL
 }
 
@@ -33,12 +47,19 @@ query "revenue_by_channel" {
 
 query "daily_orders" {
   sql = <<SQL
-    SELECT date, sum(orders) AS orders
+    SELECT date, channel, sum(orders) AS orders
     FROM orders
     WHERE $channel
-    GROUP BY date
-    ORDER BY date
+    GROUP BY date, channel
+    ORDER BY date, channel
   SQL
+}
+
+// A text panel heads the dashboard; it runs no query.
+plot "overview" {
+  type  = "text"
+  title = "Orders overview"
+  text  = "Five channels, three regions, September 2026"
 }
 
 plot "revenue_total" {
@@ -46,6 +67,8 @@ plot "revenue_total" {
   query = query.totals
   value = revenue
   title = "Revenue"
+  note  = "Every channel and region"
+  tone  = "accent"
 }
 
 plot "orders_total" {
@@ -53,6 +76,17 @@ plot "orders_total" {
   query = query.totals
   value = orders
   title = "Orders"
+  note  = spread
+}
+
+// A note that names a column shows that column's value from the card's row.
+plot "busiest_day" {
+  type  = "card"
+  query = query.busiest
+  value = orders
+  title = "Busiest day"
+  note  = day
+  tone  = "warning"
 }
 
 plot "channels" {
@@ -71,13 +105,15 @@ plot "revenue" {
   width = 6
 }
 
+// One line per channel, each in its own colour, with a key above.
 plot "orders" {
-  type  = "line"
-  query = query.daily_orders
-  x     = date
-  y     = orders
-  title = "Orders per day"
-  width = 6
+  type   = "line"
+  query  = query.daily_orders
+  x      = date
+  y      = orders
+  series = channel
+  title  = "Orders per day"
+  width  = 6
 }
 
 // A click on a revenue bar narrows the cards and the daily orders to that

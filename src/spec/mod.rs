@@ -93,9 +93,8 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
 
     let parsed = model::parse(&source)
         .map_err(|error| spec_error(&path_display, error.line, &error.message))?;
-    let spec = model::validate(&parsed).map_err(|diagnostics| {
-        spec_error_all(&path_display, diagnostics)
-    })?;
+    let spec = model::validate(&parsed)
+        .map_err(|diagnostics| spec_error_all(&path_display, diagnostics))?;
 
     // SQL is checked with the real parser on a throwaway connection: nothing
     // executes, so no table needs to exist and no side effect can happen.
@@ -131,7 +130,10 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let mut failures = Vec::new();
     for (index, query) in spec.queries.iter().enumerate() {
         let located = |message: String| {
-            format!("{}:{}: query {:?}: {message}", path_display, query.line, query.name)
+            format!(
+                "{}:{}: query {:?}: {message}",
+                path_display, query.line, query.name
+            )
         };
         // What runs is the query with the sources it names in front of
         // it — the same SQL the dashboard runs, with nothing picked.
@@ -148,7 +150,8 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         match outcome {
             Ok(columns) => query_columns[index] = Some(columns),
             Err(message) if database.is_none() && names_a_missing_table(&message) => {
-                unresolved.push(json!({"query": query.name, "line": query.line, "reason": message}));
+                unresolved
+                    .push(json!({"query": query.name, "line": query.line, "reason": message}));
             }
             Err(message) => failures.push(located(message)),
         }
@@ -223,6 +226,12 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "size_scale": p.size_scale,
             "tooltip": p.tooltip,
             "value": p.value,
+            "note": p.note.as_ref().map(|note| match note {
+                model::Note::Text(words) => json!({"text": words}),
+                model::Note::Column(column) => json!({"column": column}),
+            }),
+            "tone": p.tone,
+            "text": p.text,
             "title": p.title,
             "width": p.width(),
             "line": p.line,
@@ -259,7 +268,9 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
     if matches!(leading.as_str(), "pivot" | "unpivot") {
         return Ok(());
     }
-    let parser = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let parser = crate::db::config()
+        .and_then(duckdb::Connection::open_in_memory_with_flags)
+        .map_err(|e| e.to_string())?;
     let refused: bool = parser
         .query_row(
             "SELECT coalesce(json_serialize_sql(?1::VARCHAR)::JSON->>'error' = 'true', true)",
@@ -269,7 +280,8 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if refused {
         return Err("a dashboard query must be a single read-only statement \
-                    (SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE, PIVOT)"
+                    (SELECT, WITH, FROM, VALUES, SHOW, DESCRIBE, SUMMARIZE, \
+                    or a PIVOT that names its values with IN)"
             .to_string());
     }
     Ok(())
@@ -277,17 +289,14 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
 
 /// Whether DuckDB refused a query for naming a table or view it does not
 /// have — in memory, one that may live in a database the check was not given.
-fn names_a_missing_table(message: &str) -> bool {
+pub(crate) fn names_a_missing_table(message: &str) -> bool {
     message.contains("Catalog Error")
         && (message.contains("Table with name") || message.contains("View with name"))
         && message.contains("does not exist")
 }
 
 /// The columns a query returns, per DuckDB's own description of it.
-fn describe(
-    connection: &duckdb::Connection,
-    sql: &str,
-) -> Result<Vec<(String, String)>, String> {
+fn describe(connection: &duckdb::Connection, sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut statement = connection
         .prepare(&format!("DESCRIBE {sql}"))
         .map_err(|e| e.to_string())?;
