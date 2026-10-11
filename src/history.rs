@@ -89,7 +89,7 @@ pub(crate) fn with_test_history(f: impl FnOnce()) {
     f();
 }
 
-fn prepare_schema(conn: &Connection) -> Result<()> {
+pub(crate) fn prepare_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version(version BIGINT NOT NULL);")?;
     let version: i64 = conn
         .query_row("SELECT max(version) FROM schema_version", [], |r| {

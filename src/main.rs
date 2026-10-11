@@ -5,6 +5,8 @@ mod app;
 mod assets;
 mod cli;
 mod db;
+#[cfg(test)]
+mod duckdb_contract;
 mod excel;
 mod extensions;
 mod history;

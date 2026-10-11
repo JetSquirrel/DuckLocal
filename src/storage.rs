@@ -133,7 +133,7 @@ pub fn library_version() -> &'static str {
 /// Whether DuckDB refused a file over its storage version: the two messages
 /// it opens a file with, for the header's version number and for the
 /// serialization a newer release wrote.
-fn refused_for_its_version(error: &str) -> bool {
+pub(crate) fn refused_for_its_version(error: &str) -> bool {
     error.contains("database file with version number")
         || error.contains("storage version greater than the latest version")
 }

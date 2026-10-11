@@ -286,7 +286,7 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
 
 /// Whether DuckDB refused a query for naming a table or view it does not
 /// have — in memory, one that may live in a database the check was not given.
-fn names_a_missing_table(message: &str) -> bool {
+pub(crate) fn names_a_missing_table(message: &str) -> bool {
     message.contains("Catalog Error")
         && (message.contains("Table with name") || message.contains("View with name"))
         && message.contains("does not exist")
