@@ -268,7 +268,9 @@ pub(crate) fn validate_query_sql(sql: &str) -> Result<(), String> {
     if matches!(leading.as_str(), "pivot" | "unpivot") {
         return Ok(());
     }
-    let parser = duckdb::Connection::open_in_memory().map_err(|e| e.to_string())?;
+    let parser = crate::db::config()
+        .and_then(duckdb::Connection::open_in_memory_with_flags)
+        .map_err(|e| e.to_string())?;
     let refused: bool = parser
         .query_row(
             "SELECT coalesce(json_serialize_sql(?1::VARCHAR)::JSON->>'error' = 'true', true)",

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::ptr;
 
-use duckdb::{ffi, AccessMode, Config, Connection};
+use duckdb::{ffi, AccessMode, Connection};
 use serde_json::json;
 
 pub(crate) const HELP: &str = "\
@@ -529,14 +529,12 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     output
 }
 
-/// The connection every subcommand runs on: its own, never the GUI's, with
-/// extension auto-installation off and a file database read-only unless the
-/// caller asked for writes.
+/// The connection every subcommand runs on: its own, never the GUI's, from
+/// the shared [`crate::db::config`] (no extension auto-installation), with a
+/// file database read-only unless the caller asked for writes.
 #[hotpath::measure]
 pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connection, CliError> {
-    let config = Config::default()
-        .with("autoinstall_known_extensions", "false")
-        .map_err(|e| CliError::failure("database", e))?;
+    let config = crate::db::config().map_err(|e| CliError::failure("database", e))?;
     if let Some(path) = database {
         if !read_write {
             let metadata =

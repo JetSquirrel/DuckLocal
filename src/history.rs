@@ -67,7 +67,7 @@ pub fn init() -> Result<()> {
     let path = history_path()?;
     // A few small tables: one thread and a small memory limit, not the
     // defaults sized for analytical work on the main connection.
-    let config = duckdb::Config::default().threads(1)?.max_memory("64MB")?;
+    let config = crate::db::config()?.threads(1)?.max_memory("64MB")?;
     let conn = Connection::open_with_flags(path, config)?;
     prepare_schema(&conn)?;
     *guard = Some(conn);

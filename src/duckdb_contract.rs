@@ -595,3 +595,26 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+/// DuckDB installs a known extension the moment a query needs one — a
+/// download — unless told not to, so `db::config`, where every DuckLocal
+/// connection starts, says so; loading what is already installed stays on.
+#[test]
+fn connections_never_install_extensions_on_their_own() {
+    let setting = |conn: &Connection, name: &str| -> String {
+        conn.query_row(
+            &format!("SELECT current_setting('{name}')::VARCHAR"),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let stock = mem();
+    assert_eq!(
+        setting(&stock, "autoinstall_known_extensions"),
+        "true",
+        "DuckDB's own default"
+    );
+    let ours = Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+    assert_eq!(setting(&ours, "autoinstall_known_extensions"), "false");
+    assert_eq!(setting(&ours, "autoload_known_extensions"), "true");
+}
