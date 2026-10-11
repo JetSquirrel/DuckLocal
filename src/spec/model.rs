@@ -68,7 +68,6 @@ pub(crate) struct Spec {
     pub filters: Vec<Filter>,
     /// Where every block and attribute sits in the source, in source order,
     /// for `Spec::locate`.
-    #[allow(dead_code)] // read by locate(), which the editor phases wire up
     sites: Vec<Site>,
 }
 
@@ -181,9 +180,9 @@ impl Spec {
 #[derive(Debug, Clone)]
 pub(crate) struct Diagnostic {
     pub line: usize,
-    #[allow(dead_code)] // carried for the editor phases; text output uses line
+    // Only tests read it: the text output and the LSP use line and span.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub col: usize,
-    #[allow(dead_code)] // carried for the editor phases; text output uses line
     pub span: (usize, usize),
     pub message: String,
 }
@@ -214,7 +213,6 @@ impl Diagnostic {
 /// Where one block and its attributes sit in the source: the data
 /// `Spec::locate` scans. Built from the syntax tree, kept in source order.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by locate(), which the editor phases wire up
 struct Site {
     kind: String,
     name: String,
@@ -228,7 +226,6 @@ struct Site {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // read by locate(), which the editor phases wire up
 struct AttrSite {
     name: String,
     /// Line and column of the attribute's name: its column range is
@@ -242,7 +239,6 @@ struct AttrSite {
 /// the cursor, for the editor features (hover, definition, completion) that
 /// build on this.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // produced by locate(), which the editor phases wire up
 pub(crate) enum Hit {
     /// On one segment of a reference like `query.latency`: the block and
     /// attribute holding it, every segment's name, which segment the cursor
@@ -288,7 +284,6 @@ impl Spec {
     /// // elsewhere inside a block:           Some(Hit::Block { .. })
     /// // between or outside blocks:          None
     /// ```
-    #[allow(dead_code)] // the editor phases (GUI editing, LSP) call this
     pub(crate) fn locate(&self, line: usize, col: usize) -> Option<Hit> {
         let site = self
             .sites
