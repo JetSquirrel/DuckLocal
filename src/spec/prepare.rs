@@ -32,14 +32,9 @@ use crate::query::ColumnKind;
 use crate::query::QueryResult;
 use crate::ui::chart::{format_value, parse_number, pie_slices, PieSlice};
 use crate::ui::geo::{is_lat_name, is_lng_name, GeoData, MapStyle, SizeScale};
-
-/// A chart is at most a couple of thousand pixels wide; past this, points are
-/// bucket-averaged, as in the results chart.
-const MAX_POINTS: usize = 1_500;
-/// Adjacent bands cannot be meaningfully merged, so surplus bars are dropped.
-const MAX_BARS: usize = 200;
-/// The palette holds eight colors; past a dozen series a chart is unreadable.
-const MAX_SERIES: usize = 12;
+// The results chart's caps, so a dashboard plot and the chart tab drop and
+// merge at the same points.
+use crate::ui::chart::{MAX_BARS, MAX_POINTS, MAX_SERIES};
 
 #[derive(Debug)]
 pub struct PlotPoint {

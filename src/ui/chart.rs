@@ -73,14 +73,14 @@ impl PieSlice {
 /// points than this cannot show more detail — it only multiplies the
 /// primitives the renderer has to push. A wide `PIVOT` over a fortnight of
 /// per-minute metrics reaches millions of plotted values, which is enough to
-/// wedge the GPU renderer.
-const MAX_POINTS: usize = 1_500;
+/// wedge the GPU renderer. Dashboards (`spec::prepare`) cap at this too.
+pub(crate) const MAX_POINTS: usize = 1_500;
 /// The palette holds eight colors; past a dozen lines a chart is unreadable
 /// whatever the cost of drawing it.
-const MAX_SERIES: usize = 12;
+pub(crate) const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
 /// cannot be meaningfully merged — so surplus bars are dropped, not averaged.
-const MAX_BARS: usize = 200;
+pub(crate) const MAX_BARS: usize = 200;
 /// How many detected columns the "nothing to plot" message lists before
 /// summarizing the rest.
 const MAX_LISTED_COLUMNS: usize = 5;
