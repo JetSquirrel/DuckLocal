@@ -153,6 +153,13 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
             );
         }
     }
+    // Before the general advice below, which a PIVOT's second statement
+    // would only mislead: it is not a step to split off.
+    if kind == "argument" && has("A PIVOT counts as two") {
+        return Some(
+            "Name the values to pivot on with IN; `SELECT DISTINCT col FROM t` lists them",
+        );
+    }
     if kind == "argument" && has("Expected exactly one SQL statement") {
         return Some(
             "Run one statement per call: chain steps with WITH … AS (…), or make separate calls",
@@ -484,7 +491,7 @@ pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
             // are told how to write it as one.
             if count == 2 && text.to_ascii_lowercase().contains("pivot") {
                 message.push_str(
-                    ". A PIVOT counts as two unless it names its values:                      PIVOT t ON col IN ('a', 'b') USING sum(x)",
+                    ". A PIVOT counts as two unless it names its values: PIVOT t ON col IN ('a', 'b') USING sum(x)",
                 );
             }
             return Err(CliError::argument(message));
@@ -726,7 +733,12 @@ mod tests {
                 .unwrap()
                 .contains("ducklocal schema")
         );
-        assert!(hint_for("argument", "Expected exactly one SQL statement; found 2").is_some());
+        let two = "Expected exactly one SQL statement; found 2";
+        assert!(hint_for("argument", two).unwrap().contains("WITH"));
+        // A PIVOT's second statement is not a step to split off.
+        let pivot = format!("{two}. A PIVOT counts as two unless it names its values: …");
+        let hint = hint_for("argument", &pivot).unwrap();
+        assert!(hint.contains("IN") && !hint.contains("WITH"), "{hint}");
         // A kind the hint is not about gets none.
         assert!(hint_for("io", "Table with name x does not exist").is_none());
         assert!(hint_for("sql", "Parser Error: syntax error at or near \"x\"").is_none());

@@ -277,11 +277,12 @@ fn a_pivot_without_values_counts_as_two_statements() {
             .unwrap_err()
             .message()
             .to_string();
-        assert!(
-            message.starts_with("Expected exactly one SQL statement; found 2. A PIVOT"),
-            "{sql}: {message}"
+        assert_eq!(
+            message,
+            "Expected exactly one SQL statement; found 2. A PIVOT counts as two unless it \
+             names its values: PIVOT t ON col IN ('a', 'b') USING sum(x)",
+            "{sql}"
         );
-        assert!(message.contains("IN ('a', 'b')"), "{message}");
     }
     // Two statements that are not a PIVOT get no PIVOT advice.
     let message = crate::cli::validate_sql("SELECT 1; SELECT 2")
