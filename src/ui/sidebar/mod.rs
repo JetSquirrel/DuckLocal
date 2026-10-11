@@ -35,7 +35,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::history::HistoryEntry;
-use crate::i18n::{tr, trf};
+use crate::i18n::{tr, trf, Language};
 use crate::recents::RecentDocument;
 use crate::state::{
     format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged, HistoryChanged,
@@ -77,6 +77,10 @@ pub struct Sidebar {
     /// The extension an install, load or update is running for; every
     /// extension button waits while one is.
     extension_busy: Option<String>,
+    /// The language the tree's group labels were built in. Nothing notifies
+    /// on a language switch beyond `cx.refresh_windows()`, so render compares
+    /// and rebuilds the tree when it no longer matches.
+    tree_language: Language,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -146,6 +150,7 @@ impl Sidebar {
             refreshing_schema: false,
             extensions: ExtensionList::NotLoaded,
             extension_busy: None,
+            tree_language: crate::i18n::current(),
             _subscriptions: subscriptions,
         }
     }
@@ -162,9 +167,17 @@ impl Sidebar {
             self.s3_browse.as_ref(),
         );
         self.node_meta = Rc::new(meta);
+        self.tree_language = crate::i18n::current();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
         });
+    }
+
+    /// The label of the tree row at `ix`, as the tree would draw it.
+    #[cfg(test)]
+    pub(crate) fn tree_label(&self, ix: usize, cx: &App) -> Option<SharedString> {
+        let state = self.tree_state.read(cx);
+        state.entry(ix).map(|entry| entry.item().label.clone())
     }
 
     fn render_history_item(
@@ -796,6 +809,9 @@ impl RowMenu {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.tree_language != crate::i18n::current() {
+            self.rebuild_tree(cx);
+        }
         // An `Rc` handle: the list is read while `cx` is borrowed mutably for
         // rendering, and copying 200 entries every frame is not the way to do it.
         let history: Rc<Vec<HistoryEntry>> = self.state.read(cx).history.clone();

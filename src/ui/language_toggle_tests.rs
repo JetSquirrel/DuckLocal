@@ -21,8 +21,10 @@ use gpui_kit::{
 };
 
 use crate::i18n::Language;
-use crate::state::AppState;
+use crate::state::{AppState, AttachedFileView};
+use crate::ui::sidebar::Sidebar;
 use crate::ui::title_bar::TitleBarView;
+use crate::ui::workspace::Workspace;
 
 /// Both tests drive the process-wide language setting, so they must not run
 /// at the same time.
@@ -144,6 +146,70 @@ fn pressing_toggle_language_does_not_bubble_to_ancestors(cx: &mut TestAppContext
         assert!(
             !bubbled_press.get(),
             "the button consumes the press, so Windows never turns it into a window drag"
+        );
+    })
+    .unwrap();
+
+    crate::i18n::set_current(Language::Zh);
+}
+
+/// The sidebar's group labels live in its tree items, built once per data
+/// change; a language switch alone used to leave them in the old language.
+#[gpui_kit::test]
+fn switching_language_relabels_the_sidebar_groups(cx: &mut TestAppContext) {
+    let _guard = language_guard();
+    crate::i18n::set_current(Language::Zh);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::ui::init(cx);
+        Theme::change(ThemeMode::Light, None, cx);
+    });
+    let (window, sidebar) = cx
+        .update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: Point::default(),
+                        size: size(px(320.), px(600.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let state = cx.new(AppState::new);
+                    let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
+                    let view = cx.new(|cx| Sidebar::new(state.clone(), workspace, window, cx));
+                    state.update(cx, |state, cx| {
+                        state.set_attached_files(
+                            vec![AttachedFileView {
+                                id: 1,
+                                path: "sales.csv".into(),
+                                view_name: "sales".into(),
+                                row_count: Some(224),
+                            }],
+                            cx,
+                        )
+                    });
+                    view
+                },
+            )
+        })
+        .expect("open test window");
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            sidebar.read(cx).tree_label(0, cx).as_deref(),
+            Some("本地文件")
+        );
+
+        crate::i18n::set_current(Language::En);
+        cx.refresh_windows();
+        window.render_frame(cx);
+        assert_eq!(
+            sidebar.read(cx).tree_label(0, cx).as_deref(),
+            Some("Local files"),
+            "the group label follows the switch without a data change"
         );
     })
     .unwrap();
