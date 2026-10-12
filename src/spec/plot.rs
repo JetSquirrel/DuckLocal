@@ -28,7 +28,7 @@ use gpui_kit::component::plot::scale::{Scale, ScaleBand, ScaleLinear, ScalePoint
 use gpui_kit::component::plot::shape::{Bar, BarAlignment, Line};
 use gpui_kit::component::plot::tooltip::{CrossLine, Dot, Tooltip, TooltipState};
 use gpui_kit::component::plot::{
-    axis_gutter, AxisText, Grid, PathCaches, Plot, PlotAxis, PlotElement, PlotLabel,
+    axis_gutter, AxisText, Curve, Grid, PathCaches, Plot, PlotAxis, PlotElement, PlotLabel,
 };
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
@@ -58,6 +58,9 @@ const DOT_SIZE: f32 = 8.;
 const HOVER_HALO: f32 = 20.;
 /// The value-axis ticks the grid is drawn at, the catalog's default.
 const TICK_COUNT: usize = 5;
+/// How round a bar's tip is: enough to soften it, not enough to make a thin
+/// bar a pill.
+const BAR_RADIUS: f32 = 4.;
 
 /// The gutter a plot reserves under itself for its x-axis labels, as the
 /// catalog computes it for the labels' font size.
@@ -86,6 +89,85 @@ fn value_ticks(top: f32, baseline: f32, count: usize) -> Vec<f32> {
     (0..count)
         .map(|i| top + (baseline - top) * i as f32 / steps)
         .collect()
+}
+
+/// Round values for a value axis over `min..=max` (zero included): about
+/// `count` steps of 1, 2 or 5 times a power of ten, from a multiple of the
+/// step at or below the data to one at or above it, so the axis ends on a
+/// round number instead of on the largest value.
+fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
+    let (min, max) = (min.min(0.), max.max(0.));
+    if !(min.is_finite() && max.is_finite()) || max - min <= 0. {
+        return vec![0.];
+    }
+    let rough = (max - min) / count.max(1) as f64;
+    let power = 10f64.powf(rough.log10().floor());
+    // The multiple whose step count lands nearest `count`, as d3 picks it:
+    // the cut-offs are the geometric means between 1, 2, 5 and 10.
+    let error = rough / power;
+    let multiple = if error >= 50f64.sqrt() {
+        10.
+    } else if error >= 10f64.sqrt() {
+        5.
+    } else if error >= 2f64.sqrt() {
+        2.
+    } else {
+        1.
+    };
+    let step = multiple * power;
+    let first = (min / step).floor() as i64;
+    let last = (max / step).ceil() as i64;
+    // Below one, divide by the power's inverse rather than multiply by the
+    // power: 3 × 0.2 is 0.6000000000000001, 6 / 10 is 0.6.
+    let tick = |k: i64| {
+        if power >= 1. {
+            k as f64 * step
+        } else {
+            k as f64 * multiple / (1. / power).round()
+        }
+    };
+    (first..=last).map(tick).collect()
+}
+
+/// An x label as the axis shows it: a date whose year every band shares
+/// drops the year, which the dates around it already say — `09-14` rather
+/// than `2026-09-14`, and twice as many fit. The tooltip keeps the full band.
+fn axis_label(band: &SharedString, shared_year: bool) -> SharedString {
+    if shared_year {
+        band[5..].to_string().into()
+    } else {
+        band.clone()
+    }
+}
+
+/// Whether every band is an ISO date (or a timestamp starting with one) of
+/// the same year.
+fn one_year(points: &[Arc<PlotPoint>]) -> bool {
+    let is_date = |b: &str| {
+        let b = b.as_bytes();
+        b.len() >= 10
+            && b[..4].iter().all(u8::is_ascii_digit)
+            && b[4] == b'-'
+            && b[7] == b'-'
+            && b[5..7].iter().all(u8::is_ascii_digit)
+            && b[8..10].iter().all(u8::is_ascii_digit)
+    };
+    let mut years = points.iter().map(|p| {
+        let band: &str = &p.band;
+        is_date(band).then(|| band[..4].to_string())
+    });
+    match years.next() {
+        Some(Some(first)) => years.all(|y| y.as_deref() == Some(&first)),
+        _ => false,
+    }
+}
+
+/// How many x labels of up to `widest` characters fit across `width`
+/// pixels, for a plot that knows its width.
+fn x_label_count_in(width: f32, widest: usize) -> usize {
+    const MAX_LABELS: usize = 12;
+    let slot = widest as f32 * 8. + 24.;
+    ((width / slot) as usize).clamp(2, MAX_LABELS)
 }
 
 /// How many x labels fit without neighbours touching: a label needs its text
@@ -149,7 +231,6 @@ pub(crate) struct GroupedBars {
     id: ElementId,
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
-    label_count: usize,
     /// Whether the bands are points in time: always upright, labels thinned.
     time_axis: bool,
     /// The band a filter has picked: it keeps its colour and the rest fade,
@@ -199,7 +280,6 @@ impl GroupedBars {
     ) -> Self {
         Self {
             id: id.into(),
-            label_count: x_label_count(&points),
             points,
             series: series_names.iter().map(SharedString::from).collect(),
             time_axis: false,
@@ -372,8 +452,15 @@ impl Plot for GroupedBars {
                     .stroke(cx.theme().border)
                     .x(px(zero))
                     .paint(&bounds, window, cx);
+                let shared_year = self.time_axis && one_year(&self.points);
                 let shown = if self.time_axis {
-                    labeled(self.points.len(), self.label_count)
+                    let widest = self
+                        .points
+                        .iter()
+                        .map(|d| axis_label(&d.band, shared_year).chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    labeled(self.points.len(), x_label_count_in(width, widest))
                 } else {
                     vec![true; self.points.len()]
                 };
@@ -386,7 +473,7 @@ impl Plot for GroupedBars {
                         let tick = band_scale.tick(&d.band)?;
                         Some(
                             Text::new(
-                                d.band.clone(),
+                                axis_label(&d.band, shared_year),
                                 point(px(tick + band_width / 2.), px(baseline + TEXT_GAP)),
                                 muted,
                             )
@@ -408,7 +495,6 @@ impl Plot for GroupedBars {
                 Grid::new()
                     .y(ticks[..ticks.len() - 1].to_vec())
                     .stroke(cx.theme().chart_grid)
-                    .dash_array(&[px(4.), px(2.)])
                     .paint(&bounds, window);
 
                 let mut bar = Bar::new()
@@ -421,6 +507,11 @@ impl Plot for GroupedBars {
                     })
                     .base(move |_| zero)
                     .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
+                    .corner_radii(Corners {
+                        top_left: px(BAR_RADIUS),
+                        top_right: px(BAR_RADIUS),
+                        ..Corners::default()
+                    })
                     .fill(fill);
                 if self.values_shown() {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
@@ -472,7 +563,6 @@ impl Plot for GroupedBars {
                 Grid::new()
                     .x(ticks[..ticks.len() - 1].to_vec())
                     .stroke(cx.theme().chart_grid)
-                    .dash_array(&[px(4.), px(2.)])
                     .paint(&bounds, window);
 
                 let mut bar = Bar::new()
@@ -486,6 +576,11 @@ impl Plot for GroupedBars {
                     })
                     .base(move |_| zero)
                     .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
+                    .corner_radii(Corners {
+                        top_right: px(BAR_RADIUS),
+                        bottom_right: px(BAR_RADIUS),
+                        ..Corners::default()
+                    })
                     .fill(fill);
                 if self.values_shown() {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
@@ -603,7 +698,13 @@ pub(crate) struct SeriesPlot {
     connect: SeriesConnect,
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
-    label_count: usize,
+}
+
+/// A series plot's value axis: the round values it labels and grids, and the
+/// gutter left of the plot their labels take.
+struct ValueAxis {
+    ticks: Vec<f64>,
+    gutter: f32,
 }
 
 impl SeriesPlot {
@@ -616,7 +717,6 @@ impl SeriesPlot {
         Self {
             id: id.into(),
             connect,
-            label_count: x_label_count(&points),
             points,
             series: series_names.iter().map(SharedString::from).collect(),
         }
@@ -649,25 +749,51 @@ impl SeriesPlot {
         Self::new(id, points, series_names, SeriesConnect::Scatter)
     }
 
+    /// Every value a series has, skipping cells the query did not return.
+    fn values(&self) -> impl Iterator<Item = f64> + '_ {
+        self.points.iter().flat_map(|d| {
+            d.values
+                .iter()
+                .zip(&d.present)
+                .filter_map(|(value, present)| present.then_some(*value))
+        })
+    }
+
+    /// The value axis: round ticks over the data and zero, and a gutter as
+    /// wide as the widest tick label.
+    fn value_axis(&self) -> ValueAxis {
+        let (min, max) = self
+            .values()
+            .fold((0f64, 0f64), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        let ticks = nice_ticks(min, max, TICK_COUNT - 1);
+        let widest = ticks
+            .iter()
+            .map(|t| label_width(&format_value(*t)))
+            .fold(0., f32::max);
+        ValueAxis {
+            ticks,
+            gutter: widest + LABEL_PAD,
+        }
+    }
+
     /// The point (x) and value (y) scales for `bounds`, shared by `paint` and
-    /// the tooltip so the series and the hover dots stay aligned. The value
-    /// scale fits the data from zero, as the catalog's point charts do.
-    fn scales(&self, bounds: Bounds<Pixels>) -> (ScalePoint<SharedString>, ScaleLinear<f64>) {
+    /// the tooltip so the series and the hover dots stay aligned. Both are in
+    /// the whole plot's coordinates: x starts right of the value labels'
+    /// gutter, and y spans the round ticks, so the top gridline is a round
+    /// number at or above the largest value.
+    fn scales(
+        &self,
+        bounds: Bounds<Pixels>,
+        axis: &ValueAxis,
+    ) -> (ScalePoint<SharedString>, ScaleLinear<f64>) {
         let height = bounds.size.height.as_f32() - axis_gap();
+        let width = bounds.size.width.as_f32();
         let x = ScalePoint::new(
             self.points.iter().map(|d| d.band.clone()),
-            [0., bounds.size.width.as_f32()],
+            [axis.gutter.min(width), width],
         );
         let y = ScaleLinear::new(
-            self.points
-                .iter()
-                .flat_map(|d| {
-                    d.values
-                        .iter()
-                        .zip(&d.present)
-                        .filter_map(|(value, present)| present.then_some(*value))
-                })
-                .chain(Some(0.)),
+            self.values().chain(axis.ticks.iter().copied()),
             [height, TOP_GAP],
         );
         (x, y)
@@ -694,20 +820,39 @@ impl IntoElement for SeriesPlot {
 
 impl Plot for SeriesPlot {
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        let (x, y) = self.scales(bounds);
+        let axis = self.value_axis();
+        let (x, y) = self.scales(bounds, &axis);
         let height = bounds.size.height.as_f32() - axis_gap();
+        let width = bounds.size.width.as_f32();
         let palette = palette(cx);
+        let muted = cx.theme().muted_foreground;
+        // The axis line and the grid run right of the value labels, not
+        // through them.
+        let gutter = axis.gutter.min(width);
+        let plot_area = Bounds::new(
+            bounds.origin + point(px(gutter), px(0.)),
+            size(px(width - gutter), bounds.size.height),
+        );
 
-        let shown = labeled(self.points.len(), self.label_count);
+        // As many x labels as fit the width this plot has, a shared year
+        // dropped from dates.
+        let shared_year = one_year(&self.points);
+        let widest = self
+            .points
+            .iter()
+            .map(|d| axis_label(&d.band, shared_year).chars().count())
+            .max()
+            .unwrap_or(0);
+        let shown = labeled(self.points.len(), x_label_count_in(width - gutter, widest));
         let labels = self
             .points
             .iter()
             .enumerate()
             .filter(|(i, _)| shown[*i])
             .filter_map(|(i, d)| {
-                let tick = x.tick_at(i)?;
+                let tick = x.tick_at(i)? - gutter;
                 Some(
-                    AxisText::new(d.band.clone(), px(tick), cx.theme().muted_foreground)
+                    AxisText::new(axis_label(&d.band, shared_year), px(tick), muted)
                         .font_size(px(LABEL_SIZE))
                         .align(point_label_align(i, self.points.len())),
                 )
@@ -716,20 +861,44 @@ impl Plot for SeriesPlot {
             .stroke(cx.theme().border)
             .x(px(height))
             .x_label(labels)
-            .paint(&bounds, window, cx);
+            .paint(&plot_area, window, cx);
 
-        let ticks = value_ticks(0., height, TICK_COUNT);
+        // A gridline and a label at every round value; the baseline's line
+        // is the axis's.
+        let positions: Vec<(f64, f32)> = axis
+            .ticks
+            .iter()
+            .filter_map(|t| Some((*t, y.tick(t)?)))
+            .collect();
         Grid::new()
-            .y(ticks[..ticks.len() - 1].to_vec())
+            .y(positions
+                .iter()
+                .filter(|(_, at)| (*at - height).abs() > 0.5)
+                .map(|(_, at)| px(*at))
+                .collect::<Vec<_>>())
             .stroke(cx.theme().chart_grid)
-            .dash_array(&[px(4.), px(2.)])
-            .paint(&bounds, window);
+            .paint(&plot_area, window);
+        let value_labels = positions
+            .iter()
+            .map(|(t, at)| {
+                Text::new(
+                    format_value(*t),
+                    point(px(gutter - LABEL_PAD / 2.), px(at - LABEL_SIZE / 2.)),
+                    muted,
+                )
+                .font_size(px(LABEL_SIZE))
+                .align(TextAlign::Right)
+            })
+            .collect();
+        PlotLabel::new(value_labels).paint(&bounds, window, cx);
 
         match self.connect {
             SeriesConnect::Line => {
                 // A cell the query did not return is skipped, not drawn as
                 // zero; the line bridges the gap, as the catalog's line does
-                // over filtered data.
+                // over filtered data. Straight from point to point: a curve
+                // through them would show values between the points that the
+                // data never had.
                 let caches = PathCaches::for_paint("spec-lines", window, cx);
                 caches.update(cx, |caches, _| {
                     for (s, _) in self.series.iter().enumerate() {
@@ -745,6 +914,7 @@ impl Plot for SeriesPlot {
                                     .then(|| y.tick(&d.values[s]))
                                     .flatten()
                             })
+                            .curve(Curve::Linear)
                             .stroke(palette[s % palette.len()])
                             .stroke_width(2.);
                         line.paint_cached(&bounds, caches.slot(s), window);
@@ -790,12 +960,14 @@ impl Plot for SeriesPlot {
         bounds: Bounds<Pixels>,
         _cx: &App,
     ) -> Option<TooltipState> {
-        // The axis labels below the plot are not a datum.
+        // The axis labels below the plot, and the value labels left of it,
+        // are not a datum.
         let height = bounds.size.height.as_f32() - axis_gap();
-        if position.y.as_f32() > height {
+        let axis = self.value_axis();
+        if position.y.as_f32() > height || position.x.as_f32() < axis.gutter {
             return None;
         }
-        let (x, y) = self.scales(bounds);
+        let (x, y) = self.scales(bounds, &axis);
         let index = x.nearest_index(position.x.as_f32());
         let d = self.points.get(index)?;
         let x_tick = x.tick_at(index)?;
@@ -860,8 +1032,8 @@ mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
-        group_slot, labeled, point_label_align, value_ticks, x_label_count, GroupedBars, Layout,
-        GROUP_GAP,
+        axis_label, group_slot, labeled, nice_ticks, one_year, point_label_align, value_ticks,
+        x_label_count, x_label_count_in, GroupedBars, Layout, GROUP_GAP,
     };
     use crate::spec::prepare::PlotPoint;
     use gpui_kit::{point, px, size, Bounds, SharedString, TextAlign};
@@ -993,5 +1165,61 @@ mod tests {
         assert_eq!(x_label_count(&[point("2026-09-01")]), 5);
         assert_eq!(x_label_count(&[point("手机银行")]), 10);
         assert_eq!(x_label_count(&[point("")]), 12);
+    }
+
+    fn bands(bands: &[&str]) -> Vec<Arc<PlotPoint>> {
+        bands
+            .iter()
+            .enumerate()
+            .map(|(ix, band)| {
+                Arc::new(PlotPoint {
+                    band: SharedString::from(*band),
+                    label: SharedString::new(""),
+                    values: vec![1.0],
+                    present: vec![true],
+                    ix,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_value_axis_steps_by_round_numbers_past_the_data() {
+        assert_eq!(nice_ticks(0., 327., 4), vec![0., 100., 200., 300., 400.]);
+        assert_eq!(nice_ticks(0., 8., 4), vec![0., 2., 4., 6., 8.]);
+        assert_eq!(nice_ticks(0., 0.9, 4), vec![0., 0.2, 0.4, 0.6, 0.8, 1.]);
+        // Zero is always on the axis, below negative data or above it.
+        assert_eq!(nice_ticks(-30., -5., 4), vec![-30., -20., -10., 0.]);
+        assert_eq!(nice_ticks(5., 5., 4), vec![0., 1., 2., 3., 4., 5.]);
+        // Nothing to span: a single tick at zero.
+        assert_eq!(nice_ticks(0., 0., 4), vec![0.]);
+        assert_eq!(nice_ticks(0., f64::NAN, 4), vec![0.]);
+    }
+
+    #[test]
+    fn dates_of_one_year_drop_it_on_the_axis() {
+        let days = bands(&["2026-09-01", "2026-09-14"]);
+        assert!(one_year(&days));
+        assert_eq!(axis_label(&days[1].band, true).as_ref(), "09-14");
+        // A timestamp counts by its date.
+        assert!(one_year(&bands(&[
+            "2026-09-01 10:00:00",
+            "2026-09-02 00:00:00"
+        ])));
+        // Two years, or anything not a date, keep the whole label.
+        assert!(!one_year(&bands(&["2025-12-31", "2026-01-01"])));
+        assert!(!one_year(&bands(&["手机银行", "柜面"])));
+        assert!(!one_year(&bands(&["2026", "2027"])));
+        assert!(!one_year(&[]));
+    }
+
+    #[test]
+    fn x_labels_fit_the_width_drawn() {
+        // A half-width plot fits fewer dates than the full-width estimate.
+        let full = x_label_count(&bands(&["2026-09-01"]));
+        assert!(x_label_count_in(400., 10) < full);
+        assert_eq!(x_label_count_in(400., 5), 6);
+        // Never fewer than the two ends.
+        assert_eq!(x_label_count_in(10., 10), 2);
     }
 }

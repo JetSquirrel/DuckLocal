@@ -874,11 +874,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.comments.you", "你", "You"),
     ("dashboard.comments.agent", "Agent", "Agent"),
     (
-        "dashboard.comments.hint",
-        "评论保存在 .dash 文件旁，Agent 用 `ducklocal comments` 读取并回复。",
-        "Saved beside the .dash file; an agent reads and answers with `ducklocal comments`.",
-    ),
-    (
         "dashboard.filter.hint",
         "点击可筛选其他图表",
         "Click to filter the other plots",

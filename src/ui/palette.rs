@@ -72,3 +72,23 @@ pub fn tone(name: &str, cx: &App) -> Option<(Hsla, Hsla)> {
     };
     Some((rgb(rule).into(), rgb(ink).into()))
 }
+
+/// A dashboard's page: a warm grey the plot cards stand out from. In the
+/// dark the page keeps the window's background and the cards are lifted
+/// instead, since there is no darker step to sink the page to.
+pub fn page(cx: &App) -> Hsla {
+    if cx.theme().mode.is_dark() {
+        cx.theme().background
+    } else {
+        rgb(0xf7f7f5).into()
+    }
+}
+
+/// A dashboard plot card's surface, on [`page`].
+pub fn panel(cx: &App) -> Hsla {
+    if cx.theme().mode.is_dark() {
+        rgb(0x1c1c1b).into()
+    } else {
+        rgb(0xffffff).into()
+    }
+}

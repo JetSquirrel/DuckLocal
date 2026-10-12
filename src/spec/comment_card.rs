@@ -291,21 +291,17 @@ impl Render for CommentCard {
                 )
             })
             .child(Textarea::new(&self.input).small())
+            // Just the two buttons: the shortcut is on the send button's
+            // tooltip, so the card is the quote, the box and its answer.
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(tr("dashboard.comments.shortcut")),
-                    )
+                    .justify_end()
                     .child(
                         Button::new("comment-cancel")
                             .small()
-                            .outline()
+                            .ghost()
                             .label(tr("dashboard.comments.cancel"))
                             .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                     )
@@ -318,14 +314,9 @@ impl Render for CommentCard {
                             } else {
                                 tr("dashboard.comments.send")
                             })
+                            .tooltip(tr("dashboard.comments.shortcut"))
                             .on_click(cx.listener(|this, _, window, cx| this.post(window, cx))),
                     ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(tr("dashboard.comments.hint")),
             )
             .into_any_element()
     }

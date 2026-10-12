@@ -322,6 +322,22 @@ impl InputHighlighter for DashHighlighter {
     }
 }
 
+/// The styled runs of `sql` on its own, read-only: the SQL a plot ran,
+/// coloured as the query editor colours it. Only the styled pieces, in order;
+/// the text between them keeps the surrounding style.
+pub fn sql_styles(
+    sql: &str,
+    resolver: &dyn HighlightStyleResolver,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut highlighter = SyntaxHighlighter::new("sql");
+    highlighter.update(None, &Rope::from(sql), None);
+    highlighter
+        .styles(&(0..sql.len()), resolver)
+        .into_iter()
+        .filter(|(range, style)| *style != HighlightStyle::default() && range.start < range.end)
+        .collect()
+}
+
 /// The factory the dashboard's source editor installs: `.dash` gets this
 /// highlighter, anything else none.
 pub fn factory() -> InputHighlighterFactory {
