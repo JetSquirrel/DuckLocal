@@ -13,11 +13,11 @@ ducklocal query --sql-file - < analysis.sql
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
 
-`--format json` (default) is the contract below; `--format md` renders the same result as a Markdown table to read or quote: dates and timestamps in ISO form, DECIMALs with their digits, `NULL` as `NULL`, `|` escaped and newlines as `<br>` so a cell cannot break the table, `_0 rows._` after an empty result and `_Truncated at N rows:…_` when a limit cut it short. Use JSON whenever a program parses the value; the counts and digits are the same either way.
+`--format json` (default) is the contract below; `--format md` renders the same result as a Markdown table to read or quote: dates and timestamps in ISO form, DECIMALs with their digits, `NULL` as `NULL`, `|` escaped and newlines as `<br>` so a cell cannot break the table, `_0 rows._` after an empty result and `_Truncated at N of M rows…_` (`of at least M` when the count stopped) when a limit cut it short. Use JSON whenever a program parses the value; the counts and digits are the same either way.
 
 Use exactly one `--sql`/`--sql-file`. A file is UTF-8, `-` means stdin. Exactly one SQL statement is accepted using DuckDB's real parser; comment/quoted semicolons work and scripts are rejected before execution. Flags cannot repeat. Unknown flags, missing values, and invalid limits fail. Use separate option values, not `--flag=value`.
 
-`--limit N` is positive, defaults to 1000, and caps output rows. A 2,000,000-cell budget also applies. An extra row determines `truncated`; this is not a computation or memory limit. Paths resolve against the working directory. Quote shell paths and escape SQL apostrophes by doubling them: `'O''Brien.csv'`. Quote SQL identifiers with double quotes.
+`--limit N` is positive, defaults to 1000, and caps output rows. A 2,000,000-cell budget also applies. Past the cap, rows are counted without being read, up to 100,000 more, for `total_rows`; this is not a computation or memory limit. Paths resolve against the working directory. Quote shell paths and escape SQL apostrophes by doubling them: `'O''Brien.csv'`. Quote SQL identifiers with double quotes.
 
 Without `--database`, each call has a new in-memory database. `--database PATH` opens an existing file read-only. `--read-write` requires `--database` and authorizes database writes/creation at that path, not parent directory creation. Do not silently fall back to memory after open/lock errors. When DuckDB refuses a database file, the error message first gives the reason read from the file's header (newer DuckDB, v0.9-era file, SQLite, not a database) and what to run instead; relay it rather than retrying. No GUI history/settings/registered views are read or changed. A GUI path named like a command (`query`, `schema`, `open`, `check`, and the hidden `profile`, `lsp`) must be written with `./`, e.g. `./query`.
 
@@ -129,10 +129,10 @@ Use `json_extract` instead when the leaf is not a string and you want it as JSON
 Success is one JSON object on stdout:
 
 ```json
-{"columns":[{"name":"n","type":"Int32"}],"rows":[[1]],"row_count":1,"truncated":false,"elapsed_ms":1}
+{"columns":[{"name":"n","type":"Int32"}],"rows":[[1]],"row_count":1,"truncated":false,"total_rows":1,"total_rows_exact":true,"elapsed_ms":1}
 ```
 
-Columns/row arrays preserve order and duplicate names. `type` uses Arrow debug names, not SQL type names. `row_count` is the number returned, not the total matching/affected count. Zero-row results retain columns. DDL/DML are real result sets, often with a `Count` column; INSERT/COPY typically return `[[N]]`, CREATE TABLE often returns zero rows. `elapsed_ms` covers preparation, execution, and row encoding, not connection/input setup.
+Columns/row arrays preserve order and duplicate names. `type` uses Arrow debug names, not SQL type names. `row_count` is the number returned. `total_rows` is how many rows the statement produced, so a truncated preview still answers "how many?" without a second `COUNT(*)`; when `total_rows_exact` is false the count stopped 100,000 rows past the cap and `total_rows` is only a lower bound. Neither is an affected-row count. Zero-row results retain columns. DDL/DML are real result sets, often with a `Count` column; INSERT/COPY typically return `[[N]]`, CREATE TABLE often returns zero rows. `elapsed_ms` covers preparation, execution, and row encoding, not connection/input setup.
 
 - NULL → `null`; text/enum → strings; booleans/finite floats → native JSON.
 - Integers within ±9,007,199,254,740,991 → numbers; larger values → `{"encoding":"integer","value":"..."}` exact decimal text. Decimal → `{"encoding":"decimal","value":"123.450"}`.

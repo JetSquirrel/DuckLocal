@@ -274,10 +274,13 @@ fn limits_zero_rows_and_actual_ddl_dml_results() {
         assert_eq!(out["columns"].as_array().unwrap().len(), 1);
         assert_eq!(out["row_count"], expected);
         assert_eq!(out["truncated"], truncated);
+        assert_eq!(out["total_rows"], count);
+        assert_eq!(out["total_rows_exact"], true);
     }
     let out = s.success(&["query", "--sql", "SELECT * FROM range(1001)"]);
     assert_eq!(out["row_count"], 1000);
     assert_eq!(out["truncated"], true);
+    assert_eq!(out["total_rows"], 1001);
     let cols = (0..400)
         .map(|i| format!("i AS c{i}"))
         .collect::<Vec<_>>()
@@ -291,6 +294,7 @@ fn limits_zero_rows_and_actual_ddl_dml_results() {
     ]);
     assert_eq!(wide["row_count"], 5000);
     assert_eq!(wide["truncated"], true);
+    assert_eq!(wide["total_rows"], 6000);
     let ddl = s.success(&["query", "--sql", "/* not a SELECT */ CREATE TABLE t(a INT)"]);
     assert_eq!(ddl["columns"][0]["name"], "Count");
     assert_eq!(ddl["row_count"], 0);
@@ -680,7 +684,7 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "md",
     ]);
     assert!(truncated.contains("| 0 |\n| 1 |\n"), "{truncated}");
-    assert!(truncated.contains("_Truncated at 2 rows"), "{truncated}");
+    assert!(truncated.contains("_Truncated at 2 of 5 rows"), "{truncated}");
 
     let empty = s.text(&[
         "query",

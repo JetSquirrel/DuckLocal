@@ -35,8 +35,10 @@ Options:
   --limit N          Maximum rows, default 1000
   --format FORMAT    json (default) or md, a Markdown table for reading
 
-Output: {columns, rows, row_count, truncated, elapsed_ms}, at most 2,000,000
-cells. Column types are Arrow names. Errors are JSON on stderr; exit 2 for
+Output: {columns, rows, row_count, truncated, total_rows, total_rows_exact,
+elapsed_ms}, at most 2,000,000 cells. Past the limit, rows are counted up to
+100,000 more; beyond that total_rows is a lower bound and total_rows_exact is
+false. Column types are Arrow names. Errors are JSON on stderr; exit 2 for
 arguments, 1 for SQL or I/O. Read-only is not a sandbox: COPY can write files.
 ";
 
