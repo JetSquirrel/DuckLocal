@@ -684,7 +684,10 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "md",
     ]);
     assert!(truncated.contains("| 0 |\n| 1 |\n"), "{truncated}");
-    assert!(truncated.contains("_Truncated at 2 of 5 rows"), "{truncated}");
+    assert!(
+        truncated.contains("_Truncated at 2 of 5 rows"),
+        "{truncated}"
+    );
 
     let empty = s.text(&[
         "query",
