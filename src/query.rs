@@ -32,12 +32,22 @@ pub struct CliColumn {
     pub arrow_type: String,
 }
 
+/// How many rows past the returned ones a truncated CLI result goes on
+/// counting, unread, before it stops and reports the total as a lower bound.
+/// Enough to answer "how many?" for most results without a second query,
+/// small enough that a billion-row scan still stops in moments.
+pub const COUNT_AHEAD: usize = 100_000;
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct CliResult {
     pub columns: Vec<CliColumn>,
     pub rows: Vec<Vec<serde_json::Value>>,
     pub row_count: usize,
     pub truncated: bool,
+    /// Every row the statement produced, returned or not — or, when
+    /// `total_rows_exact` is false, as many as were counted before giving up.
+    pub total_rows: usize,
+    pub total_rows_exact: bool,
     pub elapsed_ms: u128,
 }
 
@@ -72,11 +82,29 @@ pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResul
         }
         out.push(cells);
     }
+    // Past the cap, count without reading cells, so a truncated result still
+    // says how big the answer is. The row that tripped the cap is one.
+    let mut total_rows = out.len() + usize::from(truncated);
+    let mut total_rows_exact = true;
+    if truncated {
+        let mut ahead = 1;
+        while rows.next()?.is_some() {
+            total_rows += 1;
+            ahead += 1;
+            if ahead >= COUNT_AHEAD {
+                total_rows_exact = rows.next()?.is_none();
+                total_rows += usize::from(!total_rows_exact);
+                break;
+            }
+        }
+    }
     Ok(CliResult {
         columns,
         row_count: out.len(),
         rows: out,
         truncated,
+        total_rows,
+        total_rows_exact,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
@@ -397,10 +425,15 @@ pub fn format_markdown(result: &CliResult) -> String {
         out.push_str("_0 rows._\n");
     }
     if result.truncated {
+        let at_least = if result.total_rows_exact {
+            ""
+        } else {
+            "at least "
+        };
         let _ = writeln!(
             out,
-            "_Truncated at {} rows: more rows were available, so this is not the whole answer._",
-            result.row_count
+            "_Truncated at {} of {at_least}{} rows, so this is not the whole answer._",
+            result.row_count, result.total_rows
         );
     }
     out
@@ -1563,6 +1596,35 @@ mod tests {
         let cli = run_cli_of(&conn, "SELECT i FROM range(1000000000) t(i)", 10).unwrap();
         assert_eq!(cli.rows.len(), 10);
         assert!(cli.truncated);
+        // Counting past the cap stops too, and says the total is a floor.
+        assert_eq!(cli.total_rows, 10 + COUNT_AHEAD + 1);
+        assert!(!cli.total_rows_exact);
+        assert!(started.elapsed().as_secs() < 30, "the count ran to the end");
+    }
+
+    #[test]
+    fn a_truncated_cli_result_says_how_many_rows_there_were() {
+        let conn = mem();
+        let cli = run_cli_of(&conn, "SELECT i FROM range(12345) t(i)", 10).unwrap();
+        assert_eq!(cli.row_count, 10);
+        assert!(cli.truncated);
+        assert_eq!(cli.total_rows, 12345);
+        assert!(cli.total_rows_exact);
+
+        // Exactly at the counting limit is still exact.
+        let edge = format!("SELECT i FROM range({}) t(i)", 10 + COUNT_AHEAD);
+        let cli = run_cli_of(&conn, &edge, 10).unwrap();
+        assert_eq!(cli.total_rows, 10 + COUNT_AHEAD);
+        assert!(cli.total_rows_exact);
+
+        let whole = run_cli_of(&conn, "SELECT i FROM range(5) t(i)", 10).unwrap();
+        assert!(!whole.truncated);
+        assert_eq!(whole.total_rows, 5);
+        assert!(whole.total_rows_exact);
+
+        // A failure past the cap is still a failure, not a preview.
+        let late = "SELECT CASE WHEN i < 5000 THEN i ELSE error('late') END FROM range(10000) t(i)";
+        assert!(run_cli_of(&conn, late, 10).is_err());
     }
 
     #[test]
@@ -1842,6 +1904,8 @@ mod tests {
                 })
                 .collect(),
             row_count: rows.len(),
+            total_rows: rows.len() + usize::from(truncated),
+            total_rows_exact: true,
             rows,
             truncated,
             elapsed_ms: 1,
@@ -1883,7 +1947,10 @@ mod tests {
             truncated.starts_with("| n |\n| --- |\n| 1 |\n"),
             "{truncated}"
         );
-        assert!(truncated.contains("_Truncated at 1 rows"), "{truncated}");
+        assert!(
+            truncated.contains("_Truncated at 1 of 2 rows"),
+            "{truncated}"
+        );
 
         // A statement that returned nothing to tabulate says so rather than
         // printing an empty header.
