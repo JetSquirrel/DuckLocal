@@ -55,13 +55,19 @@ TARGET is a csv/tsv/parquet/json file, a workbook (its first sheet), or, with
 ";
 
 pub(crate) const CHECK_HELP: &str = "\
-Usage: ducklocal check FILE [--database PATH]
+Usage: ducklocal check FILE [--database PATH] [--summary]
 
 Validate a .dash dashboard spec: parse it, resolve its references, check
 each query with DuckDB's parser, then run every query read-only and check
 plot columns against the results. Queries run on --database PATH when given,
 in memory otherwise; in memory, a query that reads a table no source defines
-is listed under \"unresolved\" instead of failing.
+is listed under \"unresolved\" instead of failing. Relative file paths, in
+source blocks and in the SQL alike, start from the spec's folder.
+
+On success the output describes every source, query, filter and plot.
+--summary prints one line instead: {file, ok, sources, queries, filters,
+plots, unresolved}, with unresolved the names of the queries not run.
+Failures print the same either way.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.
 
@@ -144,8 +150,8 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
         }
         if has("No files found") {
             return Some(
-                "Relative paths resolve against the current directory; check the name, or use an \
-                 absolute path",
+                "Relative paths resolve against the current directory, and in a .dash against \
+                 the spec's folder; check the name, or use an absolute path",
             );
         }
         if has("Could not convert") || has("Conversion Error") {
@@ -168,6 +174,103 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
         );
     }
     None
+}
+
+/// `error` with a hint added when it is a syntax error a keyword caused by
+/// standing as a column alias without `AS` — `SELECT count(*) minutes`. Those
+/// are names time-series SQL reaches for, and DuckDB's message gives no
+/// reason; for `at` it does not even say where.
+pub(crate) fn with_keyword_hint(error: CliError, sql: &str) -> CliError {
+    if error.hint.is_some() {
+        return error;
+    }
+    match keyword_alias(sql, &error.message) {
+        Some(word) => error.with_hint(format!(
+            "\"{word}\" is a SQL keyword, so as a column alias it needs AS: write AS {word}, \
+             or quote it as \"{word}\""
+        )),
+        None => error,
+    }
+}
+
+/// The keyword a parser error in `sql` most likely trips over as a bare
+/// alias: the token the message points at, else the word just before where
+/// the parser stopped (`SELECT 1 at, 2` stops at the comma, `SELECT 1 at` at
+/// the end).
+///
+/// Only a keyword DuckDB does not reserve counts — a reserved one where a
+/// clause is missing (`SELECT * FROM`) fails the same way, and an alias is the
+/// wrong fix for it — and only right after the end of an expression: a
+/// literal, a closing bracket or quote, or a name that is not a keyword.
+fn keyword_alias(sql: &str, message: &str) -> Option<String> {
+    if !message.contains("Parser Error: syntax error") {
+        return None;
+    }
+    let keywords = crate::db::config()
+        .and_then(Connection::open_in_memory_with_flags)
+        .ok()?;
+    let category = |word: &str| -> Option<String> {
+        keywords
+            .query_row(
+                "SELECT keyword_category FROM duckdb_keywords() WHERE keyword_name = lower(?1)",
+                [word],
+                |row| row.get(0),
+            )
+            .ok()
+    };
+    // The word at `start` as an alias left without its AS.
+    let bare_alias = |start: usize, word: &str| -> bool {
+        if !matches!(
+            category(word).as_deref(),
+            Some("unreserved" | "column_name" | "type_function")
+        ) {
+            return false;
+        }
+        let before = sql[..start].trim_end();
+        match before.chars().last() {
+            Some(')' | '\'' | '"' | ']') => true,
+            Some(c) if c.is_ascii_digit() => true,
+            Some(c) if c.is_alphabetic() || c == '_' => category(word_before(before)).is_none(),
+            _ => false,
+        }
+    };
+    // Where the parser stopped: the token it names, or the end of input.
+    let stopped = match crate::query::error_byte_range(sql, message) {
+        Some(range) => {
+            // The underlined span runs to the next space, so `before;`
+            // carries its semicolon: the word is what leads it.
+            let rest = &sql[range.start..];
+            let token = &rest[..rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len())];
+            if is_word(token) && bare_alias(range.start, token) {
+                return Some(token.to_string());
+            }
+            range.start
+        }
+        None if message.contains("at end of input") => {
+            sql.trim_end().trim_end_matches(';').trim_end().len()
+        }
+        None => return None,
+    };
+    let before = sql[..stopped].trim_end();
+    let word = word_before(before);
+    (is_word(word) && bare_alias(before.len() - word.len(), word)).then(|| word.to_string())
+}
+
+/// The identifier-shaped word `text` ends with, or `""`.
+fn word_before(text: &str) -> &str {
+    let start = text
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+        .last()
+        .map_or(text.len(), |(ix, _)| ix);
+    &text[start..]
+}
+
+fn is_word(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// The known flag an unknown one was most likely meant to be: one or two
@@ -525,10 +628,10 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     };
-    validate_sql(&sql)?;
+    validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
     let conn = open(options.database, options.read_write)?;
     let result = crate::query::run_cli_of(&conn, &sql, options.limit)
-        .map_err(|e| CliError::failure("sql", e))?;
+        .map_err(|e| with_keyword_hint(CliError::failure("sql", e), &sql))?;
     let output = match options.format {
         // Trailing newline is not part of the document; `dispatch` adds the
         // one line ending every output gets.
@@ -724,6 +827,71 @@ mod tests {
         assert_eq!(closest_flag("--databse", QUERY_SPEC), Some("--database"));
         assert_eq!(closest_flag("--everything", QUERY_SPEC), None);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    /// The keyword a parser error trips over, from the error the SQL really
+    /// produces.
+    fn alias_in(sql: &str) -> Option<String> {
+        let message = match validate_sql(sql) {
+            Err(error) => error.message,
+            Ok(()) => {
+                let conn = Connection::open_in_memory().unwrap();
+                match conn.prepare(sql) {
+                    Err(error) => error.to_string(),
+                    Ok(_) => return None,
+                }
+            }
+        };
+        keyword_alias(sql, &message)
+    }
+
+    #[test]
+    fn a_keyword_left_as_a_bare_alias_is_named() {
+        for (sql, word) in [
+            ("SELECT 1 minutes", "minutes"),
+            ("SELECT 1 sample", "sample"),
+            ("SELECT count(*) minutes FROM range(3)", "minutes"),
+            ("SELECT round(2.5) before;", "before"),
+            ("SELECT x year FROM (SELECT 1 x)", "year"),
+            ("SELECT 'a' time", "time"),
+            // `at` gives no position at the end, and the comma after it in
+            // the middle.
+            ("SELECT 1 at", "at"),
+            ("SELECT 1 at;", "at"),
+            ("SELECT 1 at, 2 b", "at"),
+        ] {
+            assert_eq!(alias_in(sql).as_deref(), Some(word), "{sql}");
+        }
+    }
+
+    #[test]
+    fn other_syntax_errors_get_no_alias_hint() {
+        for sql in [
+            // A reserved word where a clause is missing.
+            "SELECT * FROM",
+            "SELECT 1 FROM range(2) ORDER BY",
+            "SELECT FROM WHERE",
+            // Two keywords in a row: not an expression then its alias.
+            "SELECT 1 FROM range(2) ORDER BY 1 NULLS FIRST LAST",
+            "SELECT (1",
+        ] {
+            assert_eq!(alias_in(sql), None, "{sql}");
+        }
+        // Not a syntax error at all.
+        assert_eq!(
+            keyword_alias(
+                "SELECT minutes",
+                "Binder Error: Referenced column \"minutes\" not found"
+            ),
+            None
+        );
+        // A hint the site already gave is kept.
+        let error = CliError::failure("sql", "Parser Error: syntax error at end of input")
+            .with_hint("mine");
+        assert_eq!(
+            with_keyword_hint(error, "SELECT 1 at").hint.as_deref(),
+            Some("mine")
+        );
     }
 
     #[test]

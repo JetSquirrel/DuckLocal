@@ -724,6 +724,67 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
     s.error(&["query", "--sql", "SELECT 1", "--format"], 2, "argument");
 }
 
+/// A path written straight into a query's SQL starts from the spec's folder,
+/// like a `source` path, so a folder of spec and data checks from anywhere;
+/// `--summary` answers in one line; a keyword alias says what to write.
+#[test]
+fn check_reads_sql_paths_from_the_specs_folder_and_can_summarize() {
+    let s = Sandbox::new();
+    let proj = s.0.join("proj");
+    std::fs::create_dir_all(proj.join("data")).unwrap();
+    std::fs::write(proj.join("data/m.csv"), "metric,value\na,1\na,2\n").unwrap();
+    let dash = |name: &str, from: &str, alias: &str| {
+        std::fs::write(
+            proj.join(name),
+            format!(
+                "query \"q\" {{\n  sql = <<SQL\n    SELECT metric, sum(value) {alias} FROM '{from}' GROUP BY metric\n  SQL\n}}\n\
+                 plot \"q\" {{\n  type  = \"bar\"\n  query = query.q\n  x     = metric\n  y     = total\n}}\n"
+            ),
+        )
+        .unwrap();
+    };
+    dash("d.dash", "data/m.csv", "AS total");
+
+    // From the parent folder, and by an absolute path from a folder that is
+    // neither: the same pass, in one line.
+    let absolute = proj.join("d.dash");
+    for spec in ["proj/d.dash", absolute.to_str().unwrap()] {
+        let out = s.object(&["check", spec, "--summary"]);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["queries"], 1);
+        assert_eq!(out["plots"], 1);
+        assert_eq!(out["unresolved"], serde_json::json!([]));
+    }
+    // Without --summary, the full report, as before.
+    let full = s.object(&["check", "proj/d.dash"]);
+    assert_eq!(full["queries"][0]["columns"][1]["name"], "total");
+
+    // A missing file still fails, with the hint.
+    dash("missing.dash", "data/none.csv", "AS total");
+    let error = s.error(&["check", "proj/missing.dash", "--summary"], 1, "sql");
+    assert!(
+        error["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("spec's folder"),
+        "{error}"
+    );
+
+    // A keyword left as a bare alias names itself and the fix.
+    dash("alias.dash", "data/m.csv", "minutes");
+    let error = s.error(&["check", "proj/alias.dash"], 2, "spec");
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("\"minutes\"") && hint.contains("AS minutes"),
+        "{hint}"
+    );
+    let error = s.error(&["query", "--sql", "SELECT 1 at"], 1, "sql");
+    assert!(
+        error["error"]["hint"].as_str().unwrap().contains("AS at"),
+        "{error}"
+    );
+}
+
 /// A `source` names data files beside the spec: its path is the `.dash`
 /// file's folder's business, not the working directory's, and every query
 /// that names it reads it — a `WITH` query, a `SUMMARIZE`, a plain `SELECT` —

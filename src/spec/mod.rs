@@ -51,23 +51,31 @@ use serde_json::json;
 
 use crate::cli::{parse_args, Arg, CliError, FlagSpec};
 
-const SPEC: &[FlagSpec] = &[FlagSpec {
-    name: "--database",
-    takes_value: true,
-}];
+const SPEC: &[FlagSpec] = &[
+    FlagSpec {
+        name: "--database",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--summary",
+        takes_value: false,
+    },
+];
 
-/// `ducklocal check FILE [--database PATH]`.
+/// `ducklocal check FILE [--database PATH] [--summary]`.
 ///
 /// One positional argument, like `profile`: the thing being checked is the
 /// whole request; `--database` only says where column names come from.
 pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let mut file = None;
     let mut database = None;
+    let mut summary = false;
     for arg in parse_args("check", args, SPEC, &[])? {
         match arg {
             Arg::Flag("--database", Some(value)) => {
                 database = Some(crate::cli::database_path(&value)?);
             }
+            Arg::Flag("--summary", None) => summary = true,
             Arg::Positional(value) => {
                 if file.is_some() {
                     return Err(CliError::argument(
@@ -100,11 +108,12 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     // executes, so no table needs to exist and no side effect can happen.
     for query in &spec.queries {
         validate_query_sql(&query.sql).map_err(|message| {
-            spec_error(
+            let error = spec_error(
                 &path_display,
                 query.line,
                 &format!("query {:?}: {message}", query.name),
-            )
+            );
+            crate::cli::with_keyword_hint(error, &query.sql)
         })?;
     }
 
@@ -127,6 +136,13 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let mut unresolved = Vec::new();
     let base = source::base_of(&file);
     let connection = crate::cli::open(database.clone(), false)?;
+    // Paths written into the SQL start from the spec's folder too, as the
+    // view runs them: a dashboard beside its data checks from anywhere.
+    if let Some(search_path) = source::search_path(&base) {
+        connection
+            .execute_batch(&crate::query::set_file_search_path(&search_path))
+            .map_err(|e| CliError::failure("database", e))?;
+    }
     let mut failures = Vec::new();
     for (index, query) in spec.queries.iter().enumerate() {
         let located = |message: String| {
@@ -183,6 +199,22 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let diagnostics = model::check_columns(&checked, &lookup);
     if !diagnostics.is_empty() {
         return Err(spec_error_all(&path_display, diagnostics));
+    }
+
+    // After an edit the question is only whether it passed: counts, and the
+    // queries it could not run, whose plots went unchecked — passing says
+    // nothing about those.
+    if summary {
+        return Ok(json!({
+            "file": path_display,
+            "ok": true,
+            "sources": spec.sources.len(),
+            "queries": spec.queries.len(),
+            "filters": spec.filters.len(),
+            "plots": spec.plots.len(),
+            "unresolved": unresolved.iter().map(|u| &u["query"]).collect::<Vec<_>>(),
+        })
+        .to_string());
     }
 
     Ok(json!({
