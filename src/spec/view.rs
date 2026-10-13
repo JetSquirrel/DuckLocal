@@ -96,7 +96,7 @@ const TEXT_DEFAULT: f32 = 76.;
 const TEXT_MIN: f32 = 40.;
 /// The space between two plots' cards, and between the cards and the tab's
 /// edges.
-const PAGE_GAP: f32 = 12.;
+const PAGE_GAP: f32 = 8.;
 /// A plot card's corner radius.
 const PANEL_RADIUS: f32 = 8.;
 
