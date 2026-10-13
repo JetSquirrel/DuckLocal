@@ -20,9 +20,13 @@
 //!   slides under the pointer and holding the dashboard still mid-table.
 //!
 //! A trackpad says where a gesture begins: its first event is `Started`,
-//! often with no movement yet (fingers down, nothing moved). So a gesture is
-//! decided by its first event that moves, and a new `Started` decides afresh
-//! even while the last swipe's momentum is still streaming in. A mouse wheel
+//! often with no movement yet (fingers down, nothing moved — macOS reports
+//! both `MayBegin` and `Began` as `Started`). So a gesture is decided by its
+//! first event that moves after a `Started`, and that decides afresh even
+//! while the last swipe's momentum is still streaming in: the latch is still
+//! live then, and without remembering the `Started` a run of quick swipes
+//! would all stay with whatever the first one chose — a table already at its
+//! edge would hold the dashboard still until the momentum died. A mouse wheel
 //! reports no phases; for it, a pause between events is what ends a gesture.
 
 use std::cell::Cell;
@@ -59,6 +63,9 @@ struct Latch {
 #[derive(Clone, Default)]
 pub struct WheelLatch {
     latch: Rc<Cell<Option<Latch>>>,
+    /// A `Started` arrived and nothing has moved since: the next event that
+    /// moves begins a new gesture.
+    fresh: Rc<Cell<bool>>,
     viewport: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
@@ -75,6 +82,20 @@ impl WheelLatch {
         self.latch.set(Some(Latch { target, at: now }));
     }
 
+    /// Whether `event` begins a gesture: it is the `Started` itself, or the
+    /// first event to move after one. An event that does not move only notes
+    /// a `Started`, for the move that follows.
+    fn begins(&self, event: &ScrollWheelEvent, moved: bool) -> bool {
+        let started = event.touch_phase == TouchPhase::Started;
+        if !moved {
+            if started {
+                self.fresh.set(true);
+            }
+            return false;
+        }
+        self.fresh.replace(false) || started
+    }
+
     /// The cell the stack records its viewport's bounds in, as it paints.
     pub fn viewport(&self) -> Rc<Cell<Option<Bounds<Pixels>>>> {
         self.viewport.clone()
@@ -84,7 +105,9 @@ impl WheelLatch {
     /// event reaching it that moves is the stack's.
     pub fn stack_scrolled(&self, event: &ScrollWheelEvent, window: &Window) {
         let delta = event.delta.pixel_delta(window.line_height());
-        if delta.x != Pixels::ZERO || delta.y != Pixels::ZERO {
+        let moved = delta.x != Pixels::ZERO || delta.y != Pixels::ZERO;
+        self.begins(event, moved);
+        if moved {
             self.hold(Target::Stack, Instant::now());
         }
     }
@@ -124,7 +147,7 @@ impl WheelLatch {
                 delta.x.into(),
                 delta.y.into(),
             );
-        let started = event.touch_phase == TouchPhase::Started;
+        let started = self.begins(event, moved);
         let Some(target) = decide(latched, started, moved, keeps, ix) else {
             // Nothing moved, so there is nothing to take back, and no reason
             // to change hands.
@@ -202,7 +225,15 @@ const REVEAL_SLACK: f32 = 2.0;
 #[cfg(test)]
 mod tests {
     use super::{decide, keeps, reveals, Target, WheelLatch, GESTURE_GAP};
+    use gpui_kit::{ScrollWheelEvent, TouchPhase};
     use std::time::{Duration, Instant};
+
+    fn phase(touch_phase: TouchPhase) -> ScrollWheelEvent {
+        ScrollWheelEvent {
+            touch_phase,
+            ..Default::default()
+        }
+    }
 
     const MAX: f32 = 400.0;
 
@@ -299,5 +330,21 @@ mod tests {
             Some(Target::Stack)
         );
         assert_eq!(latch.current(start + GESTURE_GAP), None);
+    }
+
+    #[test]
+    fn a_still_started_makes_the_next_move_begin_a_gesture() {
+        let latch = WheelLatch::default();
+        // Momentum from the last swipe: moving, and begins nothing.
+        assert!(!latch.begins(&phase(TouchPhase::Moved), true));
+        // Fingers land with no movement (macOS's MayBegin), so the latch is
+        // still live when the first move comes — which must decide afresh.
+        assert!(!latch.begins(&phase(TouchPhase::Started), false));
+        assert!(latch.begins(&phase(TouchPhase::Moved), true));
+        // ... and only that one.
+        assert!(!latch.begins(&phase(TouchPhase::Moved), true));
+        // A Started that moves begins a gesture by itself.
+        assert!(latch.begins(&phase(TouchPhase::Started), true));
+        assert!(!latch.begins(&phase(TouchPhase::Moved), true));
     }
 }
