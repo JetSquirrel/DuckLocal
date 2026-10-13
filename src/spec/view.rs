@@ -1710,6 +1710,7 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     // in front of it, which only read.
     // Picks go in before the sources, which only read.
     let base = super::source::base_of(path);
+    let search_path = super::source::search_path(&base);
     let mut outcomes: Outcomes = HashMap::new();
     for query in &spec.queries {
         let sql = super::validate_query_sql(&query.sql).map(|()| {
@@ -1721,7 +1722,7 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
             Ok(sql) => match reuse.get(&query.name) {
                 Some((ran, outcome)) if *ran == sql => (sql, outcome.clone()),
                 _ => {
-                    let outcome = match crate::query::run(&sql) {
+                    let outcome = match crate::query::run_searching(search_path.as_deref(), &sql) {
                         Ok(QueryOutcome::Rows(result)) => Ok(Arc::new(result)),
                         Ok(QueryOutcome::Affected { .. }) => {
                             Err(trf("dashboard.query_not_rows", &[&query.name]))

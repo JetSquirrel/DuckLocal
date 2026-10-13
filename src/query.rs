@@ -519,6 +519,31 @@ pub fn run(sql: &str) -> Result<QueryOutcome> {
     crate::db::with_connection(|conn| run_of(conn, sql))
 }
 
+/// `run`, with relative file paths looked up in `search_path` as well — a
+/// dashboard's folder. The connection is the one every tab shares, so the
+/// setting it had is put back before the lock is let go, whatever the query
+/// did.
+pub fn run_searching(search_path: Option<&str>, sql: &str) -> Result<QueryOutcome> {
+    let Some(search_path) = search_path else {
+        return run(sql);
+    };
+    crate::db::with_connection(|conn| {
+        let previous: String =
+            conn.query_row("SELECT current_setting('file_search_path')", [], |row| {
+                row.get(0)
+            })?;
+        conn.execute_batch(&set_file_search_path(search_path))?;
+        let outcome = run_of(conn, sql);
+        conn.execute_batch(&set_file_search_path(&previous))?;
+        outcome
+    })
+}
+
+/// The statement that sets `file_search_path` to `path`.
+pub(crate) fn set_file_search_path(path: &str) -> String {
+    format!("SET file_search_path = '{}'", path.replace('\'', "''"))
+}
+
 #[hotpath::measure]
 pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
     let started = Instant::now();
@@ -1625,6 +1650,43 @@ mod tests {
         // A failure past the cap is still a failure, not a preview.
         let late = "SELECT CASE WHEN i < 5000 THEN i ELSE error('late') END FROM range(10000) t(i)";
         assert!(run_cli_of(&conn, late, 10).is_err());
+    }
+
+    #[test]
+    fn a_dashboard_query_finds_files_beside_its_spec_and_leaves_the_setting_be() {
+        let _guard = crate::db::connection_guard();
+        crate::db::open_memory().unwrap();
+        let folder = std::env::temp_dir().join(format!("ducklocal_search_{}", std::process::id()));
+        std::fs::create_dir_all(folder.join("data")).unwrap();
+        std::fs::write(folder.join("data").join("m.csv"), "v\n7\n").unwrap();
+        let folder_text = folder.to_string_lossy().into_owned();
+
+        let setting = || {
+            crate::db::with_connection(|conn| {
+                Ok(
+                    conn.query_row("SELECT current_setting('file_search_path')", [], |row| {
+                        row.get::<_, String>(0)
+                    })?,
+                )
+            })
+            .unwrap()
+        };
+        let before = setting();
+        let QueryOutcome::Rows(result) =
+            run_searching(Some(&folder_text), "SELECT v FROM 'data/m.csv'").unwrap()
+        else {
+            panic!("expected rows");
+        };
+        assert_eq!(result.rows[0][0], "7");
+        assert_eq!(setting(), before);
+        // A failing query puts the setting back too.
+        assert!(run_searching(Some(&folder_text), "SELECT v FROM 'data/none.csv'").is_err());
+        assert_eq!(setting(), before);
+        // Without the folder, the path means the working directory, as in a tab.
+        assert!(run("SELECT v FROM 'data/m.csv'").is_err());
+
+        std::fs::remove_dir_all(&folder).unwrap();
+        crate::db::close().unwrap();
     }
 
     #[test]

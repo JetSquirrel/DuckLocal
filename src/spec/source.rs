@@ -62,6 +62,24 @@ pub(crate) fn base_of(spec_path: &Path) -> PathBuf {
         .unwrap_or_default()
 }
 
+/// The `file_search_path` a spec's queries run with: its folder, absolute,
+/// so a path written straight into the SQL (`FROM 'data/m.csv'`) finds the
+/// file beside the spec from any working directory, as a `source` path does.
+/// DuckDB still tries the working directory first for a single file (a glob
+/// prefers the search path), so a same-named file there wins — rare from a
+/// terminal, impossible from a GUI launched at `/`. `None` for a folder whose
+/// name has a comma, which the setting would read as two folders.
+pub(crate) fn search_path(base: &Path) -> Option<String> {
+    let base = if base.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        base
+    };
+    let path = std::path::absolute(base).ok()?;
+    let path = path.to_string_lossy().into_owned();
+    (!path.contains(',')).then_some(path)
+}
+
 /// `sql` with every source it names defined in front of it, as CTEs. A query
 /// that names none comes back as written.
 ///
@@ -251,6 +269,12 @@ mod tests {
         assert_eq!(resolve("a/b.csv", &base), base.join("a").join("b.csv"));
         assert_eq!(resolve(&absolute.to_string_lossy(), &base), absolute);
         assert_eq!(base_of(&base.join("d.dash")), base);
+        // A spec named without a folder is in the working directory.
+        assert_eq!(
+            search_path(&base_of(Path::new("d.dash"))),
+            Some(std::env::current_dir().unwrap().display().to_string())
+        );
+        assert_eq!(search_path(&base.join("a,b")), None);
     }
 
     #[test]
