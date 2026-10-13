@@ -47,6 +47,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::input::{CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{resizable_panel, resize_handle_appearance, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -75,10 +76,10 @@ use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
 use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
-use crate::ui::chart::{format_value, legend_row, map_notes, parse_number, pie_parts};
+use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
 use crate::ui::completion::starts_with_ignore_case;
 use crate::ui::geo::GeoPlot;
-use crate::ui::results::fit_column_width;
+use crate::ui::results::{fit_column_width, sorted_rows};
 
 /// The plot panels' default and drag bounds, in the spirit of the workspace's
 /// own results split.
@@ -2048,6 +2049,9 @@ struct SpecTableDelegate {
     /// row along with it: the table keeps a selection by position, and a
     /// pick is a row, not a position.
     resorted: Option<Vec<usize>>,
+    /// The column of the cell last right-clicked, for the menu's copies: the
+    /// table tells the menu only the row.
+    menu_col: Option<usize>,
 }
 
 impl SpecTableDelegate {
@@ -2075,52 +2079,44 @@ impl SpecTableDelegate {
             result,
             order,
             resorted: None,
+            menu_col: None,
         }
+    }
+
+    /// The cell at `col` of the row shown at `shown`.
+    fn cell(&self, shown: usize, col: usize) -> &str {
+        self.result
+            .rows
+            .get(self.source_row(shown))
+            .and_then(|row| row.get(col))
+            .map_or("", String::as_str)
+    }
+
+    /// The row shown at `shown`, its cells tab-separated, as a spreadsheet
+    /// pastes a row.
+    fn row_text(&self, shown: usize) -> String {
+        (0..self.columns.len())
+            .map(|col| self.cell(shown, col))
+            .collect::<Vec<_>>()
+            .join("	")
+    }
+
+    /// Column `col`'s cells in the order shown, one per line, as a
+    /// spreadsheet pastes a column.
+    fn column_text(&self, col: usize) -> String {
+        (0..self.order.len())
+            .map(|shown| self.cell(shown, col))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
     }
 
     /// The row of the result shown at `shown`.
     fn source_row(&self, shown: usize) -> usize {
         self.order.get(shown).copied().unwrap_or(shown)
     }
-}
-
-/// The rows of `result` ordered by column `col`: numerically for a number
-/// column, as text otherwise — ISO dates and times sort right as text. NULL
-/// sorts last either way, and equal cells keep the query's order.
-fn sorted_rows(result: &QueryResult, col: usize, sort: ColumnSort) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..result.rows.len()).collect();
-    if sort == ColumnSort::Default {
-        return order;
-    }
-    let cell = |row: usize| {
-        result
-            .rows
-            .get(row)
-            .and_then(|r| r.get(col))
-            .map(String::as_str)
-            .filter(|cell| *cell != "NULL")
-    };
-    let numeric = result
-        .columns
-        .get(col)
-        .is_some_and(|c| c.kind == ColumnKind::Numeric);
-    let compare = |a: &str, b: &str| {
-        if numeric {
-            if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
-                return a.total_cmp(&b);
-            }
-        }
-        a.cmp(b)
-    };
-    let descending = sort == ColumnSort::Descending;
-    order.sort_by(|&a, &b| match (cell(a), cell(b)) {
-        (Some(a), Some(b)) if descending => compare(b, a),
-        (Some(a), Some(b)) => compare(a, b),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
-    });
-    order
 }
 
 impl TableDelegate for SpecTableDelegate {
@@ -2145,6 +2141,34 @@ impl TableDelegate for SpecTableDelegate {
     ) {
         let order = sorted_rows(&self.result, col_ix, sort);
         self.resorted = Some(std::mem::replace(&mut self.order, order));
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let copy = |label: &'static str, text: String| {
+            PopupMenuItem::new(tr(label))
+                .icon(IconName::Copy)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                })
+        };
+        let mut menu = menu;
+        if let Some(col) = self.menu_col.filter(|&col| col < self.columns.len()) {
+            menu = menu.item(copy(
+                "dashboard.table.copy_cell",
+                self.cell(row_ix, col).to_string(),
+            ));
+        }
+        menu = menu.item(copy("dashboard.table.copy_row", self.row_text(row_ix)));
+        if let Some(col) = self.menu_col.filter(|&col| col < self.columns.len()) {
+            menu = menu.item(copy("dashboard.table.copy_column", self.column_text(col)));
+        }
+        menu
     }
 
     fn render_th(
@@ -2175,16 +2199,16 @@ impl TableDelegate for SpecTableDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = self.column(col_ix, cx);
-        let text = self
-            .result
-            .rows
-            .get(self.source_row(row_ix))
-            .and_then(|row| row.get(col_ix))
-            .cloned()
-            .unwrap_or_default();
+        let text = self.cell(row_ix, col_ix).to_string();
         let is_null = text == "NULL";
         h_flex()
             .size_full()
+            // Before the row's own right-click, which opens the menu: the
+            // menu then knows which cell it is for.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |table, _, _, _| table.delegate_mut().menu_col = Some(col_ix)),
+            )
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .overflow_hidden()
             .child(
@@ -2288,7 +2312,8 @@ mod tests {
     // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro
     // shadows the built-in `#[test]`.
     use super::{
-        card_value_size, grid_rows, load, sorted_rows, Pick, Run, CARD_VALUE_MAX, CARD_VALUE_MIN,
+        card_value_size, grid_rows, load, sorted_rows, Pick, Run, SpecTableDelegate,
+        CARD_VALUE_MAX, CARD_VALUE_MIN,
     };
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
     use gpui_kit::component::table::ColumnSort;
@@ -2323,6 +2348,39 @@ mod tests {
         assert_eq!(sorted_rows(&result, 0, ColumnSort::Ascending), [1, 0, 2, 3]);
         // A third click goes back to the query's own order.
         assert_eq!(sorted_rows(&result, 1, ColumnSort::Default), [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_tables_copies_follow_the_shown_order() {
+        let column = |name: &str| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind: ColumnKind::Text,
+        };
+        let result = QueryResult {
+            columns: vec![column("channel"), column("region")],
+            rows: [["Web", "East"], ["App", "North"]]
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        };
+        let mut table = SpecTableDelegate::new(Arc::new(result));
+        assert_eq!(table.row_text(0), "Web	East");
+        assert_eq!(
+            table.column_text(1),
+            "East
+North"
+        );
+        table.order = sorted_rows(&table.result, 0, ColumnSort::Ascending);
+        assert_eq!(table.cell(0, 0), "App");
+        assert_eq!(table.row_text(0), "App	North");
+        assert_eq!(
+            table.column_text(0),
+            "App
+Web"
+        );
     }
 
     const BOARD: &str = r#"
