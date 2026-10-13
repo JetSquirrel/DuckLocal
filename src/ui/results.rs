@@ -12,7 +12,7 @@ use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::label::Label;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
 use gpui_kit::component::{
     h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, StyledExt,
@@ -23,7 +23,7 @@ use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, ExportFormat, PlanNode, QueryOutcome, QueryProfile, QueryResult};
-use crate::ui::chart::{ChartData, ChartKind, ChartPanel};
+use crate::ui::chart::{parse_number, ChartData, ChartKind, ChartPanel};
 use crate::ui::RUN_QUERY_KEYSTROKE;
 use gpui_kit::assets::IconName as AssetIconName;
 
@@ -202,6 +202,45 @@ pub fn filter_row_indices_probe(rows: &[Vec<String>], filter: &str) -> Option<Ve
     filter_row_indices(rows, filter)
 }
 
+/// The rows of `result` ordered by column `col`: numerically for a number
+/// column, as text otherwise — ISO dates and times sort right as text. NULL
+/// sorts last either way, and equal cells keep the query's order.
+pub(crate) fn sorted_rows(result: &QueryResult, col: usize, sort: ColumnSort) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..result.rows.len()).collect();
+    if sort == ColumnSort::Default {
+        return order;
+    }
+    let cell = |row: usize| {
+        result
+            .rows
+            .get(row)
+            .and_then(|r| r.get(col))
+            .map(String::as_str)
+            .filter(|cell| *cell != "NULL")
+    };
+    let numeric = result
+        .columns
+        .get(col)
+        .is_some_and(|c| c.kind == ColumnKind::Numeric);
+    let compare = |a: &str, b: &str| {
+        if numeric {
+            if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
+                return a.total_cmp(&b);
+            }
+        }
+        a.cmp(b)
+    };
+    let descending = sort == ColumnSort::Descending;
+    order.sort_by(|&a, &b| match (cell(a), cell(b)) {
+        (Some(a), Some(b)) if descending => compare(b, a),
+        (Some(a), Some(b)) => compare(a, b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    order
+}
+
 pub struct ResultTableDelegate {
     /// All columns the table sees: the leading `#` row-number column plus the
     /// query's data columns. The order is a contract, not a preference —
@@ -214,6 +253,11 @@ pub struct ResultTableDelegate {
     filter: String,
     /// Visible row -> source row. `None` = unfiltered (identity mapping).
     filtered: Option<Vec<usize>>,
+    /// The data column a header click sorted, and which way.
+    sort: Option<(usize, ColumnSort)>,
+    /// The visible rows in sorted order, when a sort is on: `filtered` (or
+    /// every row) reordered. `None` = the query's own order.
+    sorted: Option<Vec<usize>>,
     /// The (visible row, column) under the pointer: the one cell that gets a
     /// copy button. See `render_td`.
     hovered: Option<(usize, usize)>,
@@ -226,6 +270,8 @@ impl ResultTableDelegate {
             result: None,
             filter: String::new(),
             filtered: None,
+            sort: None,
+            sorted: None,
             hovered: None,
         }
     }
@@ -244,7 +290,9 @@ impl ResultTableDelegate {
         columns.push(Self::index_column());
         columns.extend(result.columns.iter().enumerate().map(|(ix, column)| {
             let width = fit_column_width(&column.name, &result.rows, ix, COPY_BUTTON_WIDTH);
-            let mut spec = Column::new(format!("c{ix}"), column.name.clone()).width(width);
+            let mut spec = Column::new(format!("c{ix}"), column.name.clone())
+                .width(width)
+                .sortable();
             if column.kind == ColumnKind::Numeric {
                 spec = spec.text_right();
             }
@@ -253,7 +301,8 @@ impl ResultTableDelegate {
         }));
         self.columns = columns;
         self.result = Some(result);
-        // A new result set clears any previous filter.
+        // A new result set clears any previous filter and sort.
+        self.sort = None;
         self.set_filter(String::new());
     }
 
@@ -269,6 +318,29 @@ impl ResultTableDelegate {
         self.hovered = None;
         self.filtered = filter_row_indices(self.rows(), &filter);
         self.filter = filter;
+        self.resort();
+    }
+
+    /// Lays the visible rows out in the sort's order. The sort runs over every
+    /// row and the filter then keeps its own, so a filter changed under a
+    /// sort needs no second sort.
+    fn resort(&mut self) {
+        self.sorted = match (&self.result, self.sort) {
+            (Some(result), Some((col, sort))) if sort != ColumnSort::Default => {
+                let order = sorted_rows(result, col, sort);
+                Some(match &self.filtered {
+                    Some(kept) => {
+                        let mut keep = vec![false; result.rows.len()];
+                        for &row in kept {
+                            keep[row] = true;
+                        }
+                        order.into_iter().filter(|&row| keep[row]).collect()
+                    }
+                    None => order,
+                })
+            }
+            _ => None,
+        };
     }
 
     /// Delegate column index -> source data column index (see `columns`).
@@ -278,8 +350,9 @@ impl ResultTableDelegate {
 
     /// Visible row index -> source row index.
     fn source_row(&self, row_ix: usize) -> usize {
-        self.filtered
+        self.sorted
             .as_ref()
+            .or(self.filtered.as_ref())
             .map(|indices| indices.get(row_ix).copied().unwrap_or(row_ix))
             .unwrap_or(row_ix)
     }
@@ -311,6 +384,30 @@ impl TableDelegate for ResultTableDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        // The columns keep the arrows too: a filter refreshes the table,
+        // which reads its columns back from here.
+        for (ix, column) in self.columns.iter_mut().enumerate() {
+            if column.sort.is_some() {
+                column.sort = Some(if ix == col_ix {
+                    sort
+                } else {
+                    ColumnSort::Default
+                });
+            }
+        }
+        // Visible row indices are about to mean other rows.
+        self.hovered = None;
+        self.sort = Some((self.data_col(col_ix), sort));
+        self.resort();
     }
 
     fn render_th(
@@ -1790,8 +1887,49 @@ fn format_thousands(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        filter_row_indices, fit_column_width, overview_relation, MAX_FIT_WIDTH, MIN_FIT_WIDTH,
+        filter_row_indices, fit_column_width, overview_relation, ResultTableDelegate,
+        MAX_FIT_WIDTH, MIN_FIT_WIDTH,
     };
+    use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+    use gpui_kit::component::table::ColumnSort;
+    use std::rc::Rc;
+
+    #[test]
+    fn a_sorted_result_keeps_the_filter_and_a_new_result_drops_the_sort() {
+        let column = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind,
+        };
+        let result = || {
+            Rc::new(QueryResult {
+                columns: vec![
+                    column("name", ColumnKind::Text),
+                    column("n", ColumnKind::Numeric),
+                ],
+                rows: [["web", "10"], ["app", "9"], ["web2", "100"]]
+                    .iter()
+                    .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                    .collect(),
+                elapsed_ms: 0,
+                truncated: false,
+            })
+        };
+        let shown = |table: &ResultTableDelegate| {
+            (0..table.visible_count())
+                .map(|row| table.source_row(row))
+                .collect::<Vec<_>>()
+        };
+        let mut table = ResultTableDelegate::new();
+        table.set_result(result());
+        table.sort = Some((1, ColumnSort::Descending));
+        table.resort();
+        assert_eq!(shown(&table), [2, 0, 1]);
+        table.set_filter("web".into());
+        assert_eq!(shown(&table), [2, 0]);
+        table.set_result(result());
+        assert_eq!(shown(&table), [0, 1, 2]);
+    }
 
     #[test]
     fn an_overview_reads_a_statement_that_ends_in_a_comment() {
