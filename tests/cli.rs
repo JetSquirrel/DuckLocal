@@ -1031,6 +1031,33 @@ plot "b" { type = "line" query = query.revenue x = channel y = channel }
     assert!(message.contains("bad.dash:5"), "{message}");
     assert!(message.contains("bad.dash:6"), "{message}");
 
+    // Mistakes of different stages come back together: a `$name` no filter
+    // defines, a card written as a block of its own, and a column a sound
+    // query does not return — not the first stage alone, run after run.
+    std::fs::write(
+        s.0.join("mixed.dash"),
+        r#"
+query "revenue" {
+  sql = "SELECT channel, sum(amount) AS total FROM usage WHERE $region GROUP BY channel"
+}
+plot "a" { type = "bar" query = query.revenue x = channel y = totl }
+card "b" { query = query.revenue value = total }
+"#,
+    )
+    .unwrap();
+    let error = s.error(
+        &["check", "mixed.dash", "--database", "data.duckdb"],
+        2,
+        "spec",
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("$region"), "{message}");
+    assert!(message.contains("\"totl\""), "{message}");
+    assert!(
+        message.contains(r#"a card is a plot: plot "b" { type = "card""#),
+        "{message}"
+    );
+
     // A pie and a map check against the same database: the map's
     // coordinates are found by name, and a text latitude is a mistake.
     s.success(&[
@@ -1366,7 +1393,12 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
         .contains("ducklocal open"));
     // It reads; mixed with something to open it is a mistake, not a guess.
     s.error(&["open", "--state", "--sql", "SELECT 1"], 2, "argument");
-    s.error(&["open", "--state", "a.csv"], 2, "argument");
+    // One spec narrows what it reads, as does --active; not both, not two.
+    s.error(&["open", "--state", "a.dash"], 1, "not_running");
+    s.error(&["open", "--state", "--active"], 1, "not_running");
+    s.error(&["open", "--state", "a.dash", "b.dash"], 2, "argument");
+    s.error(&["open", "--state", "--active", "a.dash"], 2, "argument");
+    s.error(&["open", "--active"], 2, "argument");
 }
 
 #[test]
