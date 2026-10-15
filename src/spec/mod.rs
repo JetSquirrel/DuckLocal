@@ -37,6 +37,7 @@ pub mod lsp;
 pub mod model;
 pub mod plot;
 pub mod prepare;
+pub mod presence;
 pub mod source;
 pub mod syntax;
 pub mod tabs;
@@ -143,8 +144,20 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             .execute_batch(&crate::query::set_file_search_path(&search_path))
             .map_err(|e| CliError::failure("database", e))?;
     }
+    // The window, if one has this spec open, marks the dashboard while the
+    // check runs and each plot while its query does.
+    let _checking = presence::Checking::start(&file);
     let mut failures = Vec::new();
     for (index, query) in spec.queries.iter().enumerate() {
+        let plots: Vec<String> = spec
+            .plots
+            .iter()
+            .filter(|plot| plot.query == query.name)
+            .map(|plot| plot.name.clone())
+            .collect();
+        if !plots.is_empty() {
+            presence::announce(&file, presence::Activity::Checking, plots);
+        }
         let located = |message: String| {
             format!(
                 "{}:{}: query {:?}: {message}",

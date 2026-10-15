@@ -101,6 +101,12 @@ const STATE_TIMEOUT: Duration = Duration::from_secs(5);
 /// with no end should not grow without bound.
 const MAX_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 
+/// How long a presence update waits on the window: it answers at once, and
+/// an agent's command must never stall on the courtesy.
+/// A listening loopback port accepts in well under a millisecond; Windows
+/// takes seconds to give up on one nothing listens on.
+const NOTIFY_TIMEOUT: Duration = Duration::from_millis(150);
+
 /// How long a started window gets to begin listening.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -135,12 +141,16 @@ struct Envelope {
     /// Ask what the window shows instead of opening anything.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     state: bool,
+    /// What an agent is doing to a dashboard, for the window to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presence: Option<crate::spec::presence::Update>,
 }
 
 /// What an accepted envelope asks for.
 enum Incoming {
     Open(Request),
     State,
+    Presence(crate::spec::presence::Update),
 }
 
 /// Requests the listener accepted, for the root view to drain.
@@ -150,6 +160,35 @@ static PENDING: Mutex<Vec<Request>> = Mutex::new(Vec::new());
 pub(crate) fn take_pending() -> Vec<Request> {
     std::mem::take(&mut *PENDING.lock().unwrap_or_else(PoisonError::into_inner))
 }
+
+/// Presence updates the listener accepted, for the root view to drain.
+static PRESENCE: Mutex<Vec<crate::spec::presence::Update>> = Mutex::new(Vec::new());
+
+/// Take every presence update accepted since the last call.
+pub(crate) fn take_presence() -> Vec<crate::spec::presence::Update> {
+    std::mem::take(&mut *PRESENCE.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// Tell the running window what an agent is doing, without starting one or
+/// waiting long on it. Whether a window took it.
+pub(crate) fn notify(update: &crate::spec::presence::Update) -> bool {
+    // A command sends several (`check` one per query): once no window
+    // answered, none will for the rest of this process, and each try would
+    // cost a connect timeout against an endpoint a closed window left behind.
+    if NO_WINDOW.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let delivered = data_dir().is_some_and(|dir| {
+        exchange_with(&dir, None, false, Some(update.clone()), NOTIFY_TIMEOUT).is_ok()
+    });
+    if !delivered {
+        NO_WINDOW.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    delivered
+}
+
+/// No window took a presence update from this process.
+static NO_WINDOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// State requests waiting for the window, each with where to send it.
 static STATE_WAITERS: Mutex<Vec<mpsc::Sender<Value>>> = Mutex::new(Vec::new());
@@ -262,6 +301,13 @@ fn accept_loop(
                 Ok(state) => json!({"ok": true, "state": state}),
                 Err(message) => json!({"error": message, "kind": "timeout"}),
             },
+            Ok(Incoming::Presence(update)) => {
+                PRESENCE
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(update);
+                json!({"ok": true})
+            }
             Err(message) => json!({"error": message}),
         };
         let mut stream = stream;
@@ -281,10 +327,13 @@ fn receive(stream: &TcpStream, token: &str) -> Result<Incoming, String> {
     if envelope.token != token {
         return Err("wrong token".into());
     }
-    match (envelope.state, envelope.request) {
-        (true, None) => Ok(Incoming::State),
-        (false, Some(request)) => Ok(Incoming::Open(request)),
-        _ => Err("malformed request: ask for the state or send something to open".into()),
+    match (envelope.state, envelope.request, envelope.presence) {
+        (true, None, None) => Ok(Incoming::State),
+        (false, Some(request), None) => Ok(Incoming::Open(request)),
+        (false, None, Some(update)) => Ok(Incoming::Presence(update)),
+        _ => Err(
+            "malformed request: ask for the state, send something to open, or a presence".into(),
+        ),
     }
 }
 
@@ -315,19 +364,31 @@ fn fetch_state(dir: &Path) -> Result<Value, Unreachable> {
 
 /// One envelope out, one reply line back.
 fn exchange(dir: &Path, request: Option<Request>, state: bool) -> Result<Value, Unreachable> {
+    exchange_with(dir, request, state, None, Duration::from_secs(10))
+}
+
+fn exchange_with(
+    dir: &Path,
+    request: Option<Request>,
+    state: bool,
+    presence: Option<crate::spec::presence::Update>,
+    reply_timeout: Duration,
+) -> Result<Value, Unreachable> {
     let text =
         std::fs::read_to_string(dir.join(ENDPOINT_FILE)).map_err(|_| Unreachable::NotRunning)?;
     let endpoint: Endpoint = serde_json::from_str(&text).map_err(|_| Unreachable::NotRunning)?;
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, endpoint.port));
     // A window that quit leaves its endpoint behind; a refused connection is
     // how that reads, and it means the same as no file at all.
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))
-        .map_err(|_| Unreachable::NotRunning)?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut stream =
+        TcpStream::connect_timeout(&address, reply_timeout.min(Duration::from_secs(2)))
+            .map_err(|_| Unreachable::NotRunning)?;
+    let _ = stream.set_read_timeout(Some(reply_timeout));
     let envelope = Envelope {
         token: endpoint.token,
         request,
         state,
+        presence,
     };
     let line = serde_json::to_string(&envelope).map_err(|e| Unreachable::Refused(e.to_string()))?;
     writeln!(stream, "{line}")

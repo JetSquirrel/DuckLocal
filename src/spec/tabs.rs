@@ -100,6 +100,7 @@ pub fn keep_available(specs: Vec<OpenDocument>) -> Restored {
 
 /// Write the open dashboards, replacing what was there.
 pub fn remember(specs: &[OpenDocument]) {
+    tracing::info!(count = specs.len(), "Remembering the open dashboards");
     if let Err(error) = crate::history::set_setting(SETTING, &to_json(specs)) {
         tracing::warn!("Could not remember the open dashboards: {error}");
     }
@@ -109,7 +110,15 @@ pub fn remember(specs: &[OpenDocument]) {
 /// could not be.
 pub fn restore() -> Restored {
     match crate::history::get_setting(SETTING) {
-        Ok(Some(json)) => keep_available(from_json(&json)),
+        Ok(Some(json)) => {
+            let restored = keep_available(from_json(&json));
+            tracing::info!(
+                count = restored.specs.len(),
+                gone = restored.problems.len(),
+                "Restoring the open dashboards"
+            );
+            restored
+        }
         Ok(None) => Restored::default(),
         Err(error) => {
             tracing::warn!("Could not read the open dashboards: {error}");

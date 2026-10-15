@@ -35,11 +35,40 @@ icon_assets!(
     ]
 );
 
-/// The default component bundle, plus [`ExtraIcons`].
+/// The guide's duck, one pose per step, each with a `-dark` twin carrying a
+/// light halo (see `scripts/make-mascots.py`). Served at `mascot/<name>.png`.
+macro_rules! mascots {
+    ($($name:literal),* $(,)?) => {
+        const MASCOTS: &[(&str, &[u8])] = &[$(
+            (
+                concat!("mascot/", $name, ".png"),
+                include_bytes!(concat!("../assets/mascot/app/", $name, ".png")),
+            ),
+            (
+                concat!("mascot/", $name, "-dark.png"),
+                include_bytes!(concat!("../assets/mascot/app/", $name, "-dark.png")),
+            ),
+        )*];
+    };
+}
+
+mascots!(
+    "duck-point-up-right",
+    "duck-drag-file",
+    "duck-point-left",
+    "duck-point-up",
+    "duck-point-down",
+    "duck-celebrate",
+);
+
+/// The default component bundle, plus [`ExtraIcons`] and the mascots.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = MASCOTS.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
         match ExtraIcons.load(path)? {
             Some(bytes) => Ok(Some(bytes)),
             None => Assets.load(path),
@@ -49,6 +78,12 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut paths = Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        paths.extend(
+            MASCOTS
+                .iter()
+                .filter(|(name, _)| name.starts_with(path))
+                .map(|(name, _)| SharedString::from(*name)),
+        );
         Ok(paths)
     }
 }

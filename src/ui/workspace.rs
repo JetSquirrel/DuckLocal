@@ -18,7 +18,7 @@ use gpui_kit::component::input::{
     RangeDecorationStyle, TabSize, TextDecoration, TextDecorationCollection,
 };
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -117,6 +117,81 @@ enum EditorTarget {
     Switch(usize),
     /// No query tab is open, so the content needs a new one.
     New,
+}
+
+/// A tab on its way along the strip, drawn under the pointer the way the
+/// tab itself looks.
+#[derive(Clone)]
+struct DraggedTab {
+    id: u64,
+    title: SharedString,
+    glyph: AssetIcon,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .px_3()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .shadow_md()
+            .text_sm()
+            .child(Icon::new(self.glyph).small())
+            .child(self.title.clone())
+    }
+}
+
+/// A tab's right-click menu: close it, the others, or the ones after it.
+/// Each acts through the workspace, so closing asks about unsaved edits the
+/// way the × does.
+fn tab_menu(
+    view: WeakEntity<Workspace>,
+    tab_id: u64,
+    index: usize,
+    tab_count: usize,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    move |menu, _, _| {
+        let act = |f: fn(&mut Workspace, u64, &mut Window, &mut Context<Workspace>)| {
+            let view = view.clone();
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| f(this, tab_id, window, cx)).ok();
+            }
+        };
+        menu.item(
+            PopupMenuItem::new(tr("menu.close_tab"))
+                .disabled(tab_count < 2)
+                .on_click(act(|this, id, window, cx| this.close_tab(id, window, cx))),
+        )
+        .item(
+            PopupMenuItem::new(tr("workspace.close.others"))
+                .disabled(tab_count < 2)
+                .on_click(act(|this, id, window, cx| {
+                    this.close_tabs_except(id, |_, _| true, window, cx)
+                })),
+        )
+        .item(
+            PopupMenuItem::new(tr("workspace.close.to_the_right"))
+                .disabled(index + 1 >= tab_count)
+                .on_click(act(|this, id, window, cx| {
+                    this.close_tabs_except(id, |index, anchor| index > anchor, window, cx)
+                })),
+        )
+    }
+}
+
+/// `n` when `title` is the default "Query n" in the current language.
+fn default_title_number(title: &str) -> Option<u64> {
+    let (before, after) = tr("workspace.tab.default_title").split_once("{}")?;
+    title
+        .strip_prefix(before)?
+        .strip_suffix(after)?
+        .parse()
+        .ok()
 }
 
 /// The tab index left active after the tab at `closed` is removed.
@@ -257,6 +332,15 @@ pub struct Workspace {
     /// with the editor standing in for its label.
     renaming: Option<(u64, Entity<InputState>)>,
     _rename_subscription: Option<Subscription>,
+    /// Set once the remembered query tabs are back. Until then nothing is
+    /// written, or the welcome tab would overwrite them.
+    query_tabs_restored: bool,
+    /// Set once the remembered dashboards are open again. Until then the
+    /// list is not rewritten: each reopening would write a partial list, and
+    /// a tab closed before the restore landed would write none.
+    dashboards_restored: bool,
+    /// The pending write of the open query tabs; replacing it debounces.
+    _remember_query_tabs: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -273,6 +357,9 @@ impl Workspace {
             editor_shown: false,
             renaming: None,
             _rename_subscription: None,
+            query_tabs_restored: false,
+            dashboards_restored: false,
+            _remember_query_tabs: None,
             _subscriptions: vec![
                 cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
                     // A dashboard queries the window's connection, so a switch
@@ -305,6 +392,17 @@ impl Workspace {
             editor.set_value(tr("workspace.welcome_sql"), window, cx);
         });
         this.tabs.push(WorkspaceTab::Query(tab));
+        // The last moment of typing, which the debounced write may not have
+        // reached yet.
+        let on_quit = cx.on_app_quit(|this, cx| {
+            let tabs = this.query_tabs_restored.then(|| this.query_tabs_state(cx));
+            async move {
+                if let Some(tabs) = tabs {
+                    crate::query_tabs::remember(&tabs);
+                }
+            }
+        });
+        this._subscriptions.push(on_quit);
         this
     }
 
@@ -335,6 +433,9 @@ impl Workspace {
         // is focused; the PressEnter event is the only signal left. The
         // newline is already inserted by then, so undo it before running.
         let subscription = cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.remember_query_tabs(cx);
+            }
             if matches!(
                 event,
                 InputEvent::PressEnter {
@@ -361,6 +462,10 @@ impl Workspace {
     /// same tab brought forward, and the open set is remembered
     /// between launches.
     pub fn open_dashboard(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        // Absolute before anything keeps it: `ducklocal report.dash` names a
+        // file in the shell's folder, and the remembered tabs and the recent
+        // list are read back by a launch from anywhere.
+        let path = std::path::absolute(&path).unwrap_or(path);
         let existing = self.tabs.iter().position(|tab| {
             tab.as_dashboard()
                 .is_some_and(|dashboard| crate::recents::same_file(&dashboard.path, &path))
@@ -409,8 +514,125 @@ impl Workspace {
             .update(cx, |_, cx| cx.emit(crate::state::RecentsChanged));
     }
 
+    /// Startup has reopened the remembered dashboards: from here on the
+    /// open set is written whenever it changes, starting now.
+    pub fn dashboards_restored(&mut self) {
+        self.dashboards_restored = true;
+        self.remember_dashboards();
+    }
+
+    /// The open query tabs as the next launch should get them back.
+    fn query_tabs_state(&self, cx: &App) -> crate::query_tabs::QueryTabs {
+        let mut state = crate::query_tabs::QueryTabs::default();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if let WorkspaceTab::Query(tab) = tab {
+                if index == self.active {
+                    state.active = Some(state.tabs.len());
+                }
+                state.tabs.push(crate::query_tabs::QueryTabState {
+                    title: tab.title.to_string(),
+                    sql: tab.editor.read(cx).value().to_string(),
+                });
+            }
+        }
+        state
+    }
+
+    /// Write the open query tabs down a moment from now, off the UI thread.
+    /// Each call replaces the last one's pending write, so a burst of typing
+    /// is one write.
+    fn remember_query_tabs(&mut self, cx: &mut Context<Self>) {
+        if !self.query_tabs_restored {
+            return;
+        }
+        self._remember_query_tabs = Some(cx.spawn(async move |this, cx| {
+            smol::Timer::after(std::time::Duration::from_millis(800)).await;
+            let Ok(tabs) = this.update(cx, |this, cx| this.query_tabs_state(cx)) else {
+                return;
+            };
+            smol::unblock(move || crate::query_tabs::remember(&tabs)).await;
+        }));
+    }
+
+    /// Put back the query tabs the last run left open, in place of the
+    /// welcome tab — unless something was typed into it already, when they
+    /// go after it. Answers the index of the tab that was in front, when a
+    /// query tab was, for the caller to bring forward once the remembered
+    /// dashboards are open too.
+    pub fn restore_query_tabs(
+        &mut self,
+        saved: crate::query_tabs::QueryTabs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        self.query_tabs_restored = true;
+        if saved.tabs.is_empty() {
+            return None;
+        }
+        let welcome_untouched = matches!(
+            self.tabs.as_slice(),
+            [WorkspaceTab::Query(tab)]
+                if tab.editor.read(cx).value().as_ref() == tr("workspace.welcome_sql")
+        );
+        if welcome_untouched {
+            self.tabs.clear();
+        }
+        let start = self.tabs.len();
+        for saved_tab in saved.tabs {
+            let mut tab = self.new_tab_editor(window, cx);
+            // A title like "Query 7" must not come round again on a new tab.
+            if let Some(number) = default_title_number(&saved_tab.title) {
+                self.next_tab_id = self.next_tab_id.max(number + 1);
+            }
+            tab.title = saved_tab.title.into();
+            tab.editor
+                .update(cx, |editor, cx| editor.set_value(saved_tab.sql, window, cx));
+            self.tabs.push(WorkspaceTab::Query(tab));
+        }
+        let front = saved.active.map(|index| start + index);
+        self.active = front.unwrap_or(start).min(self.tabs.len() - 1);
+        cx.notify();
+        front
+    }
+
+    /// Put the editor up in place of the first-run screen, as its "New query"
+    /// button does, with a query tab in front: what the guide's editor and
+    /// results steps point at.
+    pub fn show_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_shown = true;
+        if self.active_tab().and_then(WorkspaceTab::as_query).is_none() {
+            match self.tabs.iter().position(|tab| tab.as_query().is_some()) {
+                Some(index) => self.activate(index, window, cx),
+                None => self.add_query_tab(window, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// An agent's command said what it is doing to a dashboard: the tab that
+    /// has that spec open shows it. A spec not open here is no one's to show.
+    pub fn apply_presence(
+        &mut self,
+        update: &crate::spec::presence::Update,
+        cx: &mut Context<Self>,
+    ) {
+        let path = PathBuf::from(&update.path);
+        for tab in &self.tabs {
+            if let WorkspaceTab::Dashboard(tab) = tab {
+                if crate::recents::same_file(&tab.path, &path) {
+                    tab.host
+                        .update(cx, |dashboard, cx| dashboard.apply_presence(update, cx));
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Write the open dashboards down, so the next launch can put them back.
     fn remember_dashboards(&self) {
+        if !self.dashboards_restored {
+            return;
+        }
         let open: Vec<OpenDocument> = self
             .tabs
             .iter()
@@ -544,8 +766,30 @@ impl Workspace {
         }
         self.active = index;
         self.refresh_stale_dashboard(cx);
+        self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
+    }
+
+    /// ⌘1–⌘9: tab `index`, or the last one when there are fewer.
+    pub fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let last = self.tabs.len().saturating_sub(1);
+        self.activate(index.min(last), window, cx);
+    }
+
+    /// Ctrl-Tab and Ctrl-Shift-Tab: the tab after the one in front, or
+    /// before it, wrapping around either end.
+    pub fn cycle_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let len = self.tabs.len();
+        if len < 2 {
+            return;
+        }
+        let next = if forward {
+            (self.active + 1) % len
+        } else {
+            (self.active + len - 1) % len
+        };
+        self.activate(next, window, cx);
     }
 
     /// Re-run the active tab's dashboard if the catalog changed since it last
@@ -564,6 +808,7 @@ impl Workspace {
         self.tabs.push(WorkspaceTab::Query(tab));
         self.active = self.tabs.len() - 1;
         self.editor_shown = true;
+        self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
     }
@@ -587,6 +832,7 @@ impl Workspace {
         self.tabs.push(WorkspaceTab::Query(tab));
         self.active = self.tabs.len() - 1;
         self.editor_shown = true;
+        self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
     }
@@ -658,8 +904,78 @@ impl Workspace {
         self.active = active_after_close(self.active, ix, self.tabs.len());
         self.refresh_stale_dashboard(cx);
         self.remember_dashboards();
+        self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
+    }
+
+    /// The tab menu's "Close others" and "Close tabs to the right": every tab
+    /// `which` picks, apart from dashboards holding unsaved edits, which stay
+    /// open rather than ask once each. The tab the menu was opened on ends
+    /// up in front.
+    fn close_tabs_except(
+        &mut self,
+        keep: u64,
+        which: impl Fn(usize, usize) -> bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(anchor) = self.tabs.iter().position(|tab| tab.id() == keep) else {
+            return;
+        };
+        let mut kept_dirty = 0;
+        let doomed: Vec<u64> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|&(index, _)| index != anchor && which(index, anchor))
+            .filter_map(|(_, tab)| {
+                let dirty = tab
+                    .as_dashboard()
+                    .is_some_and(|dashboard| dashboard.host.read(cx).is_dirty(cx));
+                if dirty {
+                    kept_dirty += 1;
+                    None
+                } else {
+                    Some(tab.id())
+                }
+            })
+            .collect();
+        for tab_id in doomed {
+            self.close_tab_confirmed(tab_id, window, cx);
+        }
+        if let Some(index) = self.tabs.iter().position(|tab| tab.id() == keep) {
+            self.activate(index, window, cx);
+        }
+        if kept_dirty > 0 {
+            window.push_notification(
+                trf("workspace.close.kept_unsaved", &[&kept_dirty.to_string()]),
+                cx,
+            );
+        }
+    }
+
+    /// Move the tab `tab_id` to where the tab at `to` is, as a drag along the
+    /// strip does; the tab in front stays in front.
+    fn move_tab(&mut self, tab_id: u64, to: usize, cx: &mut Context<Self>) {
+        let Some(from) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
+            return;
+        };
+        let to = to.min(self.tabs.len() - 1);
+        if from == to {
+            return;
+        }
+        let active = self.tabs[self.active].id();
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id() == active)
+            .unwrap_or(to);
+        self.remember_dashboards();
+        self.remember_query_tabs(cx);
+        cx.notify();
     }
 
     /// Closing a dashboard whose source holds unsaved edits: save and close,
@@ -855,6 +1171,7 @@ impl Workspace {
             WorkspaceTab::Dashboard(tab) => tab.title = title.into(),
         }
         self.remember_dashboards();
+        self.remember_query_tabs(cx);
         cx.notify();
     }
 
@@ -1131,7 +1448,8 @@ impl Workspace {
     }
 
     fn render_tab_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let closable = self.tabs.len() > 1;
+        let tab_count = self.tabs.len();
+        let closable = tab_count > 1;
         let renaming = self.renaming.clone();
         let duplicates = duplicate_titles(self.tabs.iter().map(|tab| tab.title().as_ref()));
         TabBar::new("query-tabs")
@@ -1163,8 +1481,36 @@ impl Workspace {
                 let dirty = tab
                     .as_dashboard()
                     .is_some_and(|dashboard| dashboard.host.read(cx).is_dirty(cx));
+                // An agent at work on a dashboard in another tab shows on
+                // that tab, so the person knows where to look.
+                let agent_here = tab
+                    .as_dashboard()
+                    .is_some_and(|dashboard| dashboard.host.read(cx).has_presence());
+                let dragged = DraggedTab {
+                    id: tab_id,
+                    title: title.clone(),
+                    glyph,
+                };
                 Tab::new()
                     .aria_label(title.clone())
+                    // Drag a tab along the strip to move it. The drop lands
+                    // it where the tab it is dropped on was.
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                        this.move_tab(dragged.id, index, cx);
+                    }))
+                    // A middle click closes the tab, as in a browser; it asks
+                    // first about unsaved edits, like the × does.
+                    .when(closable, |this| {
+                        this.on_mouse_down(
+                            MouseButton::Middle,
+                            cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(tab_id, window, cx);
+                            }),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1p5()
@@ -1214,14 +1560,28 @@ impl Workspace {
                                         .text_color(cx.theme().muted_foreground)
                                         .child(hint),
                                 )
-                            }),
+                            })
+                            .context_menu(tab_menu(
+                                cx.entity().downgrade(),
+                                tab_id,
+                                index,
+                                tab_count,
+                            )),
                     )
-                    .when(closable || dirty, |this| {
+                    .when(closable || dirty || agent_here, |this| {
                         this.suffix(
                             h_flex()
                                 .gap_1()
                                 .pr_1()
                                 .items_center()
+                                .when(agent_here, |this| {
+                                    this.child(
+                                        div()
+                                            .size_1p5()
+                                            .rounded_full()
+                                            .bg(crate::ui::palette::presence(cx)),
+                                    )
+                                })
                                 .when(dirty, |this| {
                                     this.child(
                                         div().size_1p5().rounded_full().bg(cx.theme().warning),
@@ -1298,19 +1658,24 @@ impl Workspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                Button::new("run-query")
-                    .primary()
-                    .small()
-                    .icon(IconName::Play)
-                    .label(tr("workspace.run"))
-                    .loading(self.running)
-                    .tooltip(tr("workspace.run.tooltip"))
-                    .when_some(run_keystroke, |this, keystroke| {
-                        this.child(Kbd::new(keystroke))
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.run_active(window, cx);
-                    })),
+                div()
+                    .relative()
+                    .child(
+                        Button::new("run-query")
+                            .primary()
+                            .small()
+                            .icon(IconName::Play)
+                            .label(tr("workspace.run"))
+                            .loading(self.running)
+                            .tooltip(tr("workspace.run.tooltip"))
+                            .when_some(run_keystroke, |this, keystroke| {
+                                this.child(Kbd::new(keystroke))
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.run_active(window, cx);
+                            })),
+                    )
+                    .child(crate::ui::tour::anchor(crate::ui::tour::Target::Run)),
             )
             // An accidental cross join can run for minutes; this ends it
             // rather than leaving the only way out to quit the app.
@@ -1636,7 +2001,8 @@ mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
-        active_after_close, duplicate_titles, editor_target, parent_name, EditorTarget, TabKind,
+        active_after_close, default_title_number, duplicate_titles, editor_target, parent_name,
+        EditorTarget, TabKind,
     };
     use std::path::Path;
 
@@ -1658,6 +2024,14 @@ mod tests {
             Some("usage_dashboard")
         );
         assert_eq!(parent_name(Path::new("/")), None);
+    }
+
+    #[test]
+    fn only_a_default_title_names_a_tab_number() {
+        let default = crate::i18n::trf("workspace.tab.default_title", &["7"]);
+        assert_eq!(default_title_number(&default), Some(7));
+        assert_eq!(default_title_number("Revenue by month"), None);
+        assert_eq!(default_title_number(&format!("{default} copy")), None);
     }
 
     #[test]

@@ -260,6 +260,42 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
         }
     };
 
+    // The window marks the plot a reply or a new thread is on, and the
+    // plots whose open threads a listing reads.
+    let thread_plot = |id: &str| {
+        load(&file)
+            .ok()
+            .and_then(|c| c.threads.into_iter().find(|t| t.id == id))
+            .map(|t| t.plot)
+    };
+    let marked: Vec<String> = match (&reply, &add) {
+        (Some(id), _) => thread_plot(id).into_iter().collect(),
+        (None, Some(plot)) => vec![plot.clone()],
+        (None, None) if !resolve && reopen.is_none() => {
+            let mut plots: Vec<String> = load(&file)
+                .map(|c| {
+                    c.threads
+                        .into_iter()
+                        .filter(|t| all || !t.resolved)
+                        .map(|t| t.plot)
+                        .collect()
+                })
+                .unwrap_or_default();
+            plots.sort();
+            plots.dedup();
+            plots
+        }
+        _ => Vec::new(),
+    };
+    if !marked.is_empty() {
+        let activity = if reply.is_some() || add.is_some() {
+            super::presence::Activity::Replying
+        } else {
+            super::presence::Activity::Reading
+        };
+        super::presence::announce(&file, activity, marked);
+    }
+
     let changed = if let Some(id) = reply {
         let text = need_text()?;
         let (_, comments) = update(&file, |c| {
@@ -341,6 +377,14 @@ struct PlotSite {
 
 /// The plot blocks of a spec, read leniently: a spec that does not parse
 /// lists no plots, and the threads are still listed by name.
+/// The names of a spec's plots, read leniently like [`plot_sites`].
+pub(crate) fn plot_names(source: &str) -> Vec<String> {
+    plot_sites(source)
+        .into_iter()
+        .map(|site| site.name)
+        .collect()
+}
+
 fn plot_sites(source: &str) -> Vec<PlotSite> {
     let Ok(file) = model::parse(source) else {
         return Vec::new();

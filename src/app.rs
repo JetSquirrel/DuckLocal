@@ -62,9 +62,11 @@ use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
 use crate::ui::status_bar::StatusBarView;
 use crate::ui::title_bar::TitleBarView;
+use crate::ui::tour::{NeedsEditor, Tour};
 use crate::ui::workspace::Workspace;
 use crate::ui::{
-    apply_open_outcome, open_paths, CloseTab, NewQuery, OpenData, OpenSetup, ToggleSidebar,
+    apply_open_outcome, open_paths, ActivateTab, CloseTab, NewQuery, NextTab, OpenData, OpenSetup,
+    PreviousTab, ToggleSidebar,
 };
 
 pub struct DuckLocalApp {
@@ -73,6 +75,7 @@ pub struct DuckLocalApp {
     sidebar: Entity<Sidebar>,
     workspace: Entity<Workspace>,
     status_bar: Entity<StatusBarView>,
+    tour: Entity<Tour>,
     /// Startup's own open request has landed, or failed. Until then, Finder
     /// opens and `ducklocal open` requests wait in their queues: run beside
     /// it, the one that finished last decided what the window said it was on.
@@ -89,45 +92,110 @@ impl DuckLocalApp {
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), workspace.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBarView::new(state.clone(), cx));
         let status_bar = cx.new(|cx| StatusBarView::new(state.clone(), cx));
+        let tour = cx.new(Tour::new);
         cx.subscribe(&state, |_, _, _: &state::SidebarToggled, cx| cx.notify())
             .detach();
+        // The guide's editor and results steps need an editor on screen.
+        cx.subscribe_in(&tour, window, |this, _, _: &NeedsEditor, window, cx| {
+            this.workspace
+                .update(cx, |workspace, cx| workspace.show_editor(window, cx));
+        })
+        .detach();
 
         let open_state = state.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let result = smol::unblock(move || {
+            let (tabs, crashed, show_tour, result) = smol::unblock(move || {
                 crate::history::init().ok();
+                // Read whatever the open below does: a launch whose data fails
+                // to open still gets its tabs back, and still hears about a
+                // crash. Read here rather than in the workspace: this is the
+                // one place in the app already off the UI thread with the
+                // history store open.
+                let query_tabs = crate::query_tabs::restore();
+                let remembered_dashboards = crate::spec::tabs::restore();
                 // A `.dash` file is a dashboard, not data: it opens as a tab,
                 // and the rest of the command line keeps the behaviour it had.
                 let (dashboards, data) = crate::spec::tabs::split(paths);
-                let outcome = state::open_request(&data, true)?;
-                // Read here rather than in the workspace: this is the one place
-                // in the app that is already off the UI thread and has the
-                // history store open.
-                let remembered_dashboards = crate::spec::tabs::restore();
-                let offer_setup = crate::setup::offer_once();
-                Ok::<_, anyhow::Error>((dashboards, remembered_dashboards, outcome, offer_setup))
+                let crashed = crate::crash::take_pending();
+                let show_tour = crate::ui::tour::offer_at_launch();
+                let result = (|| {
+                    let outcome = state::open_request(&data, true)?;
+                    // One invitation at a time: with the guide open, the setup
+                    // offer waits for the next launch, still unspent.
+                    let offer_setup = !show_tour && crate::setup::offer_once();
+                    Ok::<_, anyhow::Error>((outcome, offer_setup))
+                })();
+                (
+                    (query_tabs, remembered_dashboards, dashboards),
+                    crashed,
+                    show_tour,
+                    result,
+                )
             })
             .await;
+            let (query_tabs, remembered_dashboards, dashboards) = tabs;
 
             this.update_in(cx, |this, window, cx| {
                 this.started = true;
+                // Before the dashboards, so a dashboard named on the command
+                // line still comes up in front.
+                let query_in_front = this
+                    .workspace
+                    .update(cx, |ws, cx| ws.restore_query_tabs(query_tabs, window, cx));
+                if show_tour {
+                    this.tour.update(cx, |tour, cx| tour.start(cx));
+                }
+                // The last run ended in a panic: say so once, and where its
+                // report is.
+                if let Some(report) = crashed {
+                    let path = report.path.clone();
+                    window.push_notification(
+                        Notification::error(trf("crash.notice", &[&report.summary]))
+                            .title(tr("crash.title"))
+                            .action(move |_, _, cx| {
+                                let path = path.clone();
+                                Button::new("show-crash-report")
+                                    .small()
+                                    .label(tr("crash.show_report"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.reveal_path(&path);
+                                        this.dismiss(window, cx);
+                                    }))
+                            }),
+                        cx,
+                    );
+                }
+                // The dashboards come back whether or not the data opened: a
+                // launch that failed to open a file must not lose them, and
+                // the next tab closed would have written them off for good.
+                let named_dashboards = !dashboards.is_empty();
+                this.workspace.update(cx, |ws, cx| {
+                    // The remembered ones first, so a dashboard named on the
+                    // command line opens last: in front, which is what asking
+                    // for it means.
+                    for spec in &remembered_dashboards.specs {
+                        ws.open_dashboard(std::path::PathBuf::from(&spec.path), window, cx);
+                    }
+                    for path in dashboards {
+                        ws.open_dashboard(path, window, cx);
+                    }
+                    // Written once, whole, now that they are all back.
+                    ws.dashboards_restored();
+                    // The query tab that was in front last time is again,
+                    // unless a dashboard was just asked for.
+                    match query_in_front.filter(|_| !named_dashboards) {
+                        Some(index) => ws.activate_tab(index, window, cx),
+                        None => ws.focus_active_editor(window, cx),
+                    }
+                });
+                // A remembered dashboard that is gone, or is no longer one, is
+                // named rather than silently dropped.
+                for problem in remembered_dashboards.problems {
+                    window.push_notification(Notification::error(problem), cx);
+                }
                 match result {
-                    Ok((dashboards, remembered_dashboards, outcome, offer_setup)) => {
+                    Ok((outcome, offer_setup)) => {
                         apply_open_outcome(open_state, outcome, window, cx);
-                        this.workspace.update(cx, |ws, cx| {
-                            for path in dashboards {
-                                ws.open_dashboard(path, window, cx);
-                            }
-                            for spec in &remembered_dashboards.specs {
-                                ws.open_dashboard(std::path::PathBuf::from(&spec.path), window, cx);
-                            }
-                            ws.focus_active_editor(window, cx);
-                        });
-                        // A remembered dashboard that is gone, or is no longer
-                        // one, is named rather than silently dropped.
-                        for problem in remembered_dashboards.problems {
-                            window.push_notification(Notification::error(problem), cx);
-                        }
                         // Installing the app does not put `ducklocal` on the PATH;
                         // say once where that is done.
                         if offer_setup {
@@ -179,7 +247,8 @@ impl DuckLocalApp {
                 );
                 let requests = crate::remote::take_pending();
                 let state_wanted = crate::remote::state_wanted();
-                if paths.is_empty() && requests.is_empty() && !state_wanted {
+                let presence = crate::remote::take_presence();
+                if paths.is_empty() && requests.is_empty() && !state_wanted && presence.is_empty() {
                     continue;
                 }
                 if this
@@ -189,6 +258,13 @@ impl DuckLocalApp {
                         }
                         for request in requests {
                             this.open_remote(request, window, cx);
+                        }
+                        if !presence.is_empty() {
+                            this.workspace.update(cx, |workspace, cx| {
+                                for update in &presence {
+                                    workspace.apply_presence(update, cx);
+                                }
+                            });
                         }
                         // After the opens, so an `open` then a `state` sees
                         // the tab the open made.
@@ -210,6 +286,7 @@ impl DuckLocalApp {
             sidebar,
             workspace,
             status_bar,
+            tour,
             started: false,
         }
     }
@@ -331,6 +408,20 @@ impl Render for DuckLocalApp {
                 this.workspace
                     .update(cx, |workspace, cx| workspace.close_active_tab(window, cx));
             }))
+            .on_action(cx.listener(|this, action: &ActivateTab, window, cx| {
+                let index = action.index;
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.activate_tab(index, window, cx)
+                });
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.cycle_tab(true, window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.cycle_tab(false, window, cx));
+            }))
             .on_action(cx.listener(|_, _: &OpenSetup, window, cx| {
                 crate::ui::setup_dialog::open(window, cx);
             }))
@@ -364,10 +455,21 @@ impl Render for DuckLocalApp {
                                     // of the editor's blinking cursor, which
                                     // would rebuild the history list and the
                                     // tree twice a second while idle.
+                                    // The guide's anchor sits outside the
+                                    // cached view, whose prepaint is replayed
+                                    // rather than run.
                                     .child(
-                                        self.sidebar
-                                            .clone()
-                                            .cached(StyleRefinement::default().size_full()),
+                                        div()
+                                            .relative()
+                                            .size_full()
+                                            .child(
+                                                self.sidebar
+                                                    .clone()
+                                                    .cached(StyleRefinement::default().size_full()),
+                                            )
+                                            .child(crate::ui::tour::anchor(
+                                                crate::ui::tour::Target::Sidebar,
+                                            )),
                                     ),
                             )
                             .child(resizable_panel().child(self.workspace.clone())),
@@ -375,6 +477,7 @@ impl Render for DuckLocalApp {
                 }
             }))
             .child(self.status_bar.clone())
+            .child(self.tour.clone())
     }
 }
 
