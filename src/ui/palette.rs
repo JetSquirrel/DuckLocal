@@ -84,6 +84,17 @@ pub fn page(cx: &App) -> Hsla {
     }
 }
 
+/// An agent's colour: the ring and name tag on a plot it is working on. A
+/// violet the series slots and the status tones leave free, so a mark never
+/// reads as data.
+pub fn presence(cx: &App) -> Hsla {
+    if cx.theme().mode.is_dark() {
+        rgb(0x9b7bff).into()
+    } else {
+        rgb(0x6d3df5).into()
+    }
+}
+
 /// A dashboard plot card's surface, on [`page`].
 pub fn panel(cx: &App) -> Hsla {
     if cx.theme().mode.is_dark() {

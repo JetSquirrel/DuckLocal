@@ -69,6 +69,16 @@ ducklocal comments dashboard.dash --add revenue --text "…"
 
 Threads people post on plots from the window, stored as `FILE.comments.json` beside the spec. With no action, prints `{file, comments_file, open, threads}`; each thread has `id`, `plot`, `plot_title`, `plot_query`, `plot_lines` (`[first, last]` line of the `plot` block in FILE, or null when the spec does not parse), `plot_missing`, `resolved`, and `comments` (`author` `user`/`agent`, `text`, `at`). An action prints `{thread}` as changed. Replies are signed `agent`; a reply to a resolved thread reopens it unless `--resolve` is also given. Unknown thread is exit 2 with a hint to list them. No window is needed; a running one shows the change within a second.
 
+## Show the person what you are doing to a dashboard
+
+```bash
+ducklocal presence dashboard.dash --doing reading --plot revenue,orders
+ducklocal presence dashboard.dash --doing editing --plot revenue
+ducklocal presence dashboard.dash --doing idle
+```
+
+When the spec is open in the running window, the plots named get a ring and a name tag in the agent colour, the way a shared document marks a collaborator: `reading` for a few seconds, `editing` until the spec changes on disk, when the window marks the plots the edit actually changed as "just changed" instead. `idle` takes your marks off. `--plot` takes comma-separated plot names (no `--plot`: the whole dashboard); an unknown plot is exit 2 with the list of plots. The name shown is `--agent`, else `DUCKLOCAL_AGENT`, else the agent the environment names (Claude, Codex, Cursor, Gemini), else "Agent". Prints `{delivered}`: false when no window is running, which is not an error. `check` marks each plot while its query runs and `comments` marks the plots it reads or answers, without being asked.
+
 ## Show work in the running window
 
 ```bash

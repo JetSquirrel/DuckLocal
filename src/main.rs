@@ -4,6 +4,7 @@
 mod app;
 mod assets;
 mod cli;
+mod crash;
 mod db;
 #[cfg(test)]
 mod duckdb_contract;
@@ -16,6 +17,7 @@ mod overview;
 mod perf_probe;
 mod profile;
 mod query;
+mod query_tabs;
 mod recents;
 mod remote;
 mod s3;
@@ -55,12 +57,8 @@ fn main() {
         std::process::exit(code);
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // The window logs to a file too, and leaves a report when it panics.
+    crash::init();
 
     // Resolve the UI language before the first frame: open the history store
     // here (app.rs re-opens it harmlessly later) and read the persisted

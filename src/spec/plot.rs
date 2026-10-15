@@ -34,7 +34,7 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 
 use crate::spec::prepare::{PlotPoint, PreparedPlot};
-use crate::ui::chart::format_value;
+use crate::ui::chart::{format_ticks, format_value};
 
 /// The headroom kept above the tallest bar or point, as the catalog charts
 /// keep above theirs.
@@ -58,6 +58,9 @@ const DOT_SIZE: f32 = 8.;
 const HOVER_HALO: f32 = 20.;
 /// The value-axis ticks the grid is drawn at, the catalog's default.
 const TICK_COUNT: usize = 5;
+/// Room kept between a numeric x axis's ends and its first and last dots, so
+/// an extreme point is not cut in half by the plot's edge.
+const X_INSET: f32 = DOT_SIZE;
 /// How round a bar's tip is: enough to soften it, not enough to make a thin
 /// bar a pill.
 const BAR_RADIUS: f32 = 4.;
@@ -96,9 +99,18 @@ fn value_ticks(top: f32, baseline: f32, count: usize) -> Vec<f32> {
 /// step at or below the data to one at or above it, so the axis ends on a
 /// round number instead of on the largest value.
 fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
-    let (min, max) = (min.min(0.), max.max(0.));
-    if !(min.is_finite() && max.is_finite()) || max - min <= 0. {
+    nice_ticks_over(min.min(0.), max.max(0.), count)
+}
+
+/// [`nice_ticks`] over the data alone, zero left out unless the data reach
+/// it: a scatter's axes show where its points are, not how far they sit from
+/// zero.
+fn nice_ticks_over(min: f64, max: f64, count: usize) -> Vec<f64> {
+    if !(min.is_finite() && max.is_finite()) {
         return vec![0.];
+    }
+    if max - min <= 0. {
+        return vec![min];
     }
     let rough = (max - min) / count.max(1) as f64;
     let power = 10f64.powf(rough.log10().floor());
@@ -698,12 +710,56 @@ pub(crate) struct SeriesPlot {
     connect: SeriesConnect,
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
+    /// Each point's x as a number, for a scatter over a numeric column: the x
+    /// axis is then linear, its labels round numbers.
+    xs: Option<Arc<Vec<f64>>>,
+}
+
+/// Where a series plot puts its points along x: evenly spaced bands, or a
+/// number's place on a linear axis.
+#[derive(Clone)]
+enum XScale {
+    Bands(ScalePoint<SharedString>),
+    Numbers {
+        scale: ScaleLinear<f64>,
+        xs: Arc<Vec<f64>>,
+    },
+}
+
+impl XScale {
+    fn tick_at(&self, i: usize) -> Option<f32> {
+        match self {
+            XScale::Bands(scale) => scale.tick_at(i),
+            XScale::Numbers { scale, xs } => scale.tick(xs.get(i)?),
+        }
+    }
+
+    fn nearest_index(&self, x: f32) -> usize {
+        match self {
+            XScale::Bands(scale) => scale.nearest_index(x),
+            XScale::Numbers { .. } => (0..self.len())
+                .min_by(|&a, &b| {
+                    let off = |i| self.tick_at(i).map_or(f32::MAX, |t| (t - x).abs());
+                    off(a).total_cmp(&off(b))
+                })
+                .unwrap_or(0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            XScale::Bands(_) => 0,
+            XScale::Numbers { xs, .. } => xs.len(),
+        }
+    }
 }
 
 /// A series plot's value axis: the round values it labels and grids, and the
 /// gutter left of the plot their labels take.
 struct ValueAxis {
     ticks: Vec<f64>,
+    /// The ticks' labels, in one unit (see `format_ticks`).
+    labels: Vec<String>,
     gutter: f32,
 }
 
@@ -719,6 +775,7 @@ impl SeriesPlot {
             connect,
             points,
             series: series_names.iter().map(SharedString::from).collect(),
+            xs: None,
         }
     }
 
@@ -727,7 +784,9 @@ impl SeriesPlot {
     }
 
     pub(crate) fn scatter(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::scatter_of(id, plot.points.clone(), &plot.series_names)
+        let mut this = Self::scatter_of(id, plot.points.clone(), &plot.series_names);
+        this.xs = plot.x_values.clone();
+        this
     }
 
     /// Lines over `points` directly, for a caller that holds no
@@ -762,16 +821,28 @@ impl SeriesPlot {
     /// The value axis: round ticks over the data and zero, and a gutter as
     /// wide as the widest tick label.
     fn value_axis(&self) -> ValueAxis {
-        let (min, max) = self
-            .values()
-            .fold((0f64, 0f64), |(lo, hi), v| (lo.min(v), hi.max(v)));
-        let ticks = nice_ticks(min, max, TICK_COUNT - 1);
-        let widest = ticks
+        let ticks = if self.xs.is_some() {
+            // A numeric scatter's y spans its points, as its x does.
+            let (min, max) = self
+                .values()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(v), hi.max(v))
+                });
+            nice_ticks_over(min, max, TICK_COUNT - 1)
+        } else {
+            let (min, max) = self
+                .values()
+                .fold((0f64, 0f64), |(lo, hi), v| (lo.min(v), hi.max(v)));
+            nice_ticks(min, max, TICK_COUNT - 1)
+        };
+        let labels = format_ticks(&ticks);
+        let widest = labels
             .iter()
-            .map(|t| label_width(&format_value(*t)))
+            .map(|label| label_width(label))
             .fold(0., f32::max);
         ValueAxis {
             ticks,
+            labels,
             gutter: widest + LABEL_PAD,
         }
     }
@@ -781,22 +852,37 @@ impl SeriesPlot {
     /// the whole plot's coordinates: x starts right of the value labels'
     /// gutter, and y spans the round ticks, so the top gridline is a round
     /// number at or above the largest value.
-    fn scales(
-        &self,
-        bounds: Bounds<Pixels>,
-        axis: &ValueAxis,
-    ) -> (ScalePoint<SharedString>, ScaleLinear<f64>) {
+    fn scales(&self, bounds: Bounds<Pixels>, axis: &ValueAxis) -> (XScale, ScaleLinear<f64>) {
         let height = bounds.size.height.as_f32() - axis_gap();
         let width = bounds.size.width.as_f32();
-        let x = ScalePoint::new(
-            self.points.iter().map(|d| d.band.clone()),
-            [axis.gutter.min(width), width],
-        );
+        let range = [axis.gutter.min(width) + X_INSET, width - X_INSET];
+        let x = match &self.xs {
+            Some(xs) => XScale::Numbers {
+                scale: ScaleLinear::new(xs.iter().copied().chain(self.x_ticks(width)), range),
+                xs: xs.clone(),
+            },
+            None => XScale::Bands(ScalePoint::new(
+                self.points.iter().map(|d| d.band.clone()),
+                [axis.gutter.min(width), width],
+            )),
+        };
         let y = ScaleLinear::new(
             self.values().chain(axis.ticks.iter().copied()),
             [height, TOP_GAP],
         );
         (x, y)
+    }
+
+    /// A numeric x axis's round values, as many as the width has room for.
+    fn x_ticks(&self, width: f32) -> Vec<f64> {
+        let Some(xs) = &self.xs else {
+            return Vec::new();
+        };
+        let (Some(first), Some(last)) = (xs.first(), xs.last()) else {
+            return Vec::new();
+        };
+        let count = ((width / 90.) as usize).clamp(2, 8);
+        nice_ticks_over(*first, *last, count)
     }
 
     /// Which series the hovered band has, in series order: the dots
@@ -844,19 +930,40 @@ impl Plot for SeriesPlot {
             .max()
             .unwrap_or(0);
         let shown = labeled(self.points.len(), x_label_count_in(width - gutter, widest));
-        let labels = self
-            .points
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| shown[*i])
-            .filter_map(|(i, d)| {
-                let tick = x.tick_at(i)? - gutter;
-                Some(
-                    AxisText::new(axis_label(&d.band, shared_year), px(tick), muted)
-                        .font_size(px(LABEL_SIZE))
-                        .align(point_label_align(i, self.points.len())),
-                )
-            });
+        let labels: Vec<AxisText> = match &x {
+            // Round numbers along a numeric axis, not the points' own values.
+            XScale::Numbers { scale, .. } => {
+                let ticks = self.x_ticks(width);
+                let names = format_ticks(&ticks);
+                ticks
+                    .iter()
+                    .zip(names)
+                    .enumerate()
+                    .filter_map(|(i, (t, name))| {
+                        let tick = scale.tick(t)? - gutter;
+                        Some(
+                            AxisText::new(name, px(tick), muted)
+                                .font_size(px(LABEL_SIZE))
+                                .align(point_label_align(i, ticks.len())),
+                        )
+                    })
+                    .collect()
+            }
+            XScale::Bands(_) => self
+                .points
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| shown[*i])
+                .filter_map(|(i, d)| {
+                    let tick = x.tick_at(i)? - gutter;
+                    Some(
+                        AxisText::new(axis_label(&d.band, shared_year), px(tick), muted)
+                            .font_size(px(LABEL_SIZE))
+                            .align(point_label_align(i, self.points.len())),
+                    )
+                })
+                .collect(),
+        };
         PlotAxis::new()
             .stroke(cx.theme().border)
             .x(px(height))
@@ -865,10 +972,11 @@ impl Plot for SeriesPlot {
 
         // A gridline and a label at every round value; the baseline's line
         // is the axis's.
-        let positions: Vec<(f64, f32)> = axis
+        let positions: Vec<(&str, f32)> = axis
             .ticks
             .iter()
-            .filter_map(|t| Some((*t, y.tick(t)?)))
+            .zip(&axis.labels)
+            .filter_map(|(t, label)| Some((label.as_str(), y.tick(t)?)))
             .collect();
         Grid::new()
             .y(positions
@@ -882,7 +990,7 @@ impl Plot for SeriesPlot {
             .iter()
             .map(|(t, at)| {
                 Text::new(
-                    format_value(*t),
+                    t.to_string(),
                     point(px(gutter - LABEL_PAD / 2.), px(at - LABEL_SIZE / 2.)),
                     muted,
                 )
@@ -968,7 +1076,23 @@ impl Plot for SeriesPlot {
             return None;
         }
         let (x, y) = self.scales(bounds, &axis);
-        let index = x.nearest_index(position.x.as_f32());
+        let index = match &x {
+            // Dots, not columns: the one nearest the pointer, across and up.
+            XScale::Numbers { .. } => (0..self.points.len()).min_by(|&a, &b| {
+                let off = |i: usize| {
+                    let d = &self.points[i];
+                    let s = d.present.iter().position(|p| *p).unwrap_or(0);
+                    match (x.tick_at(i), y.tick(&d.values[s])) {
+                        (Some(tx), Some(ty)) => {
+                            (tx - position.x.as_f32()).powi(2) + (ty - position.y.as_f32()).powi(2)
+                        }
+                        _ => f32::MAX,
+                    }
+                };
+                off(a).total_cmp(&off(b))
+            })?,
+            XScale::Bands(_) => x.nearest_index(position.x.as_f32()),
+        };
         let d = self.points.get(index)?;
         let x_tick = x.tick_at(index)?;
         // One dot per series the band has, in series order; `tooltip` colors
