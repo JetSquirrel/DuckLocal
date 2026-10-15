@@ -75,7 +75,7 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
-use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
+use crate::spec::prepare::{keep_series_order, prepare, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
 use crate::ui::completion::starts_with_ignore_case;
@@ -704,7 +704,13 @@ impl Dashboard {
                                 (plot.name.clone(), title)
                             })
                             .collect();
-                        this.plots = run.plots;
+                        let mut plots = run.plots;
+                        for plot in &mut plots {
+                            if let Some(before) = this.plots.iter().find(|p| p.name == plot.name) {
+                                keep_series_order(plot, &before.series_names);
+                            }
+                        }
+                        this.plots = plots;
                         this.results = run.results;
                         this.outcomes = run.outcomes;
                         this.spec = run.spec;
