@@ -229,7 +229,6 @@ pub(crate) fn connection_guard() -> std::sync::MutexGuard<'static, ()> {
 /// Server metadata for the status bar.
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
-    pub version: String,
     /// For a file database: the oldest DuckDB that reads it (`v1.0.0+`).
     pub storage: Option<String>,
     /// For a file database: the DuckDB that created it, where its header
@@ -238,7 +237,6 @@ pub struct ServerInfo {
 }
 
 pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
-    let version: String = conn.query_row("SELECT version()", [], |r| r.get(0))?;
     let (path, storage): (Option<String>, Option<String>) = conn
         .query_row(
             "SELECT path, tags['storage_version'] FROM duckdb_databases() \
@@ -255,7 +253,6 @@ pub fn server_info_of(conn: &Connection) -> Result<ServerInfo> {
             _ => None,
         });
     Ok(ServerInfo {
-        version,
         storage,
         created_by,
     })
