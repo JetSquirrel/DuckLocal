@@ -72,12 +72,11 @@ Threads people post on plots from the window, stored as `FILE.comments.json` bes
 ## Show the person what you are doing to a dashboard
 
 ```bash
-ducklocal presence dashboard.dash --doing reading --plot revenue,orders
-ducklocal presence dashboard.dash --doing editing --plot revenue
+ducklocal presence dashboard.dash --doing editing --plot revenue,share
 ducklocal presence dashboard.dash --doing idle
 ```
 
-When the spec is open in the running window, the plots named get a ring and a name tag in the agent colour, the way a shared document marks a collaborator: `reading` for a few seconds, `editing` until the spec changes on disk, when the window marks the plots the edit actually changed as "just changed" instead. `idle` takes your marks off. `--plot` takes comma-separated plot names (no `--plot`: the whole dashboard); an unknown plot is exit 2 with the list of plots. The name shown is `--agent`, else `DUCKLOCAL_AGENT`, else the agent the environment names (Claude, Codex, Cursor, Gemini), else "Agent". Prints `{delivered}`: false when no window is running, which is not an error. `check` marks each plot while its query runs and `comments` marks the plots it reads or answers, without being asked.
+When the spec is open in the running window, every command that names it — `check`, `comments`, `presence` — keeps your name up in the dashboard's corner (a click on it shows a log of what you did); 30 seconds without one, or `--doing idle`, ends the session. Edits need no announcing: when the spec changes on disk, the plots it changed, added or removed are marked as yours until the person has had each in view for a moment (a removed plot's note until dismissed). `--doing editing --plot NAMES` says where the next edit will land: those plots get a ring until it does, and a name the spec does not have yet gets a placeholder below the last row. `--doing reading` only keeps the session going. `--plot` takes comma-separated plot names; with `reading` or `idle`, an unknown plot is exit 2 with the list of plots. The name shown is `--agent`, else `DUCKLOCAL_AGENT`, else the agent the environment names (Claude, Codex, Cursor, Gemini), else "Agent". Prints `{delivered}`: false when no window is running, which is not an error. `check` marks each plot while its query runs and `comments` marks the plots it reads or answers, without being asked.
 
 ## Show work in the running window
 
