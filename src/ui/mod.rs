@@ -16,12 +16,14 @@ pub mod status_bar;
 pub mod theme;
 pub mod tiles;
 pub mod title_bar;
+pub mod tour;
 pub mod update;
 pub mod workspace;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::WindowExt;
-use gpui_kit::{App, Entity, KeyBinding, PathPromptOptions, Window};
+use gpui_kit::{Action, App, Entity, KeyBinding, PathPromptOptions, Window};
+use serde::Deserialize;
 
 use crate::i18n::{tr, trf};
 use crate::sources::MAX_FILES;
@@ -39,14 +41,26 @@ gpui_kit::actions!(
         ToggleSidebar,
         NewQuery,
         CloseTab,
+        NextTab,
+        PreviousTab,
         OpenData,
         OpenSetup,
         ToggleBaseMap,
         CheckForUpdates,
         ToggleUpdateCheck,
+        OpenLogs,
+        ShowTour,
         Quit
     ]
 );
+
+/// ⌘1–⌘8 bring that tab to the front, ⌘9 the last one, the way a browser
+/// or an editor does. `index` past the end is the last tab.
+#[derive(Clone, Action, PartialEq, Eq, Deserialize)]
+#[action(namespace = ducklocal, no_json)]
+pub struct ActivateTab {
+    pub index: usize,
+}
 
 /// Key context that makes ⌘↵ reachable while the SQL editor is focused.
 pub const WORKSPACE_KEY_CONTEXT: &str = "DuckLocal";
@@ -74,10 +88,16 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(TOGGLE_SIDEBAR_KEYSTROKE, ToggleSidebar, None),
         KeyBinding::new("secondary-t", NewQuery, None),
         KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
         KeyBinding::new("secondary-o", OpenData, None),
         KeyBinding::new("secondary-.", StopQuery, None),
         KeyBinding::new("secondary-q", Quit, None),
     ]);
+    cx.bind_keys((1..=9).map(|n| {
+        let index = if n == 9 { usize::MAX } else { n - 1 };
+        KeyBinding::new(&format!("secondary-{n}"), ActivateTab { index }, None)
+    }));
     cx.on_action(|_: &ZoomIn, cx| scale::set(scale::current().larger(), cx));
     cx.on_action(|_: &ZoomOut, cx| scale::set(scale::current().smaller(), cx));
     cx.on_action(|_: &ZoomReset, cx| scale::set(scale::UiSize::Default, cx));
@@ -87,6 +107,13 @@ pub fn init(cx: &mut App) {
         tiles::toggle(cx);
         // The item's check mark is part of the menu, built once.
         set_menus(cx);
+    });
+    cx.on_action(|_: &ShowTour, cx| tour::Tour::start_global(cx));
+    cx.on_action(|_: &OpenLogs, cx| {
+        if let Some(dir) = crate::crash::logs_dir() {
+            std::fs::create_dir_all(&dir).ok();
+            cx.open_with_system(&dir);
+        }
     });
     cx.on_action(|_: &CheckForUpdates, cx| update::check(cx));
     cx.on_action(|_: &ToggleUpdateCheck, cx| {
@@ -121,6 +148,9 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("menu.check_updates_at_launch"), ToggleUpdateCheck)
                     .checked(update_at_launch),
                 MenuItem::Separator,
+                MenuItem::action(tr("menu.show_tour"), ShowTour),
+                MenuItem::action(tr("menu.open_logs"), OpenLogs),
+                MenuItem::Separator,
                 MenuItem::action(tr("menu.quit"), Quit),
             ],
             disabled: false,
@@ -133,6 +163,8 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::Separator,
                 MenuItem::action(tr("dashboard.save"), SaveSpec),
                 MenuItem::action(tr("menu.close_tab"), CloseTab),
+                MenuItem::action(tr("menu.next_tab"), NextTab),
+                MenuItem::action(tr("menu.previous_tab"), PreviousTab),
             ],
         ),
         menu(

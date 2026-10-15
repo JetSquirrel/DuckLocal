@@ -2,6 +2,7 @@
 //! DuckDB version and DuckLocal's own version — the update check — on the
 //! right.
 
+use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
@@ -193,6 +194,13 @@ fn update_status(cx: &App) -> AnyElement {
                 .child(label)
                 .tooltip(tooltip(hint))
                 .on_click(|_, _, cx| update::check(cx))
+                // Windows and Linux have no menu bar, so the guide and the
+                // logs folder the DuckLocal menu offers on macOS are
+                // reachable from here too.
+                .context_menu(|menu, _, _| {
+                    menu.menu(tr("menu.show_tour"), Box::new(crate::ui::ShowTour))
+                        .menu(tr("menu.open_logs"), Box::new(crate::ui::OpenLogs))
+                })
                 .into_any_element()
         }
     }

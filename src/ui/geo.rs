@@ -161,6 +161,10 @@ pub struct GeoData {
     extent: (f64, f64, f64, f64),
     /// Rows whose coordinates were missing or out of range.
     pub dropped: usize,
+    /// Points left outside the view: a few far from the rest (an Antarctic
+    /// station among a world of airports) would otherwise shrink everyone
+    /// else to a speck. See `fitted_extent`.
+    pub outside: usize,
     /// How many rows had valid coordinates, when more than were plotted.
     pub capped_from: Option<usize>,
     /// The column points are sized by.
@@ -314,15 +318,7 @@ impl GeoData {
             points.sort_by(|a, b| b.diameter.total_cmp(&a.diameter));
         }
 
-        let extent = points.iter().fold(
-            (
-                f64::INFINITY,
-                f64::NEG_INFINITY,
-                f64::INFINITY,
-                f64::NEG_INFINITY,
-            ),
-            |(x0, x1, y0, y1), p| (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y)),
-        );
+        let (extent, outside) = fitted_extent(&points);
 
         let (category_name, categories, folded_other) = match category {
             Some(c) => (
@@ -343,6 +339,7 @@ impl GeoData {
             points: Arc::new(points),
             extent,
             dropped,
+            outside,
             capped_from,
             size_name: style
                 .size
@@ -599,6 +596,67 @@ pub(crate) fn project_lat(lat: f64) -> f64 {
     mercator_y(lat)
 }
 
+/// How many of a map's points the view may leave out when a few outliers are
+/// cut: at each end of each axis, this share of them, and never fewer than
+/// `OUTLIER_MIN` — three stations far off are three, among any number.
+const OUTLIER_SHARE: f64 = 0.005;
+const OUTLIER_MIN: usize = 3;
+
+/// The extent the view fits, and how many points it leaves out. Every point,
+/// unless cutting the outermost few at each end of either axis at least
+/// halves the area: then the bulk of the points fill the plot, and the
+/// few far out are counted and said, not silently shrunk away from.
+fn fitted_extent(points: &[GeoPoint]) -> ((f64, f64, f64, f64), usize) {
+    let full = points.iter().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(x0, x1, y0, y1), p| (x0.min(p.x), x1.max(p.x), y0.min(p.y), y1.max(p.y)),
+    );
+    // Too few points to call any an outlier.
+    if points.len() < 200 {
+        return (full, 0);
+    }
+    let quantiles = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        let cut = (((values.len() as f64) * OUTLIER_SHARE) as usize).max(OUTLIER_MIN);
+        (values[cut], values[values.len() - 1 - cut])
+    };
+    let (x0, x1) = quantiles(points.iter().map(|p| p.x).collect());
+    let (y0, y1) = quantiles(points.iter().map(|p| p.y).collect());
+    let area =
+        |(x0, x1, y0, y1): (f64, f64, f64, f64)| (x1 - x0).max(MIN_SPAN) * (y1 - y0).max(MIN_SPAN);
+    let trimmed = (x0, x1, y0, y1);
+    if area(trimmed) > area(full) / 2. {
+        return (full, 0);
+    }
+    let outside = points
+        .iter()
+        .filter(|p| p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1)
+        .count();
+    (trimmed, outside)
+}
+
+/// Graticule labels need this much room between them, along x and along y,
+/// or they run into each other on a small map.
+const LNG_LABEL_GAP: f32 = 46.;
+const LAT_LABEL_GAP: f32 = 18.;
+
+/// Whether the graticule line at `value` carries a label: every `stride`-th
+/// multiple of `step`, counted from zero so 0° keeps its label, where
+/// `stride` spaces the labels at least `gap` pixels apart.
+fn labeled_line(value: f64, step: f64, spacing: f32, gap: f32) -> bool {
+    let stride = if spacing > 0. {
+        (gap / spacing).ceil().max(1.) as i64
+    } else {
+        1
+    };
+    ((value / step).round() as i64) % stride == 0
+}
+
 /// Most tiles a map asks for at once; a bigger plot drops a zoom level
 /// rather than filling the policy's queue with one view.
 const MAX_TILES: usize = 48;
@@ -814,8 +872,14 @@ impl Plot for GeoPlot {
                 .paint(&area, window);
         }
 
+        let spacing = |lines: &[(f32, f64)]| match lines {
+            [a, b, ..] => (b.0 - a.0).abs(),
+            _ => f32::MAX,
+        };
+        let (lng_spacing, lat_spacing) = (spacing(&meridians), spacing(&parallels));
         let mut labels: Vec<Text> = meridians
             .iter()
+            .filter(|(_, lng)| labeled_line(*lng, lng_step, lng_spacing, LNG_LABEL_GAP))
             .map(|(x, lng)| {
                 Text::new(
                     format_degrees(*lng, lng_step, 'E', 'W'),
@@ -825,14 +889,25 @@ impl Plot for GeoPlot {
                 .align(TextAlign::Center)
             })
             .collect();
-        labels.extend(parallels.iter().map(|(y, lat)| {
-            Text::new(
-                format_degrees(*lat, lat_step, 'N', 'S'),
-                point(px(LEFT_GUTTER - 6.), px(y - TEXT_SIZE / 2. - 1.)),
-                muted,
-            )
-            .align(TextAlign::Right)
-        }));
+        // Parallels are spaced unevenly (Mercator stretches toward the
+        // poles); the tightest pair, near the equator, decides.
+        let lat_spacing = parallels
+            .windows(2)
+            .map(|pair| (pair[1].0 - pair[0].0).abs())
+            .fold(lat_spacing, f32::min);
+        labels.extend(
+            parallels
+                .iter()
+                .filter(|(_, lat)| labeled_line(*lat, lat_step, lat_spacing, LAT_LABEL_GAP))
+                .map(|(y, lat)| {
+                    Text::new(
+                        format_degrees(*lat, lat_step, 'N', 'S'),
+                        point(px(LEFT_GUTTER - 6.), px(y - TEXT_SIZE / 2. - 1.)),
+                        muted,
+                    )
+                    .align(TextAlign::Right)
+                }),
+        );
         // The tile policy asks for the credit on the map itself, whenever its
         // tiles are shown.
         if drew_tiles {
@@ -853,21 +928,28 @@ impl Plot for GeoPlot {
         // One quad per point, ringed in the background color so overlapping
         // points stay countable.
         // Solid fills: a translucent dot on the pale sheet reads as blurred.
+        // Held to the sheet: a point the view leaves out (`outside`) is not
+        // drawn over the axis labels.
         let ring = background;
-        for p in self.data.points.iter() {
-            let (x, y) = view.project(p.x, p.y);
-            let color = self.color_of(p, cx);
-            let d = p.diameter;
-            let origin = bounds.origin + point(px(x - d / 2.), px(y - d / 2.));
-            window.paint_quad(quad(
-                Bounds::new(origin, size(px(d), px(d))),
-                px(d / 2.),
-                Background::from(color),
-                px(1.),
-                ring,
-                BorderStyle::default(),
-            ));
-        }
+        let sheet = ContentMask {
+            bounds: area.dilate(px(DOT_SIZE / 2.)),
+        };
+        window.with_content_mask(Some(sheet), |window| {
+            for p in self.data.points.iter() {
+                let (x, y) = view.project(p.x, p.y);
+                let color = self.color_of(p, cx);
+                let d = p.diameter;
+                let origin = bounds.origin + point(px(x - d / 2.), px(y - d / 2.));
+                window.paint_quad(quad(
+                    Bounds::new(origin, size(px(d), px(d))),
+                    px(d / 2.),
+                    Background::from(color),
+                    px(1.),
+                    ring,
+                    BorderStyle::default(),
+                ));
+            }
+        });
 
         if let Some(key) = &self.data.size_key {
             paint_size_key(key, &view, bounds, window, cx);
@@ -1068,6 +1150,42 @@ mod tests {
         for name in ["along", "longest", "salon"] {
             assert!(!is_lng_name(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_few_far_points_do_not_shrink_the_rest_to_a_speck() {
+        let mut rows: Vec<[String; 4]> = (0..300)
+            .map(|i| {
+                let lat = 40. + (i % 20) as f64 / 2.;
+                let lng = (i / 20) as f64 / 2.;
+                [
+                    "X".into(),
+                    format!("p{i}"),
+                    lat.to_string(),
+                    lng.to_string(),
+                ]
+            })
+            .collect();
+        for far in ["-78", "-80", "-82"] {
+            rows.push(["X".into(), "far".into(), far.into(), "160".into()]);
+        }
+        let rows: Vec<[&str; 4]> = rows
+            .iter()
+            .map(|r| [r[0].as_str(), r[1].as_str(), r[2].as_str(), r[3].as_str()])
+            .collect();
+        let geo = GeoData::detect(&stations(rows)).unwrap();
+        assert_eq!(geo.outside, 3);
+        let (x0, x1, y0, _) = geo.extent;
+        assert!(x1 - x0 < 10., "the view is the cluster's, not the globe's");
+        assert!(y0 > 0.);
+
+        // A handful of points is never trimmed.
+        let few = GeoData::detect(&stations(Vec::from([
+            ["A", "a", "51.7", "5.3"],
+            ["B", "b", "-80", "160"],
+        ])))
+        .unwrap();
+        assert_eq!(few.outside, 0);
     }
 
     #[test]

@@ -561,6 +561,9 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
     if geo.dropped > 0 {
         notices.push(trf("chart.map.notice.dropped", &[&geo.dropped.to_string()]));
     }
+    if geo.outside > 0 {
+        notices.push(trf("chart.map.notice.outside", &[&geo.outside.to_string()]));
+    }
     if let Some(name) = &geo.category_name {
         notices.push(trf("chart.map.colored_by", &[name]));
     }
@@ -637,9 +640,15 @@ pub(crate) fn pie_parts(
         .iter()
         .map(|s| {
             let share = s.value as f64 / total * 100.;
+            // A real slice too thin for one decimal is not nothing.
+            let share = if share > 0. && share < 0.05 {
+                "<0.1%".to_string()
+            } else {
+                format!("{share:.1}%")
+            };
             (
                 color(s),
-                SharedString::from(format!("{} ({share:.1}%)", s.name)),
+                SharedString::from(format!("{} ({share})", s.name)),
             )
         })
         .collect();
@@ -707,6 +716,32 @@ fn empty_chart_state(message: &str, hints: &[String], cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// An axis's tick labels, in one unit: the largest tick picks K or M for
+/// all of them, so an axis reads `14K 12K 10K 8K`, not `14K 12K 10K 8000`.
+pub(crate) fn format_ticks(ticks: &[f64]) -> Vec<String> {
+    let largest = ticks.iter().fold(0f64, |most, t| most.max(t.abs()));
+    let (divisor, suffix) = if largest >= 1_000_000.0 {
+        (1_000_000.0, "M")
+    } else if largest >= 10_000.0 {
+        (1_000.0, "K")
+    } else {
+        return ticks.iter().map(|t| format_value(*t)).collect();
+    };
+    ticks
+        .iter()
+        .map(|t| {
+            let scaled = t / divisor;
+            if scaled == 0. {
+                "0".to_string()
+            } else if scaled == scaled.trunc() {
+                format!("{scaled:.0}{suffix}")
+            } else {
+                format!("{scaled:.1}{suffix}")
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn format_value(value: f64) -> String {
     if value.abs() >= 1_000_000.0 {
         format!("{:.1}M", value / 1_000_000.0)
@@ -723,8 +758,23 @@ pub(crate) fn format_value(value: f64) -> String {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{parse_number, ChartData, ChartKind, MAX_SLICES};
+    use super::{format_ticks, parse_number, ChartData, ChartKind, MAX_SLICES};
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+
+    #[test]
+    fn an_axis_speaks_one_unit() {
+        assert_eq!(
+            format_ticks(&[0., 2000., 4000., 8000., 10000., 12000.]),
+            ["0", "2K", "4K", "8K", "10K", "12K"]
+        );
+        assert_eq!(format_ticks(&[0., 2500., 12500.]), ["0", "2.5K", "12.5K"]);
+        assert_eq!(
+            format_ticks(&[0., 500000., 1500000.]),
+            ["0", "0.5M", "1.5M"]
+        );
+        // Below ten thousand, plain numbers, as before.
+        assert_eq!(format_ticks(&[0., 2.5, 8000.]), ["0", "2.5", "8000"]);
+    }
 
     fn column(name: &str, kind: ColumnKind) -> ColumnMeta {
         ColumnMeta {

@@ -10,6 +10,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::label::Label;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
@@ -357,6 +358,31 @@ impl ResultTableDelegate {
             .unwrap_or(row_ix)
     }
 
+    /// Source column `col` of the row shown at `row_ix`.
+    fn cell(&self, row_ix: usize, col: usize) -> &str {
+        self.rows()
+            .get(self.source_row(row_ix))
+            .and_then(|row| row.get(col))
+            .map_or("", String::as_str)
+    }
+
+    /// The row shown at `row_ix`, its cells tab-separated.
+    fn row_text(&self, row_ix: usize) -> String {
+        let width = self.columns.len().saturating_sub(LEADING_COLUMNS);
+        (0..width)
+            .map(|col| self.cell(row_ix, col))
+            .collect::<Vec<_>>()
+            .join("\t")
+    }
+
+    /// Source column `col` over the rows shown, in their order, one per line.
+    fn column_text(&self, col: usize) -> String {
+        (0..self.visible_count())
+            .map(|row_ix| self.cell(row_ix, col))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn visible_count(&self) -> usize {
         self.filtered
             .as_ref()
@@ -408,6 +434,41 @@ impl TableDelegate for ResultTableDelegate {
         self.hovered = None;
         self.sort = Some((self.data_col(col_ix), sort));
         self.resort();
+    }
+
+    /// The same menu a dashboard table has: the cell under the pointer, its
+    /// row, and its column in the order shown, each as a spreadsheet pastes
+    /// it. Right-clicking the row number offers the row alone.
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let copy = |label: &'static str, text: String| {
+            PopupMenuItem::new(tr(label))
+                .icon(IconName::Copy)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
+                })
+        };
+        let col = self
+            .hovered
+            .filter(|&(row, col)| row == row_ix && col >= LEADING_COLUMNS)
+            .map(|(_, col)| self.data_col(col));
+        let mut menu = menu;
+        if let Some(col) = col {
+            menu = menu.item(copy(
+                "dashboard.table.copy_cell",
+                self.cell(row_ix, col).to_string(),
+            ));
+        }
+        menu = menu.item(copy("dashboard.table.copy_row", self.row_text(row_ix)));
+        if let Some(col) = col {
+            menu = menu.item(copy("dashboard.table.copy_column", self.column_text(col)));
+        }
+        menu
     }
 
     fn render_th(
@@ -1379,9 +1440,11 @@ impl ResultsPanel {
 impl Render for ResultsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .relative()
             .size_full()
             .border_t_1()
             .border_color(cx.theme().border)
+            .child(crate::ui::tour::anchor(crate::ui::tour::Target::Results))
             .child(self.render_header(cx))
             .children(self.render_script_steps(cx))
             .child(div().flex_1().min_h_0().child(match self.tab {
@@ -1929,6 +1992,38 @@ mod tests {
         assert_eq!(shown(&table), [2, 0]);
         table.set_result(result());
         assert_eq!(shown(&table), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_copied_row_and_column_follow_the_rows_shown() {
+        let column = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind,
+        };
+        let mut table = ResultTableDelegate::new();
+        table.set_result(Rc::new(QueryResult {
+            columns: vec![
+                column("name", ColumnKind::Text),
+                column("n", ColumnKind::Numeric),
+            ],
+            rows: [["web", "10"], ["app", "9"], ["web2", "100"]]
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+        }));
+        table.sort = Some((1, ColumnSort::Descending));
+        table.resort();
+        table.set_filter("web".into());
+        assert_eq!(table.row_text(0), "web2	100");
+        assert_eq!(
+            table.column_text(0),
+            "web2
+web"
+        );
+        assert_eq!(table.cell(1, 1), "10");
     }
 
     #[test]

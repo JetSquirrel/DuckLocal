@@ -40,6 +40,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::presence::{self, Marks};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::{ResizeHandleContext, ResizeHandleState};
 use gpui_kit::component::alert::Alert;
@@ -94,6 +95,15 @@ const CARD_MIN: f32 = 80.;
 const CARD_MAX: f32 = 400.;
 /// A row of nothing but text panels heads what follows: a title and a line.
 const TEXT_DEFAULT: f32 = 76.;
+/// A text panel's measures at the default interface size, for sizing its row
+/// to its words: padding and gaps, the title's line, one line of words, and
+/// one character's average width at the words' size.
+const TEXT_PADDING: f32 = 30.;
+const TEXT_TITLE: f32 = 34.;
+const TEXT_LINE: f32 = 24.;
+const TEXT_CHAR: f32 = 8.5;
+/// The width a text panel is taken to have before the first layout.
+const TEXT_ROOM_GUESS: f32 = 900.;
 const TEXT_MIN: f32 = 40.;
 /// The space between two plots' cards, and between the cards and the tab's
 /// edges.
@@ -186,6 +196,18 @@ pub struct Dashboard {
     /// its text box needs a window, and kept so a half-written comment
     /// survives the card closing.
     comment_cards: HashMap<String, Entity<CommentCard>>,
+    /// What agents are doing to the plots, as their commands report it
+    /// (see `presence`).
+    presence: Marks,
+    /// Whether the timer that takes expired marks off is running.
+    presence_ticking: bool,
+    _presence_tick: Option<Task<()>>,
+    /// The run in flight was started by an edit on disk, whose changed plots
+    /// are marked when it lands.
+    external_reload: bool,
+    /// Each plot's definition as last drawn — its block and its query's SQL —
+    /// to tell which plots an edit on disk changed.
+    plot_prints: HashMap<String, String>,
 }
 
 /// What a dashboard asks of the workspace around it.
@@ -232,6 +254,11 @@ impl Dashboard {
             comments_error: None,
             comment_open: None,
             comment_cards: HashMap::new(),
+            presence: Marks::default(),
+            presence_ticking: false,
+            _presence_tick: None,
+            external_reload: false,
+            plot_prints: HashMap::new(),
         };
         this.load_comments();
         this.watch(cx);
@@ -396,7 +423,41 @@ impl Dashboard {
         }
         self.conflict = false;
         self.read_source();
+        self.external_reload = true;
         self.reload(cx);
+    }
+
+    /// An agent's command said what it is doing to this dashboard.
+    pub fn apply_presence(&mut self, update: &presence::Update, cx: &mut Context<Self>) {
+        self.presence.apply(update, Instant::now());
+        self.keep_presence_fresh(cx);
+        cx.notify();
+    }
+
+    /// Whether an agent has a mark on this dashboard, for the tab strip.
+    pub fn has_presence(&self) -> bool {
+        !self.presence.is_empty()
+    }
+
+    /// Take marks off as they expire, for as long as any are up.
+    fn keep_presence_fresh(&mut self, cx: &mut Context<Self>) {
+        if self.presence_ticking || self.presence.is_empty() {
+            return;
+        }
+        self.presence_ticking = true;
+        self._presence_tick = Some(cx.spawn(async move |this, cx| loop {
+            smol::Timer::after(std::time::Duration::from_millis(250)).await;
+            let more = this.update(cx, |this, cx| {
+                if this.presence.prune(Instant::now()) {
+                    cx.notify();
+                }
+                this.presence_ticking = !this.presence.is_empty();
+                this.presence_ticking
+            });
+            if !matches!(more, Ok(true)) {
+                break;
+            }
+        }));
     }
 
     /// Re-read the comments file. A file that does not read keeps the threads
@@ -569,6 +630,19 @@ impl Dashboard {
                         this.results = run.results;
                         this.outcomes = run.outcomes;
                         this.spec = run.spec;
+                        // An edit on disk: the plots it changed or added are
+                        // marked as an agent's, when one has been at work.
+                        let prints = run.prints;
+                        if std::mem::take(&mut this.external_reload) {
+                            let changed: Vec<String> = prints
+                                .iter()
+                                .filter(|(name, print)| this.plot_prints.get(*name) != Some(*print))
+                                .map(|(name, _)| name.clone())
+                                .collect();
+                            this.presence.edited(&changed, Instant::now());
+                            this.keep_presence_fresh(cx);
+                        }
+                        this.plot_prints = prints;
                         // A pick whose filter is gone from the spec goes too.
                         let spec = this.spec.clone();
                         this.picks.retain(|name, _| {
@@ -855,6 +929,41 @@ impl Dashboard {
                 - CARD_PADDING
         });
         card_value_size(plot.card.as_deref().unwrap_or_default(), room)
+    }
+
+    /// The height a row of text panels needs for its title and words at the
+    /// width each has and the interface size in use: a fixed height clipped
+    /// a second line, and every line at a larger size.
+    fn text_row_height(&self, row: &[usize]) -> f32 {
+        let scale = f32::from(crate::ui::scale::design(1.));
+        let viewport = self.wheel.viewport().get().map(|v| v.size.width.as_f32());
+        row.iter()
+            .map(|&ix| {
+                let plot = &self.plots[ix];
+                let room = viewport.map_or(TEXT_ROOM_GUESS, |width| {
+                    width * plot.width as f32 / model::GRID_COLUMNS as f32
+                        - 2. * (CARD_INSET + 1.)
+                        - PAGE_GAP
+                });
+                let per_line = (room / (TEXT_CHAR * scale)).max(8.);
+                let lines: f32 = plot
+                    .text
+                    .as_deref()
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|line| {
+                        let width = unicode_width::UnicodeWidthStr::width(line) as f32;
+                        (width / per_line).ceil().max(1.)
+                    })
+                    .sum();
+                let title = if plot.title.is_empty() {
+                    0.
+                } else {
+                    TEXT_TITLE
+                };
+                (TEXT_PADDING + title + lines * TEXT_LINE) * scale
+            })
+            .fold(TEXT_DEFAULT, f32::max)
     }
 
     /// The height a grid row of nothing but drawn tables needs to show every
@@ -1369,6 +1478,97 @@ impl Dashboard {
 
     /// The spec would not read, parse or validate: the whole tab is the error,
     /// the way an app that has never loaded shows its failure.
+    /// An agent's mark on plot `ix`: a ring in the agent colour over the card,
+    /// the way a shared document shows where a collaborator is (its name tag
+    /// is `render_presence_tag`). A change just made tints the card and fades.
+    fn render_plot_presence(&self, ix: usize, cx: &App) -> Option<AnyElement> {
+        let name = &self.plots[ix].name;
+        let mark = self.presence.on_plot(name)?;
+        let color = crate::ui::palette::presence(cx);
+        let ring = div()
+            .absolute()
+            .inset_0()
+            .rounded(px(PANEL_RADIUS))
+            .border_2()
+            .border_color(color);
+        Some(if mark.shown.is_ongoing() {
+            ring.into_any_element()
+        } else {
+            fade_out(
+                ring.bg(color.opacity(0.06)),
+                self.presence_id("ring", name, mark),
+            )
+        })
+    }
+
+    /// The name tag of an agent's mark: on the card's top edge, half over the
+    /// gap above it, so it never covers the plot's own title.
+    fn render_presence_tag(&self, ix: usize, cx: &App) -> Option<AnyElement> {
+        let name = &self.plots[ix].name;
+        let mark = self.presence.on_plot(name)?;
+        let color = crate::ui::palette::presence(cx);
+        let ongoing = mark.shown.is_ongoing();
+        let tag = h_flex()
+            .absolute()
+            .top(px(-PRESENCE_TAG_RISE))
+            .left(px(PAGE_GAP / 2. + 10.))
+            .gap_1()
+            .items_center()
+            .px_1p5()
+            .rounded(px(4.))
+            .bg(color)
+            .text_color(gpui_kit::white())
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .child(presence_dot(self.presence_id("dot", name, mark), ongoing))
+            .child(trf(mark.shown.label_key(), &[&mark.agent]));
+        Some(if ongoing {
+            tag.into_any_element()
+        } else {
+            fade_out(tag, self.presence_id("tag", name, mark))
+        })
+    }
+
+    /// An animation id that restarts when a plot's mark changes kind.
+    fn presence_id(&self, part: &str, plot: &str, mark: &presence::Mark) -> SharedString {
+        format!("presence-{part}-{}-{plot}-{:?}", self.id, mark.shown).into()
+    }
+
+    /// An agent at work on the dashboard as a whole — a check — as a pill
+    /// floating at the top of the tab, so nothing below it moves.
+    fn render_presence_bar(&self, cx: &App) -> Option<AnyElement> {
+        let mark = self.presence.on_dashboard()?;
+        let color = crate::ui::palette::presence(cx);
+        let key = match mark.shown {
+            presence::Shown::Checked => "presence.dashboard.checked",
+            _ => "presence.dashboard.checking",
+        };
+        let pill = h_flex()
+            .absolute()
+            .top_2()
+            .right_3()
+            .gap_1p5()
+            .items_center()
+            .px_2p5()
+            .py_1()
+            .rounded_full()
+            .bg(color)
+            .text_color(gpui_kit::white())
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .shadow_md()
+            .child(presence_dot(
+                format!("presence-bar-{}-{:?}", self.id, mark.shown).into(),
+                mark.shown.is_ongoing(),
+            ))
+            .child(trf(key, &[&mark.agent]));
+        Some(if mark.shown.is_ongoing() {
+            pill.into_any_element()
+        } else {
+            fade_out(pill, format!("presence-bar-fade-{}", self.id).into())
+        })
+    }
+
     fn render_spec_failure(&self, error: String, cx: &App) -> AnyElement {
         v_flex()
             .size_full()
@@ -1536,7 +1736,7 @@ impl Render for Dashboard {
                         .iter()
                         .all(|&ix| matches!(self.plots[ix].kind.as_str(), "card" | "text"));
                     let (default, min, max) = if all("text") {
-                        (TEXT_DEFAULT, TEXT_MIN, CARD_MAX)
+                        (self.text_row_height(row), TEXT_MIN, CARD_MAX)
                     } else if cards {
                         let noted = row.iter().any(|&ix| self.plots[ix].note.is_some());
                         let default = if noted { CARD_NOTED } else { CARD_DEFAULT };
@@ -1563,10 +1763,12 @@ impl Render for Dashboard {
                             .h_full()
                             .w(relative(share))
                             .min_w_0()
+                            .relative()
                             .px(px(PAGE_GAP / 2.))
                             .child(
                                 div()
                                     .size_full()
+                                    .relative()
                                     .overflow_hidden()
                                     .when(boxed, |this| {
                                         this.bg(crate::ui::palette::panel(cx))
@@ -1574,8 +1776,10 @@ impl Render for Dashboard {
                                             .border_color(cx.theme().border)
                                             .rounded(px(PANEL_RADIUS))
                                     })
-                                    .child(self.render_plot(ix, window, cx)),
+                                    .child(self.render_plot(ix, window, cx))
+                                    .children(self.render_plot_presence(ix, cx)),
                             )
+                            .children(self.render_presence_tag(ix, cx))
                     });
                     let cells = cells.collect::<Vec<_>>();
                     let default = default + PAGE_GAP;
@@ -1653,6 +1857,7 @@ impl Render for Dashboard {
 
         v_flex()
             .size_full()
+            .relative()
             .bg(crate::ui::palette::page(cx))
             .text_color(cx.theme().foreground)
             .children(self.render_conflict_warning(cx))
@@ -1661,7 +1866,87 @@ impl Render for Dashboard {
                 this.children(self.render_picks(cx))
             })
             .child(body)
+            .children(self.render_presence_bar(cx))
             .into_any_element()
+    }
+}
+
+/// Each plot's definition as text — its block as written and its query's
+/// SQL — so two runs can tell which plots an edit changed. Where a block sits
+/// in the file is no part of it: an edit above it moves it, not changes it.
+fn plot_prints(spec: &Spec, source: &str) -> HashMap<String, String> {
+    // A block runs from its keyword to the next block's: the spans the model
+    // keeps mark only where each starts.
+    let mut starts: Vec<usize> = spec
+        .sources
+        .iter()
+        // A source keeps only its name's place, a word into the block:
+        // near enough to end the block before it.
+        .map(|block| block.name_span.0)
+        .chain(spec.queries.iter().map(|block| block.span.0))
+        .chain(spec.plots.iter().map(|block| block.span.0))
+        .chain(spec.filters.iter().map(|block| block.span.0))
+        .collect();
+    starts.sort_unstable();
+    spec.plots
+        .iter()
+        .map(|plot| {
+            let start = plot.span.0;
+            let end = starts
+                .iter()
+                .copied()
+                .find(|&next| next > start)
+                .unwrap_or(source.len());
+            let block = source.get(start..end).unwrap_or_default().trim_end();
+            let sql = spec
+                .queries
+                .iter()
+                .find(|query| query.name == plot.query)
+                .map(|query| query.sql.as_str())
+                .unwrap_or_default();
+            // Whitespace aside: an editor that rewrites line endings or
+            // re-indents the file has changed no plot.
+            let text = format!("{block}\n{sql}");
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            (plot.name.clone(), text)
+        })
+        .collect()
+}
+
+/// How far a presence name tag rises above its card's top edge, into the
+/// gap between rows.
+const PRESENCE_TAG_RISE: f32 = 8.;
+
+/// Work just done: shown at full strength, then faded out over the last
+/// part of its mark's life.
+fn fade_out<E: IntoElement + Styled + 'static>(element: E, id: SharedString) -> AnyElement {
+    element
+        .with_animation(
+            id,
+            Animation::new(presence::EDITED_LASTS),
+            |element, delta| element.opacity(if delta < 0.7 { 1. } else { (1. - delta) / 0.3 }),
+        )
+        .into_any_element()
+}
+
+/// A presence mark's dot: breathing while the work goes on, steady once done.
+fn presence_dot(id: SharedString, ongoing: bool) -> impl IntoElement {
+    div()
+        .size_1p5()
+        .rounded_full()
+        .bg(gpui_kit::white())
+        .with_animation(id, pulse(ongoing), |dot, delta| dot.opacity(delta))
+}
+
+/// Opacity between faint and full and back, a breath every 1.2s; or full,
+/// held, for a mark of work already done.
+fn pulse(ongoing: bool) -> Animation {
+    if ongoing {
+        Animation::new(std::time::Duration::from_millis(1200))
+            .repeat()
+            .with_easing(|t| 0.35 + 0.65 * (0.5 - 0.5 * (t * std::f32::consts::TAU).cos()))
+    } else {
+        Animation::new(std::time::Duration::from_millis(1)).with_easing(|_| 1.)
     }
 }
 
@@ -1669,6 +1954,8 @@ impl Render for Dashboard {
 struct Run {
     spec_error: Option<String>,
     spec: Option<Arc<Spec>>,
+    /// Each plot's definition as text (see `plot_prints`).
+    prints: HashMap<String, String>,
     plots: Vec<PreparedPlot>,
     results: HashMap<String, Arc<QueryResult>>,
     outcomes: Outcomes,
@@ -1679,24 +1966,29 @@ struct Run {
 /// comes out as `reuse` last ran it keeps that outcome instead of running.
 fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let display = path.display().to_string();
-    let spec = (|| -> Result<Spec, String> {
+    let spec = (|| -> Result<(Spec, String), String> {
         let source = std::fs::read_to_string(path).map_err(|e| format!("{display}: {e}"))?;
         let file =
             model::parse(&source).map_err(|e| format!("{display}:{}: {}", e.line, e.message))?;
-        model::validate(&file).map_err(|diagnostics| {
+        let spec = model::validate(&file).map_err(|diagnostics| {
             diagnostics
                 .iter()
                 .map(|d| format!("{display}:{}: {}", d.line, d.message))
                 .collect::<Vec<_>>()
                 .join("\n")
-        })
+        })?;
+        Ok((spec, source))
     })();
-    let spec = match spec {
-        Ok(spec) => spec,
+    let (spec, prints) = match spec {
+        Ok((spec, source)) => {
+            let prints = plot_prints(&spec, &source);
+            (spec, prints)
+        }
         Err(spec_error) => {
             return Run {
                 spec_error: Some(spec_error),
                 spec: None,
+                prints: HashMap::new(),
                 plots: Vec::new(),
                 results: HashMap::new(),
                 outcomes: HashMap::new(),
@@ -1757,6 +2049,7 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     Run {
         spec_error: None,
         spec: Some(Arc::new(spec)),
+        prints,
         plots,
         results,
         outcomes,
@@ -2462,6 +2755,44 @@ filter "channel" { plot = plot.channels }
         assert!(size < CARD_VALUE_MAX && 13. * 0.6 * size <= 150.);
         // Never below the floor, however narrow.
         assert_eq!(card_value_size("11,439,704.50", Some(20.)), CARD_VALUE_MIN);
+    }
+
+    #[test]
+    fn only_the_plots_an_edit_touches_print_differently() {
+        let prints = |source: &str| {
+            let file = crate::spec::model::parse(source).unwrap();
+            let spec = crate::spec::model::validate(&file).unwrap();
+            super::plot_prints(&spec, source)
+        };
+        let spec = |title: &str, sql: &str| {
+            format!(
+                "query \"q\" {{
+  sql = \"{sql}\"
+}}
+                 plot \"a\" {{
+  type = \"card\"
+  query = query.q
+  title = \"{title}\"
+}}
+                 plot \"b\" {{
+  type = \"card\"
+  query = query.q
+  title = \"B\"
+}}
+"
+            )
+        };
+        let before = prints(&spec("A", "SELECT 1 AS n"));
+        // A longer title moves plot b down the file without changing it.
+        let retitled = prints(&spec("A, renamed at length", "SELECT 1 AS n"));
+        assert_ne!(before["a"], retitled["a"]);
+        assert_eq!(before["b"], retitled["b"]);
+        // Line endings and indentation are not a change.
+        let crlf = spec("A", "SELECT 1 AS n").replace('\n', "\r\n    ");
+        assert_eq!(prints(&crlf)["b"], before["b"]);
+        // A query both read changes both.
+        let requeried = prints(&spec("A", "SELECT 2 AS n"));
+        assert_ne!(before["b"], requeried["b"]);
     }
 
     #[test]
