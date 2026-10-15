@@ -1,6 +1,5 @@
-//! Bottom status bar: connection status on the left, last-query stats, the
-//! DuckDB version and DuckLocal's own version — the update check — on the
-//! right.
+//! Bottom status bar: connection status on the left, last-query stats and
+//! DuckLocal's own version — the update check — on the right.
 
 use gpui_kit::component::menu::ContextMenuExt;
 use gpui_kit::component::separator::Separator;
@@ -45,13 +44,12 @@ fn storage_note(server: &crate::db::ServerInfo) -> Option<String> {
 
 impl Render for StatusBarView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (connected, target_label, storage, version, last, opening, search_path) = {
+        let (connected, target_label, storage, last, opening, search_path) = {
             let state = self.state.read(cx);
             (
                 state.target.is_some(),
                 state.target.as_ref().and_then(|t| t.file_label()),
                 state.server.as_ref().and_then(storage_note),
-                state.server.as_ref().map(|s| s.version.clone()),
                 state.last_query.clone(),
                 state.is_opening(),
                 state.search_path.clone(),
@@ -130,13 +128,6 @@ impl Render for StatusBarView {
                         &stats.cols.to_string(),
                     ],
                 )));
-        }
-        if let Some(version) = version {
-            bar = bar.right(Separator::vertical()).right(
-                div()
-                    .font_family(mono.clone())
-                    .child(format!("DuckDB {version}")),
-            );
         }
         bar.right(Separator::vertical()).right(update_status(cx))
     }
