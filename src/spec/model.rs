@@ -322,6 +322,19 @@ impl Spec {
 }
 
 pub(crate) fn validate(file: &File) -> Result<Spec, Vec<Diagnostic>> {
+    let (spec, diagnostics) = validate_partial(file);
+    if diagnostics.is_empty() {
+        Ok(spec)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+/// The spec as far as it goes, with what is wrong with it: each flawed block
+/// left out, every other block kept. `check` goes on to run the queries that
+/// made it in and check their plots' columns, so one run lists every mistake
+/// rather than one stage of them at a time.
+pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
     let mut queries = Vec::new();
     let mut plots = Vec::new();
@@ -384,6 +397,14 @@ pub(crate) fn validate(file: &File) -> Result<Spec, Vec<Diagnostic>> {
                 sites.push(site(block, f.name_span));
                 filters.push((f, block));
             }
+            // `card "total" { … }` reads naturally, but a card is a plot.
+            other if PLOT_TYPES.contains(&other) => diagnostics.push(Diagnostic::at_block(
+                block,
+                format!(
+                    "Unknown block: {other:?}; a {other} is a plot: plot {:?} {{ type = {other:?} … }}",
+                    block.name
+                ),
+            )),
             other => diagnostics.push(Diagnostic::at_block(
                 block,
                 format!(
@@ -491,17 +512,16 @@ pub(crate) fn validate(file: &File) -> Result<Spec, Vec<Diagnostic>> {
         }
     }
 
-    if diagnostics.is_empty() {
-        Ok(Spec {
+    (
+        Spec {
             sources,
             queries,
             plots,
             filters,
             sites,
-        })
-    } else {
-        Err(diagnostics)
-    }
+        },
+        diagnostics,
+    )
 }
 
 fn site(block: &Block, name_span: (usize, usize)) -> Site {
