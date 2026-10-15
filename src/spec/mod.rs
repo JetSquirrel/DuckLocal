@@ -102,21 +102,35 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
 
     let parsed = model::parse(&source)
         .map_err(|error| spec_error(&path_display, error.line, &error.message))?;
-    let spec = model::validate(&parsed)
-        .map_err(|diagnostics| spec_error_all(&path_display, diagnostics))?;
+    // A flawed spec is still checked as far as it goes — its sound queries
+    // run, their plots' columns compared — so one run reports every mistake,
+    // not one stage of them per run.
+    let (mut spec, mut diagnostics) = model::validate_partial(&parsed);
 
     // SQL is checked with the real parser on a throwaway connection: nothing
-    // executes, so no table needs to exist and no side effect can happen.
-    for query in &spec.queries {
-        validate_query_sql(&query.sql).map_err(|message| {
-            let error = spec_error(
-                &path_display,
-                query.line,
-                &format!("query {:?}: {message}", query.name),
-            );
-            crate::cli::with_keyword_hint(error, &query.sql)
-        })?;
-    }
+    // executes, so no table needs to exist and no side effect can happen. A
+    // query that fails it is not run.
+    let mut keyword_hint = None;
+    spec.queries
+        .retain(|query| match validate_query_sql(&query.sql) {
+            Ok(()) => true,
+            Err(message) => {
+                if keyword_hint.is_none() {
+                    keyword_hint = crate::cli::with_keyword_hint(
+                        spec_error(&path_display, query.line, &message),
+                        &query.sql,
+                    )
+                    .hint;
+                }
+                diagnostics.push(model::Diagnostic {
+                    line: query.line,
+                    col: query.col,
+                    span: query.span,
+                    message: format!("query {:?}: {message}", query.name),
+                });
+                false
+            }
+        });
 
     // Every query is described — its result columns, for the column check —
     // and then run, the way opening the dashboard runs it: on the database
@@ -185,7 +199,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             Err(message) => failures.push(located(message)),
         }
     }
-    if !failures.is_empty() {
+    if !failures.is_empty() && diagnostics.is_empty() {
         return Err(CliError::failure("sql", failures.join("\n")));
     }
     let ran = |name: &str| {
@@ -209,9 +223,21 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             .ok_or_else(|| format!("no query named {name:?}"))?;
         Ok(query_columns[index].clone().unwrap_or_default())
     };
-    let diagnostics = model::check_columns(&checked, &lookup);
+    diagnostics.extend(model::check_columns(&checked, &lookup));
     if !diagnostics.is_empty() {
-        return Err(spec_error_all(&path_display, diagnostics));
+        diagnostics.sort_by_key(|d| (d.line, d.col));
+        let mut error = spec_error_all(&path_display, diagnostics);
+        // Queries that failed on the database alongside the spec's mistakes:
+        // the same run, so the same report.
+        for failure in &failures {
+            error.message.push('\n');
+            error.message.push_str(failure);
+        }
+        // The hint a failing query alone would have had, read off its message
+        // as for any sql error.
+        error.hint = keyword_hint
+            .or_else(|| crate::cli::hint_for("sql", &failures.join("\n")).map(str::to_string));
+        return Err(error);
     }
 
     // After an edit the question is only whether it passed: counts, and the
