@@ -54,6 +54,29 @@ pub fn sep() -> &'static str {
     }
 }
 
+/// `a` and `b` as one line. In English a part that is its own sentence
+/// ("Click to filter …") follows a full stop, not a comma.
+pub fn join(a: &str, b: &str) -> String {
+    join_in(current(), a, b)
+}
+
+fn join_in(language: Language, a: &str, b: &str) -> String {
+    let a = a.trim_end_matches(['.', ',', '，', '。']);
+    let between = match language {
+        Language::En if b.starts_with(char::is_uppercase) => ". ",
+        Language::En => ", ",
+        Language::Zh => "，",
+    };
+    format!("{a}{between}{b}")
+}
+
+/// `parts` as one line, joined as [`join`] joins two; `None` when empty.
+pub fn join_all<S: AsRef<str>>(parts: &[S]) -> Option<String> {
+    let mut parts = parts.iter().map(AsRef::as_ref);
+    let first = parts.next()?.to_string();
+    Some(parts.fold(first, |line, part| join(&line, part)))
+}
+
 pub fn current() -> Language {
     *CURRENT.read().unwrap_or_else(|e| e.into_inner())
 }
@@ -1003,7 +1026,23 @@ static STRINGS: &[(&str, &str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{format_template, translate, Language};
+    use super::{format_template, join_in, translate, Language};
+
+    #[test]
+    fn a_sentence_follows_a_full_stop_not_a_comma() {
+        assert_eq!(
+            join_in(Language::En, "trips by payment", "Click to filter"),
+            "trips by payment. Click to filter"
+        );
+        assert_eq!(
+            join_in(Language::En, "Showing 5 of 9.", "more"),
+            "Showing 5 of 9, more"
+        );
+        assert_eq!(
+            join_in(Language::Zh, "按支付方式", "点击可筛选"),
+            "按支付方式，点击可筛选"
+        );
+    }
 
     #[test]
     fn language_codes_roundtrip() {

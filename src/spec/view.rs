@@ -75,7 +75,7 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
-use crate::spec::prepare::{prepare, PlotPoint, PreparedPlot};
+use crate::spec::prepare::{keep_series_order, prepare, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
 use crate::ui::completion::starts_with_ignore_case;
@@ -704,7 +704,13 @@ impl Dashboard {
                                 (plot.name.clone(), title)
                             })
                             .collect();
-                        this.plots = run.plots;
+                        let mut plots = run.plots;
+                        for plot in &mut plots {
+                            if let Some(before) = this.plots.iter().find(|p| p.name == plot.name) {
+                                keep_series_order(plot, &before.series_names);
+                            }
+                        }
+                        this.plots = plots;
                         this.results = run.results;
                         this.outcomes = run.outcomes;
                         this.spec = run.spec;
@@ -1254,7 +1260,7 @@ impl Dashboard {
         if failure.is_none() && self.is_pickable(&self.plots[ix].name) {
             let hint = tr("dashboard.filter.hint").to_string();
             notice = Some(match notice.take() {
-                Some(notice) => format!("{notice}{}{hint}", crate::i18n::sep()),
+                Some(notice) => crate::i18n::join(&notice, &hint),
                 None => hint,
             });
         }
@@ -1267,7 +1273,7 @@ impl Dashboard {
                     if let Some(geo) = &plot.geo {
                         let (notes, key) = map_notes(geo, cx);
                         notice = match (notice.take(), notes) {
-                            (Some(a), Some(b)) => Some(format!("{a}{}{b}", crate::i18n::sep())),
+                            (Some(a), Some(b)) => Some(crate::i18n::join(&a, &b)),
                             (a, b) => a.or(b),
                         };
                         legend = key;
@@ -1302,7 +1308,7 @@ impl Dashboard {
         // better, so a keyed line or bar plot leaves it out.
         let keyed_xy = !legend.is_empty() && !matches!(self.plots[ix].kind.as_str(), "pie" | "map");
         let subtitle = match (axes.filter(|_| !keyed_xy), notice) {
-            (Some(axes), Some(notice)) => Some(format!("{axes}{}{notice}", crate::i18n::sep())),
+            (Some(axes), Some(notice)) => Some(crate::i18n::join(&axes, &notice)),
             (axes, notice) => axes.or(notice),
         };
 

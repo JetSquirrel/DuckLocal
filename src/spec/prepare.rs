@@ -587,7 +587,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         width: plot.width(),
         time_axis,
         x_values: None,
-        notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
+        notice: crate::i18n::join_all(&notices),
         failure: None,
     }
 }
@@ -767,6 +767,34 @@ fn missing_column(name: &str, result: &QueryResult) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     trf("dashboard.missing_column_named", &[name, &available])
+}
+
+/// `plot`'s series put back in the order `before` had them, the ones new to
+/// it after: a series keeps its color when a pick re-runs the query. The
+/// order is first appearance, and a query ordered by x alone leaves which
+/// series comes first at each x to the database — Weekday and Weekend would
+/// trade colors on a click.
+pub(crate) fn keep_series_order(plot: &mut PreparedPlot, before: &[String]) {
+    let names = &plot.series_names;
+    let mut order: Vec<usize> = before
+        .iter()
+        .filter_map(|name| names.iter().position(|n| n == name))
+        .collect();
+    let new: Vec<usize> = (0..names.len()).filter(|ix| !order.contains(ix)).collect();
+    order.extend(new);
+    if order.iter().enumerate().all(|(at, &ix)| at == ix) {
+        return;
+    }
+    plot.series_names = order.iter().map(|&ix| names[ix].clone()).collect();
+    for point in &mut plot.points {
+        *point = Arc::new(PlotPoint {
+            band: point.band.clone(),
+            label: point.label.clone(),
+            values: order.iter().map(|&ix| point.values[ix]).collect(),
+            present: order.iter().map(|&ix| point.present[ix]).collect(),
+            ix: point.ix,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -983,6 +1011,37 @@ mod tests {
         assert!(!prepared.points[1].present[1]);
         assert!(!prepared.points[2].present[0]);
         assert!(prepared.notice.is_some(), "zero-filled cells are said");
+    }
+
+    #[test]
+    fn a_rerun_keeps_each_series_in_its_place() {
+        let rows = |first: &str, second: &str| {
+            result(
+                vec![
+                    column("x", ColumnKind::Temporal),
+                    column("svc", ColumnKind::Text),
+                    column("y", ColumnKind::Numeric),
+                ],
+                vec![
+                    vec!["d1", first, "1"],
+                    vec!["d1", second, "10"],
+                    vec!["d2", "a", "2"],
+                ],
+            )
+        };
+        let spec = plot("line", Some("y"), Some("svc"));
+        let before = prepare(&spec, Some(&Ok(rows("a", "b"))));
+        // The database put b first this time: a keeps the first color.
+        let mut after = prepare(&spec, Some(&Ok(rows("b", "a"))));
+        assert_eq!(after.series_names, ["b", "a"]);
+        keep_series_order(&mut after, &before.series_names);
+        assert_eq!(after.series_names, ["a", "b"]);
+        assert_eq!(after.points[0].values, [10.0, 1.0]);
+        assert_eq!(after.points[1].present, [true, false]);
+        // A series new to the plot comes after the ones it had.
+        let mut grown = prepare(&spec, Some(&Ok(rows("c", "a"))));
+        keep_series_order(&mut grown, &["a".to_string()]);
+        assert_eq!(grown.series_names, ["a", "c"]);
     }
 
     #[test]

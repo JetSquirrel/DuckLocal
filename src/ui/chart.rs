@@ -236,7 +236,7 @@ impl ChartData {
             pie_skipped,
             geo,
             detected: Vec::new(),
-            notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
+            notice: crate::i18n::join_all(&notices),
         }
     }
 
@@ -582,10 +582,7 @@ pub(crate) fn map_notes(geo: &GeoData, cx: &App) -> (Option<String>, Vec<(Hsla, 
         .enumerate()
         .map(|(slot, name)| (geo.category_color(slot, cx), name.clone()))
         .collect();
-    (
-        (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
-        legend,
-    )
+    (crate::i18n::join_all(&notices), legend)
 }
 
 fn render_map(geo: Arc<GeoData>, cx: &App) -> AnyElement {
@@ -673,7 +670,7 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
     let notice = (data.pie_skipped > 0)
         .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
     let notice = match (data.notice.clone(), notice) {
-        (Some(a), Some(b)) => Some(format!("{a}{}{b}", crate::i18n::sep())),
+        (Some(a), Some(b)) => Some(crate::i18n::join(&a, &b)),
         (a, b) => a.or(b),
     };
     chart_frame(
