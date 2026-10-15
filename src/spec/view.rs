@@ -1254,7 +1254,7 @@ impl Dashboard {
         if failure.is_none() && self.is_pickable(&self.plots[ix].name) {
             let hint = tr("dashboard.filter.hint").to_string();
             notice = Some(match notice.take() {
-                Some(notice) => format!("{notice}{}{hint}", crate::i18n::sep()),
+                Some(notice) => crate::i18n::join(&notice, &hint),
                 None => hint,
             });
         }
@@ -1267,7 +1267,7 @@ impl Dashboard {
                     if let Some(geo) = &plot.geo {
                         let (notes, key) = map_notes(geo, cx);
                         notice = match (notice.take(), notes) {
-                            (Some(a), Some(b)) => Some(format!("{a}{}{b}", crate::i18n::sep())),
+                            (Some(a), Some(b)) => Some(crate::i18n::join(&a, &b)),
                             (a, b) => a.or(b),
                         };
                         legend = key;
@@ -1302,7 +1302,7 @@ impl Dashboard {
         // better, so a keyed line or bar plot leaves it out.
         let keyed_xy = !legend.is_empty() && !matches!(self.plots[ix].kind.as_str(), "pie" | "map");
         let subtitle = match (axes.filter(|_| !keyed_xy), notice) {
-            (Some(axes), Some(notice)) => Some(format!("{axes}{}{notice}", crate::i18n::sep())),
+            (Some(axes), Some(notice)) => Some(crate::i18n::join(&axes, &notice)),
             (axes, notice) => axes.or(notice),
         };
 
