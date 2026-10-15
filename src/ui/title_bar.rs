@@ -555,7 +555,7 @@ impl TitleBarView {
 }
 
 impl Render for TitleBarView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (target_label, opening, sidebar_collapsed) = {
             let state = self.state.read(cx);
             (
@@ -566,7 +566,10 @@ impl Render for TitleBarView {
         };
         let dark = cx.theme().mode.is_dark();
 
-        TitleBar::new().child(
+        // The bar keeps room for the macOS window buttons, which full screen
+        // hides; its own inset is left once they are gone.
+        let title_bar = TitleBar::new().when(window.is_fullscreen(), |this| this.pl_0());
+        title_bar.child(
             // One toolbar across the whole bar: it owns roving arrow-key
             // focus and the compact ghost look of every hosted button.
             Toolbar::new("title-bar-toolbar")

@@ -402,8 +402,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     // ── src/ui/workspace.rs ─────────────────────────────────────────────
     (
         "workspace.welcome_sql",
-        "SELECT '你好，DuckDB' AS greeting;",
-        "SELECT 'Hello, DuckDB' AS greeting;",
+        "SELECT '你好，DuckLocal' AS greeting;",
+        "SELECT 'Hello, DuckLocal' AS greeting;",
     ),
     ("workspace.tab.default_title", "查询 {}", "Query {}"),
     ("workspace.new_query", "新建查询", "New query"),
