@@ -100,7 +100,7 @@ impl CommentCard {
 
     fn render_thread(&self, thread: &Thread, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, primary) = (theme.muted_foreground, theme.primary);
+        let muted = theme.muted_foreground;
         let id = thread.id.clone();
         let resolved = thread.resolved;
         let picked = self.replying.as_deref() == Some(id.as_str());
@@ -109,10 +109,15 @@ impl CommentCard {
             .iter()
             .map(|comment| {
                 let agent = comment.author == Author::Agent;
+                // An agent by its own name, when its comment carries one.
+                let agent_name = comment
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| tr("dashboard.comments.agent").to_string());
                 let who = if agent {
-                    tr("dashboard.comments.agent")
+                    agent_name.clone()
                 } else {
-                    tr("dashboard.comments.you")
+                    tr("dashboard.comments.you").to_string()
                 };
                 // `2026-10-10T14:03:00+08:00` reads as `10-10 14:03`.
                 let at = comment
@@ -127,20 +132,11 @@ impl CommentCard {
                             .gap_1p5()
                             .items_center()
                             .text_xs()
-                            .child(
-                                div()
-                                    .size_4()
-                                    .flex_none()
-                                    .rounded_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(9.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.primary_foreground)
-                                    .bg(if agent { primary } else { theme.success })
-                                    .child(if agent { "AI" } else { "U" }),
-                            )
+                            .child(if agent {
+                                crate::ui::agent_avatar::agent_avatar(&agent_name, px(16.), cx)
+                            } else {
+                                crate::ui::agent_avatar::person_avatar(px(16.), cx)
+                            })
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
                             .child(div().text_color(muted).child(at)),
                     )

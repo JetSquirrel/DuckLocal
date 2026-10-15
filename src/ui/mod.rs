@@ -1,5 +1,6 @@
 //! UI layer: title bar, sidebar, workspace, results, chart, status bar.
 
+pub mod agent_avatar;
 pub mod chart;
 pub mod completion;
 pub mod geo;

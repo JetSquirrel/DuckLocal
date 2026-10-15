@@ -103,7 +103,7 @@ impl TabKind {
     pub fn glyph(self) -> AssetIcon {
         match self {
             TabKind::Query => AssetIcon::SquareTerminal,
-            TabKind::Dashboard => AssetIcon::LayoutDashboard,
+            TabKind::Dashboard => AssetIcon::ChartNoAxesColumn,
         }
     }
 }
@@ -1745,7 +1745,7 @@ impl Workspace {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
-                Icon::new(IconName::LayoutDashboard)
+                Icon::new(AssetIcon::ChartNoAxesColumn)
                     .small()
                     .text_color(cx.theme().muted_foreground),
             )
@@ -1786,7 +1786,7 @@ impl Workspace {
                     .outline()
                     .small()
                     .icon(if showing_source {
-                        AssetIcon::LayoutDashboard
+                        AssetIcon::ChartNoAxesColumn
                     } else {
                         AssetIcon::Code
                     })

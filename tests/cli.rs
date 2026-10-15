@@ -1349,6 +1349,37 @@ fn errors_say_what_to_do_next() {
 }
 
 #[test]
+fn presence_names_a_plot_about_to_be_added_only_when_editing() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("d.dash"),
+        r#"
+query "q" { sql = "SELECT 1 AS n" }
+plot "revenue" { type = "card" query = query.q }
+"#,
+    )
+    .unwrap();
+    // No window: delivered is false, which is not an error.
+    let out = s.object(&[
+        "presence",
+        "d.dash",
+        "--doing",
+        "editing",
+        "--plot",
+        "revenue,share",
+    ]);
+    assert_eq!(out["delivered"], false);
+    let error = s.error(
+        &[
+            "presence", "d.dash", "--doing", "reading", "--plot", "share",
+        ],
+        2,
+        "argument",
+    );
+    assert!(error["error"]["hint"].as_str().unwrap().contains("revenue"));
+}
+
+#[test]
 fn open_state_reads_a_running_window_and_never_starts_one() {
     let s = Sandbox::new();
     let output = s.run(&["open", "--help"], None);

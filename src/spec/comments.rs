@@ -32,6 +32,11 @@ pub enum Author {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Comment {
     pub author: Author,
+    /// Which agent wrote it — Claude, Codex, DeepSeek… — as `presence` names
+    /// it, for its avatar. Absent on the person's comments and on agents'
+    /// comments written before agents were named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub text: String,
     /// When it was written, RFC 3339 in local time.
     pub at: String,
@@ -115,6 +120,9 @@ impl Comments {
 fn comment(author: Author, text: &str) -> Comment {
     Comment {
         author,
+        // An agent's comment is written by its own command, whose
+        // environment says which agent it is.
+        name: (author == Author::Agent).then(super::presence::agent_name),
         text: text.trim().to_string(),
         at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
     }
