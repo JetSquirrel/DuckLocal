@@ -31,9 +31,36 @@ icon_assets!(
         ChartColumn,
         DatabasePlus,
         DatabaseX,
-        MessageSquare
+        MessageSquare,
+        ChartNoAxesColumn,
+        UserRound
     ]
 );
+
+/// The marks drawn as an agent's avatar (see `ui::agent_avatar` and
+/// `assets/agents/README.md`). Served at `agents/<name>.svg`.
+const AGENT_MARKS: &[(&str, &[u8])] = &[
+    (
+        "agents/claude.svg",
+        include_bytes!("../assets/agents/claude.svg"),
+    ),
+    (
+        "agents/openai.svg",
+        include_bytes!("../assets/agents/openai.svg"),
+    ),
+    (
+        "agents/deepseek.svg",
+        include_bytes!("../assets/agents/deepseek.svg"),
+    ),
+    (
+        "agents/gemini.svg",
+        include_bytes!("../assets/agents/gemini.svg"),
+    ),
+    (
+        "agents/cursor.svg",
+        include_bytes!("../assets/agents/cursor.svg"),
+    ),
+];
 
 /// The guide's duck, one pose per step, each with a `-dark` twin carrying a
 /// light halo (see `scripts/make-mascots.py`). Served at `mascot/<name>.png`.
@@ -61,12 +88,17 @@ mascots!(
     "duck-celebrate",
 );
 
-/// The default component bundle, plus [`ExtraIcons`] and the mascots.
+/// The default component bundle, plus [`ExtraIcons`], the mascots and the
+/// agent marks.
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, bytes)) = MASCOTS.iter().find(|(name, _)| *name == path) {
+        if let Some((_, bytes)) = MASCOTS
+            .iter()
+            .chain(AGENT_MARKS)
+            .find(|(name, _)| *name == path)
+        {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
         match ExtraIcons.load(path)? {
@@ -81,6 +113,7 @@ impl AssetSource for AppAssets {
         paths.extend(
             MASCOTS
                 .iter()
+                .chain(AGENT_MARKS)
                 .filter(|(name, _)| name.starts_with(path))
                 .map(|(name, _)| SharedString::from(*name)),
         );

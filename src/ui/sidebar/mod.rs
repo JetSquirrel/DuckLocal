@@ -310,7 +310,7 @@ impl Sidebar {
                 SchemaNodeKind::RecentDocument => m
                     .doc
                     .as_ref()
-                    .map(|_| gpui_kit::assets::IconName::LayoutDashboard),
+                    .map(|_| gpui_kit::assets::IconName::ChartNoAxesColumn),
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
                 SchemaNodeKind::View => Some(IconName::Eye.into()),
                 SchemaNodeKind::File | SchemaNodeKind::S3File => Some(IconName::File.into()),

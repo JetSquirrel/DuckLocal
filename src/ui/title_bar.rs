@@ -670,6 +670,10 @@ impl Render for TitleBarView {
                                     Language::Zh => "EN",
                                     Language::En => "中",
                                 })
+                                // One width for both labels: "EN" runs wider
+                                // than "中", and a button that resized on
+                                // every switch nudged its neighbours over.
+                                .w_6()
                                 .tooltip(tr("title_bar.toggle_language"))
                                 // Windows turns the title bar into an
                                 // HTCAPTION region; a mouse-down that GPUI
