@@ -47,6 +47,7 @@ Options:
   --run              Run the SQL once the tab is open and PATHs are attached
   --no-launch        Fail with kind not_running instead of starting a window
   --state            Open nothing: print what the window shows (see below)
+  --active           With --state: only the tab the person is looking at
 
 Output: {delivered, launched}. The window opens the request in its own
 session — its connection, attached data and history, not this command's —
@@ -57,7 +58,13 @@ With --state, nothing opens and no window starts: the output is what the
 running window shows — {database, attached, active_tab, tabs}: each query
 tab's SQL and result (columns, row count, the first 20 rows, or the error),
 and each dashboard's plots and the values its filters have picked. Exit 1 with kind not_running when no window is up, timeout when it
-does not answer within 5s. It takes no other option or PATH.
+does not answer within 5s.
+
+--state PATH keeps only the tabs showing that .dash file (exit 1 with kind
+not_open, and the open dashboards, when none does); --state --active keeps
+only the active tab. Either way `tabs` holds just those, `active_tab` is
+the active one's place among them (null when it is not one of them), and
+database and attached are reported as always.
 ";
 
 const OPEN_SPEC: &[FlagSpec] = &[
@@ -83,6 +90,10 @@ const OPEN_SPEC: &[FlagSpec] = &[
     },
     FlagSpec {
         name: "--state",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--active",
         takes_value: false,
     },
 ];
@@ -411,11 +422,19 @@ fn exchange_with(
     }
 }
 
+/// Which of the window's tabs `--state` reports.
+enum StateScope {
+    All,
+    /// The tabs showing this spec.
+    Path(PathBuf),
+    Active,
+}
+
 /// `ducklocal open --state`: what the running window shows. Never starts
 /// one — a fresh window has nothing to report.
-fn read_state(dir: &Path) -> Result<String, CliError> {
+fn read_state(dir: &Path, scope: &StateScope) -> Result<String, CliError> {
     match fetch_state(dir) {
-        Ok(state) => Ok(state.to_string()),
+        Ok(state) => narrow_state(state, scope).map(|state| state.to_string()),
         Err(Unreachable::NotRunning) => Err(CliError::failure(
             "not_running",
             "No DuckLocal window is running",
@@ -424,6 +443,54 @@ fn read_state(dir: &Path) -> Result<String, CliError> {
         Err(Unreachable::Timeout(message)) => Err(CliError::failure("timeout", message)),
         Err(Unreachable::Refused(message)) => Err(CliError::failure("refused", message)),
     }
+}
+
+/// The state with only the tabs `scope` names. An agent with one dashboard
+/// to follow should not have to wade through every tab a busy window holds.
+fn narrow_state(mut state: Value, scope: &StateScope) -> Result<Value, CliError> {
+    let keep: Box<dyn Fn(&Value) -> bool> = match scope {
+        StateScope::All => return Ok(state),
+        StateScope::Active => Box::new(|tab| tab["active"] == json!(true)),
+        StateScope::Path(path) => {
+            let wanted = canonical(path);
+            Box::new(move |tab| {
+                tab["path"]
+                    .as_str()
+                    .is_some_and(|open| canonical(Path::new(open)) == wanted)
+            })
+        }
+    };
+    let tabs = state["tabs"].as_array().cloned().unwrap_or_default();
+    let (kept, others): (Vec<Value>, Vec<Value>) = tabs.into_iter().partition(|tab| keep(tab));
+    if kept.is_empty() {
+        if let StateScope::Path(path) = scope {
+            let open: Vec<&str> = others
+                .iter()
+                .filter_map(|tab| tab["path"].as_str())
+                .collect();
+            let error = CliError::failure(
+                "not_open",
+                format!("The window has no tab showing {}", path.display()),
+            );
+            return Err(if open.is_empty() {
+                error.with_hint("No dashboard is open; open it with `ducklocal open PATH`")
+            } else {
+                error.with_hint(format!(
+                    "Open dashboards: {}; or open this one with `ducklocal open PATH`",
+                    open.join(", ")
+                ))
+            });
+        }
+    }
+    state["active_tab"] = json!(kept.iter().position(|tab| tab["active"] == json!(true)));
+    state["tabs"] = Value::Array(kept);
+    Ok(state)
+}
+
+/// A path as the filesystem resolves it, or as given when it does not exist:
+/// `/tmp/x` and `/private/tmp/x` are one file on macOS.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// `ducklocal open`.
@@ -437,6 +504,7 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
     let mut sql_file: Option<PathBuf> = None;
     let mut launch = true;
     let mut state = false;
+    let mut active = false;
     let cwd = std::env::current_dir().map_err(|e| CliError::failure("io", e))?;
     for arg in parse_args("open", args, OPEN_SPEC, &["--sql", "--title"])? {
         match arg {
@@ -450,6 +518,7 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
             Arg::Flag("--run", None) => request.run = true,
             Arg::Flag("--no-launch", None) => launch = false,
             Arg::Flag("--state", None) => state = true,
+            Arg::Flag("--active", None) => active = true,
             Arg::Positional(value) => {
                 // Joined rather than canonicalized: a pattern or a path that
                 // does not exist is the window's to report, and a pattern
@@ -465,16 +534,31 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
             }
         }
     }
+    if active && !state {
+        return Err(CliError::argument("--active narrows --state; add --state"));
+    }
     if state {
-        if args.len() > 1 {
-            return Err(CliError::argument(
-                "--state reads the window and opens nothing; it takes no other option or PATH",
-            ));
-        }
+        // What may come along: one spec to narrow to, or --active.
+        let opens_something = request.sql.is_some()
+            || sql_file.is_some()
+            || request.title.is_some()
+            || request.run
+            || !launch;
+        let scope = match (request.paths.as_slice(), active, opens_something) {
+            ([], false, false) => StateScope::All,
+            ([], true, false) => StateScope::Active,
+            ([path], false, false) => StateScope::Path(PathBuf::from(path)),
+            _ => {
+                return Err(CliError::argument(
+                    "--state reads the window and opens nothing; it takes one .dash PATH \
+                     or --active, and no other option",
+                ))
+            }
+        };
         let dir = data_dir().ok_or_else(|| {
             CliError::failure("not_running", "Cannot resolve the app data directory")
         })?;
-        return read_state(&dir);
+        return read_state(&dir, &scope);
     }
     if request.sql.is_some() && sql_file.is_some() {
         return Err(CliError::argument("Use --sql or --sql-file, not both"));
@@ -674,6 +758,45 @@ mod tests {
         let state = fetch_state(&dir).unwrap();
         assert_eq!(state["tabs"][0]["kind"], "query");
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn state_narrows_to_one_spec_or_the_active_tab() {
+        let dir = scratch("narrow");
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = dir.join("mine.dash");
+        std::fs::write(&spec, "").unwrap();
+        let state = json!({
+            "database": ":memory:",
+            "active_tab": 0,
+            "tabs": [
+                {"kind": "query", "active": true, "sql": "SELECT 1"},
+                {"kind": "dashboard", "active": false, "path": "/elsewhere/theirs.dash"},
+                {"kind": "dashboard", "active": false, "path": spec.display().to_string()},
+            ],
+        });
+
+        let all = narrow_state(state.clone(), &StateScope::All).unwrap();
+        assert_eq!(all, state);
+
+        let active = narrow_state(state.clone(), &StateScope::Active).unwrap();
+        assert_eq!(active["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(active["tabs"][0]["sql"], "SELECT 1");
+        assert_eq!(active["active_tab"], 0);
+        assert_eq!(active["database"], ":memory:");
+
+        let mine = narrow_state(state.clone(), &StateScope::Path(spec.clone())).unwrap();
+        assert_eq!(mine["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(mine["tabs"][0]["path"], spec.display().to_string());
+        assert_eq!(
+            mine["active_tab"],
+            Value::Null,
+            "the active tab is not this one"
+        );
+
+        let error = narrow_state(state, &StateScope::Path(dir.join("absent.dash"))).unwrap_err();
+        assert_eq!(error.kind, "not_open");
+        assert!(error.hint.unwrap().contains("/elsewhere/theirs.dash"));
     }
 
     #[test]
