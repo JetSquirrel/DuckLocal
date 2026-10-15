@@ -81,12 +81,107 @@ pub struct PreparedPlot {
     /// Whether `x` is a date or time column: its bands are points in time,
     /// in order, whose labels may be thinned — a category's never are.
     pub time_axis: bool,
+    /// A scatter over a numeric `x`: each point's x as a number, in the
+    /// order of `points` (ascending), for a linear x axis. `None` for every
+    /// other plot, whose x is bands.
+    pub x_values: Option<Arc<Vec<f64>>>,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
     /// names is not in the result. (The `check` command catches the second
     /// ahead of time; the database can still disagree at render time.)
     pub failure: Option<String>,
+}
+
+/// The most dots a scatter draws. Past it the points are thinned evenly
+/// along x, which keeps the cloud's shape, and the plot says so.
+pub(crate) const MAX_SCATTER_POINTS: usize = 4_000;
+
+/// A scatter over a numeric x: one point per row with a number for both x
+/// and y, sorted by x, each present in its own series only.
+fn scatter_points(
+    result: &QueryResult,
+    x_ix: usize,
+    y_ix: usize,
+    series_ix: Option<usize>,
+    base: PreparedPlot,
+) -> PreparedPlot {
+    let mut series: Vec<String> = Vec::new();
+    let mut series_total = 0usize;
+    let mut rows: Vec<(f64, f64, usize)> = Vec::new();
+    for row in &result.rows {
+        let (Some(x), Some(y)) = (
+            row.get(x_ix).and_then(|cell| parse_number(cell)),
+            row.get(y_ix).and_then(|cell| parse_number(cell)),
+        ) else {
+            continue;
+        };
+        let name = series_ix
+            .and_then(|ix| row.get(ix))
+            .cloned()
+            .unwrap_or_else(|| result.columns[y_ix].name.clone());
+        let s = match series.iter().position(|known| *known == name) {
+            Some(s) => s,
+            None => {
+                series_total += 1;
+                if series.len() >= MAX_SERIES {
+                    continue;
+                }
+                series.push(name);
+                series.len() - 1
+            }
+        };
+        rows.push((x, y, s));
+    }
+    if series.is_empty() {
+        series.push(result.columns[y_ix].name.clone());
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut notices = Vec::new();
+    if series_total > MAX_SERIES {
+        notices.push(trf(
+            "chart.notice.series_capped",
+            &[&MAX_SERIES.to_string(), &series_total.to_string()],
+        ));
+    }
+    let drawn = rows.len();
+    if drawn > MAX_SCATTER_POINTS {
+        let stride = drawn.div_ceil(MAX_SCATTER_POINTS);
+        rows = rows.into_iter().step_by(stride).collect();
+        notices.push(trf(
+            "dashboard.notice.scatter_thinned",
+            &[&rows.len().to_string(), &drawn.to_string()],
+        ));
+    }
+
+    let mut xs = Vec::with_capacity(rows.len());
+    let points = rows
+        .into_iter()
+        .enumerate()
+        .map(|(ix, (x, y, s))| {
+            xs.push(x);
+            let mut values = vec![0.0; series.len()];
+            let mut present = vec![false; series.len()];
+            values[s] = y;
+            present[s] = true;
+            Arc::new(PlotPoint {
+                band: SharedString::from(format_value(x)),
+                label: SharedString::from(format_value(y)),
+                values,
+                present,
+                ix,
+            })
+        })
+        .collect();
+    PreparedPlot {
+        label_name: result.columns[x_ix].name.clone(),
+        series_names: series,
+        points,
+        x_values: Some(Arc::new(xs)),
+        notice: (!notices.is_empty()).then(|| notices.join(" ")),
+        ..base
+    }
 }
 
 /// Prepare one plot from its query's result. `table` plots need no
@@ -112,6 +207,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         text: None,
         width: plot.width(),
         time_axis: false,
+        x_values: None,
         notice: None,
         failure,
     };
@@ -119,7 +215,10 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         return PreparedPlot {
             // A text panel without a title is its words alone, not its name.
             title: plot.title.clone().unwrap_or_default(),
-            text: plot.text.clone().map(SharedString::from),
+            text: plot
+                .text
+                .as_deref()
+                .map(|text| SharedString::from(dedent(text))),
             ..base(None)
         };
     }
@@ -162,9 +261,17 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             },
             None => None,
         };
+        // A year is a date, not a quantity: 2024, not 2,024.
+        let format = |cell: &str| {
+            if is_year_column(&result.columns[ix].name) {
+                cell.to_string()
+            } else {
+                group_thousands(cell)
+            }
+        };
         let (value, notice) = match result.rows.first() {
             Some(row) => (
-                group_thousands(row.get(ix).map(String::as_str).unwrap_or("")),
+                format(row.get(ix).map(String::as_str).unwrap_or("")),
                 (result.rows.len() > 1).then(|| {
                     trf(
                         "dashboard.card.first_row",
@@ -273,6 +380,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         Some(Ok(ix)) => Some(ix),
         None => None,
     };
+
+    // A scatter over numbers is points, not bands: a dot per row at its own
+    // (x, y) on a linear axis. Averaging the rows that share an x, as a
+    // line's bands do, would draw two birds of one flipper length as one dot
+    // that neither of them is.
+    if plot.kind == "scatter" && result.columns[x_ix].kind == ColumnKind::Numeric {
+        return scatter_points(result, x_ix, y_ix, series_ix, base(None));
+    }
 
     // First-appearance order for bands and series; duplicates average.
     let mut bands: Vec<String> = Vec::new();
@@ -471,6 +586,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         text: None,
         width: plot.width(),
         time_axis,
+        x_values: None,
         notice: (!notices.is_empty()).then(|| notices.join(crate::i18n::sep())),
         failure: None,
     }
@@ -536,6 +652,43 @@ fn day_of(band: &str) -> Option<chrono::NaiveDate> {
 /// grouped by thousands (`1859708` → `1,859,708`) and a long fraction rounded
 /// (see [`round_fraction`]), anything else — a date, a word, an exponent —
 /// exactly as the database wrote it.
+/// A text panel's words without the indentation every line shares: a
+/// heredoc indented to sit inside its block keeps it otherwise, on every line
+/// but the first.
+fn dedent(text: &str) -> String {
+    let lines: Vec<&str> = text.trim_matches('\n').lines().collect();
+    // The first line arrives trimmed — the heredoc's text starts at its first
+    // word — so the indentation to take off is the rest's.
+    let common = lines
+        .iter()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(ix, line)| {
+            let line = if ix == 0 {
+                line.trim_start()
+            } else {
+                line.get(common..).unwrap_or(line.trim_start())
+            };
+            line.trim_end()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether a column holds years by its name: `year`, `fiscal_year`,
+/// `year_built`, `yr`.
+fn is_year_column(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word == "year" || word == "yr")
+}
+
 fn group_thousands(cell: &str) -> String {
     let (sign, unsigned) = match cell.strip_prefix('-') {
         Some(rest) => ("-", rest),
@@ -549,6 +702,10 @@ fn group_thousands(cell: &str) -> String {
     if !digits(int) || frac.is_some_and(|f| !digits(f)) {
         return cell.to_string();
     }
+    // A lone `.0` is how DuckDB writes a whole DOUBLE — `round(x, 0)` comes
+    // back as `79455942.0` — and says nothing. A DECIMAL's `.00` is kept: it
+    // is a scale someone chose, as money's two places are.
+    let frac = frac.filter(|frac| *frac != "0");
     // Round first: rounding can carry into the integer part (`9.999` → `10`).
     let (int, frac) = match frac {
         Some(frac) => round_fraction(int, frac),
@@ -662,6 +819,43 @@ mod tests {
             elapsed_ms: 0,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn a_numeric_scatter_keeps_every_row_as_a_dot_in_x_order() {
+        let data = result(
+            vec![
+                column("x", ColumnKind::Numeric),
+                column("y", ColumnKind::Numeric),
+                column("kind", ColumnKind::Text),
+            ],
+            vec![
+                vec!["190", "3500", "Adelie"],
+                vec!["181", "3750", "Adelie"],
+                vec!["190", "4200", "Gentoo"],
+                vec!["NA", "4000", "Gentoo"],
+                vec!["190", "3900", "Adelie"],
+            ],
+        );
+        let prepared = prepare(&plot("scatter", Some("y"), Some("kind")), Some(&Ok(data)));
+        // Three birds share x = 190 and stay three dots; the row without a
+        // number for x is left out, not drawn at zero.
+        assert_eq!(
+            prepared.x_values.as_deref().map(Vec::as_slice),
+            Some([181., 190., 190., 190.].as_slice())
+        );
+        assert_eq!(prepared.series_names, ["Adelie", "Gentoo"]);
+        let drawn: Vec<(usize, f64)> = prepared
+            .points
+            .iter()
+            .map(|p| {
+                let s = p.present.iter().position(|present| *present).unwrap();
+                (s, p.values[s])
+            })
+            .collect();
+        assert_eq!(drawn[0], (0, 3750.));
+        assert_eq!(drawn.len(), 4);
+        assert!(prepared.notice.is_none());
     }
 
     #[test]
@@ -1045,6 +1239,15 @@ mod tests {
         // A float's noise is rounded away; a decimal's own digits are kept.
         assert_eq!(group_thousands("11439704.020000005"), "11,439,704.02");
         assert_eq!(group_thousands("12.50"), "12.50");
+        assert_eq!(group_thousands("79455942.0"), "79,455,942");
+        assert!(is_year_column("year") && is_year_column("Fiscal_Year"));
+        assert!(is_year_column("yr") && !is_year_column("yearly_total"));
+        assert_eq!(
+            dedent("Annual CO2.\n  Land use is out.\n"),
+            "Annual CO2.\nLand use is out."
+        );
+        assert_eq!(dedent("a\n    b\n      c"), "a\nb\n  c");
+        assert_eq!(group_thousands("12.00"), "12.00");
         assert_eq!(group_thousands("-0.000123456"), "-0.000123");
         assert_eq!(group_thousands("999999.999"), "1,000,000");
         assert_eq!(group_thousands("3.10000001"), "3.1");

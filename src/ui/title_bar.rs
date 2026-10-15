@@ -610,7 +610,12 @@ impl Render for TitleBarView {
                         // `dropdown_menu` wraps the Button in a popover that
                         // is not `Sizable`, so this trigger goes in as content
                         // and carries the toolbar's ghost/compact look by hand.
-                        .content(caption_exempt(self.render_open_menu(opening, cx))),
+                        .content(
+                            div()
+                                .relative()
+                                .child(caption_exempt(self.render_open_menu(opening, cx)))
+                                .child(crate::ui::tour::anchor(crate::ui::tour::Target::Open)),
+                        ),
                 )
                 .content(div().flex_1())
                 .content(
@@ -637,16 +642,27 @@ impl Render for TitleBarView {
                 .child(
                     ToolbarGroup::new("title-bar-window")
                         .gap_1()
-                        .child(
-                            Button::new("setup")
-                                .icon(IconName::Bot)
-                                .tooltip(tr("setup.title"))
-                                // Out of the Windows caption hit-test, like
-                                // "toggle-sidebar".
-                                .occlude()
-                                .on_click(|_, window, cx| {
-                                    crate::ui::setup_dialog::open(window, cx)
-                                }),
+                        // Content rather than a child: the guide's anchor
+                        // rides beside it, so the toolbar's look is set by
+                        // hand, as for "ui-size".
+                        .content(
+                            div()
+                                .relative()
+                                .child(
+                                    Button::new("setup")
+                                        .ghost()
+                                        .compact()
+                                        .xsmall()
+                                        .icon(IconName::Bot)
+                                        .tooltip(tr("setup.title"))
+                                        // Out of the Windows caption
+                                        // hit-test, like "toggle-sidebar".
+                                        .occlude()
+                                        .on_click(|_, window, cx| {
+                                            crate::ui::setup_dialog::open(window, cx)
+                                        }),
+                                )
+                                .child(crate::ui::tour::anchor(crate::ui::tour::Target::Ai)),
                         )
                         .child(
                             Button::new("toggle-language")
