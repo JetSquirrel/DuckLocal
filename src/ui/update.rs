@@ -1,20 +1,26 @@
-//! Checking GitHub for a newer release.
+//! Keeping DuckLocal up to date, from dl.ducklocal.app (see `updater`).
 //!
-//! The one request is the GitHub API's latest-release lookup, and it is only
-//! made when asked: a click on the version in the status bar, the menu's
-//! "Check for Updates…", or — once someone turns it on, like the online base
-//! map — at launch, the `update_check` setting being `on`. Nothing is
-//! downloaded or installed: a newer release shows in the status bar as a
-//! link to its download page.
+//! Nothing is fetched unless asked: a click on the version in the status bar,
+//! the menu's "Check for Updates…", or — once someone turns it on, like the
+//! online base map — at launch, the `update_check` setting being `on`.
+//!
+//! A check that finds a newer release goes on by itself, in the background:
+//! the package for this machine downloads with its progress in the status
+//! bar, is verified and staged beside the installed copy, and the status bar
+//! then offers "Restart to update". A copy that cannot be replaced in place
+//! offers the package's download link instead. Nothing replaces the running
+//! version until the person clicks restart, and every step that fails stops
+//! there, with the installed version untouched.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::{App, Global};
 
-/// Where a newer release is downloaded from.
-pub const RELEASES_URL: &str = "https://github.com/JetSquirrel/DuckLocal/releases/latest";
-const LATEST_API: &str = "https://api.github.com/repos/JetSquirrel/DuckLocal/releases/latest";
+use crate::updater::install::{self, Installation, Reason, Staged};
+use crate::updater::{download, manifest};
+
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -24,9 +30,41 @@ pub enum Status {
     Idle,
     Checking,
     UpToDate,
-    /// A newer release, by its tag (`v0.3.0`).
-    Available(String),
+    Downloading {
+        version: String,
+        done: u64,
+        total: u64,
+    },
+    /// Verifying the package and staging it beside the installed copy.
+    Preparing {
+        version: String,
+    },
+    /// Staged: a restart puts it in place.
+    Ready {
+        version: String,
+        staged: Staged,
+    },
+    /// Newer, but this copy cannot be replaced in place: its package's link.
+    Manual {
+        version: String,
+        url: String,
+        reason: Reason,
+    },
+    /// Newer, but the release has no package for this machine.
+    NoPackage {
+        version: String,
+    },
     Failed(String),
+}
+
+impl Status {
+    /// Work under way, which another check must not start over.
+    fn is_busy(&self) -> bool {
+        matches!(
+            self,
+            Status::Checking | Status::Downloading { .. } | Status::Preparing { .. }
+        )
+    }
 }
 
 #[derive(Default)]
@@ -76,20 +114,118 @@ pub fn on_launch(cx: &mut App) {
     }
 }
 
-/// Ask GitHub for the latest release, off the UI thread; every window
-/// redraws with the answer. A check in flight is not started twice.
+/// Look for a newer release and, when there is one, fetch and stage it —
+/// all off the UI thread; every window redraws as it goes. Work under way,
+/// or an update already staged, is not started over.
 pub fn check(cx: &mut App) {
-    if status(cx) == Status::Checking {
+    let current = status(cx);
+    if current.is_busy() || matches!(current, Status::Ready { .. }) {
         return;
     }
     set(Status::Checking, cx);
     cx.spawn(async move |cx| {
-        let status = match smol::unblock(latest_tag).await {
-            Ok(tag) if is_newer(&tag, CURRENT) => Status::Available(tag),
-            Ok(_) => Status::UpToDate,
+        let manifest = match smol::unblock(manifest::fetch).await {
+            Ok(manifest) => manifest,
             Err(error) => {
                 tracing::warn!("update check failed: {error:#}");
-                Status::Failed(error.to_string())
+                cx.update(|cx| set(Status::Failed(error.to_string()), cx));
+                return;
+            }
+        };
+        let version = manifest.version.clone();
+        if !is_newer(&version, CURRENT) {
+            cx.update(|cx| set(Status::UpToDate, cx));
+            return;
+        }
+        let Some(asset) = manifest.asset_here().cloned() else {
+            cx.update(|cx| set(Status::NoPackage { version }, cx));
+            return;
+        };
+        let installation = install::installation();
+        if let Installation::Manual(reason) = installation {
+            let url = asset.url.clone();
+            cx.update(|cx| {
+                set(
+                    Status::Manual {
+                        version,
+                        url,
+                        reason,
+                    },
+                    cx,
+                )
+            });
+            return;
+        }
+
+        // Download, with the bytes so far read off a counter twice a second.
+        let done = Arc::new(AtomicU64::new(0));
+        let total = asset.size;
+        cx.update(|cx| {
+            set(
+                Status::Downloading {
+                    version: version.clone(),
+                    done: 0,
+                    total,
+                },
+                cx,
+            )
+        });
+        let counter = done.clone();
+        let fetching = {
+            let asset = asset.clone();
+            smol::unblock(move || -> anyhow::Result<std::path::PathBuf> {
+                let dir = crate::updater::cache_dir()?;
+                let package = download::fetch(&asset, &dir, |bytes| {
+                    counter.store(bytes, Ordering::Relaxed)
+                })?;
+                download::prune(&dir, &package);
+                Ok(package)
+            })
+        };
+        let fetching = smol::spawn(fetching);
+        while !fetching.is_finished() {
+            smol::Timer::after(Duration::from_millis(500)).await;
+            let bytes = done.load(Ordering::Relaxed);
+            let version = version.clone();
+            cx.update(|cx| {
+                if matches!(status(cx), Status::Downloading { done, .. } if done != bytes) {
+                    set(
+                        Status::Downloading {
+                            version,
+                            done: bytes,
+                            total,
+                        },
+                        cx,
+                    );
+                }
+            });
+        }
+        let package = match fetching.await {
+            Ok(package) => package,
+            Err(error) => {
+                tracing::warn!("update download failed: {error:#}");
+                cx.update(|cx| set(Status::Failed(error.to_string()), cx));
+                return;
+            }
+        };
+
+        cx.update(|cx| {
+            set(
+                Status::Preparing {
+                    version: version.clone(),
+                },
+                cx,
+            )
+        });
+        let staging = {
+            let version = version.clone();
+            smol::unblock(move || install::stage(&package, &installation, &version))
+        };
+        let status = match staging.await {
+            Ok(staged) => Status::Ready { version, staged },
+            Err(error) => {
+                tracing::warn!("update not staged: {error:#}");
+                Status::Failed(format!("{error:#}"))
             }
         };
         cx.update(|cx| set(status, cx));
@@ -97,37 +233,24 @@ pub fn check(cx: &mut App) {
     .detach();
 }
 
+/// Put the staged version in place and quit; it opens once this process has
+/// exited. A swap that fails leaves the installed version where it was.
+pub fn restart(cx: &mut App) {
+    let Status::Ready { staged, .. } = status(cx) else {
+        return;
+    };
+    match install::apply(&staged) {
+        Ok(()) => cx.quit(),
+        Err(error) => {
+            tracing::warn!("update not applied: {error:#}");
+            set(Status::Failed(format!("{error:#}")), cx);
+        }
+    }
+}
+
 fn set(status: Status, cx: &mut App) {
     cx.default_global::<Update>().status = status;
     cx.refresh_windows();
-}
-
-fn latest_tag() -> anyhow::Result<String> {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    let agent = AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15)))
-            .user_agent(concat!(
-                "DuckLocal/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://ducklocal.app)"
-            ))
-            .build()
-            .into()
-    });
-    let body = agent
-        .get(LATEST_API)
-        .header("Accept", "application/vnd.github+json")
-        .call()?
-        .body_mut()
-        .with_config()
-        .limit(1024 * 1024)
-        .read_to_string()?;
-    let release: serde_json::Value = serde_json::from_str(&body)?;
-    release["tag_name"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("the latest release has no tag"))
 }
 
 /// Whether release `tag` is later than version `current`: numerically,

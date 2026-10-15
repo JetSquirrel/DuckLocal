@@ -13,6 +13,11 @@
 # (it holds a "-") — to latest/<name> as well. Versioned copies never change;
 # latest/ is revalidated every few minutes so a new release shows up soon.
 #
+# Then the release's metadata, last, so it never names a package that is not
+# there yet: <tag>/SHA256SUMS, <tag>/manifest.json (each package's platform,
+# URL, size and SHA-256), and — for a stable release — the same manifest as
+# latest.json, the feed DuckLocal's updater reads (src/updater/manifest.rs).
+#
 # Needs CLOUDFLARE_API_TOKEN (R2 Storage:Edit) and CLOUDFLARE_ACCOUNT_ID, or a
 # `wrangler login`. R2_BUCKET overrides the bucket name.
 set -eu
@@ -38,6 +43,25 @@ put() {
     --file "$2" --content-type "$3" --cache-control "$4"
 }
 
+sha256() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+# The platform a package is for, as Rust's std::env::consts say it, and its
+# format: "os arch format".
+platform() {
+  case "$1" in
+    ducklocal-macos-arm64.dmg) echo "macos aarch64 dmg" ;;
+    ducklocal-linux-x86_64.tar.gz) echo "linux x86_64 tar.gz" ;;
+    ducklocal-windows-x86_64.zip) echo "windows x86_64 zip" ;;
+    *) return 1 ;;
+  esac
+}
+
 for file in "$@"; do
   name=$(basename "$file")
   case "$name" in
@@ -52,3 +76,36 @@ for file in "$@"; do
     *) put "latest/$name" "$file" "$type" "public, max-age=300" ;;
   esac
 done
+
+meta=$(mktemp -d)
+sums="$meta/SHA256SUMS"
+assets=""
+for file in "$@"; do
+  name=$(basename "$file")
+  set -- $(platform "$name") || { echo "no platform for $name" >&2; exit 1; }
+  os=$1 arch=$2 format=$3
+  digest=$(sha256 "$file")
+  size=$(wc -c < "$file" | tr -d ' ')
+  min_os=""
+  [ "$os" = macos ] && min_os='"min_os": "12.0", '
+  printf '%s  %s\n' "$digest" "$name" >> "$sums"
+  assets="$assets${assets:+,
+}    {\"os\": \"$os\", \"arch\": \"$arch\", \"format\": \"$format\", $min_os\"url\": \"https://dl.ducklocal.app/$tag/$name\", \"size\": $size, \"sha256\": \"$digest\"}"
+done
+cat > "$meta/manifest.json" <<JSON
+{
+  "version": "${tag#v}",
+  "notes_url": "https://github.com/JetSquirrel/DuckLocal/releases/tag/$tag",
+  "assets": [
+$assets
+  ]
+}
+JSON
+put "$tag/SHA256SUMS" "$sums" text/plain "public, max-age=31536000, immutable"
+put "$tag/manifest.json" "$meta/manifest.json" application/json \
+  "public, max-age=31536000, immutable"
+case "$tag" in
+  *-*) ;;
+  *) put "latest.json" "$meta/manifest.json" application/json "public, max-age=300" ;;
+esac
+rm -rf "$meta"

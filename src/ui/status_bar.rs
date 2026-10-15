@@ -134,7 +134,9 @@ impl Render for StatusBarView {
 }
 
 /// DuckLocal's version, which checks for a newer one when clicked — and,
-/// once one is found, a link to its download page instead.
+/// once one is found, how its download is going and then a restart to
+/// install it, or for a copy that cannot be updated in place, its package's
+/// download link.
 fn update_status(cx: &App) -> AnyElement {
     use crate::ui::update::{self, Status, CURRENT};
     let version = format!("DuckLocal {CURRENT}");
@@ -150,15 +152,53 @@ fn update_status(cx: &App) -> AnyElement {
             .child(Spinner::new().xsmall())
             .child(tr("status_bar.update.checking"))
             .into_any_element(),
-        Status::Available(tag) => div()
-            .id("update-available")
+        Status::Downloading {
+            version,
+            done,
+            total,
+        } => {
+            let percent = (done.saturating_mul(100) / total.max(1)).min(100);
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(Spinner::new().xsmall())
+                .child(trf(
+                    "status_bar.update.downloading",
+                    &[&version, &percent.to_string()],
+                ))
+                .into_any_element()
+        }
+        Status::Preparing { version } => h_flex()
+            .gap_1p5()
+            .items_center()
+            .child(Spinner::new().xsmall())
+            .child(trf("status_bar.update.preparing", &[&version]))
+            .into_any_element(),
+        Status::Ready { version, .. } => div()
+            .id("update-ready")
             .cursor_pointer()
             .text_color(cx.theme().primary)
             .font_weight(FontWeight::MEDIUM)
-            .child(trf("status_bar.update.available", &[&tag]))
-            .tooltip(tooltip(update::RELEASES_URL.to_string()))
-            .on_click(|_, _, cx| cx.open_url(update::RELEASES_URL))
+            .child(trf("status_bar.update.ready", &[&version]))
+            .tooltip(tooltip(tr("status_bar.update.ready_hint").to_string()))
+            .on_click(|_, _, cx| update::restart(cx))
             .into_any_element(),
+        Status::Manual {
+            version,
+            url,
+            reason,
+        } => {
+            let hint = trf("status_bar.update.manual_hint", &[tr(reason.label_key())]);
+            div()
+                .id("update-manual")
+                .cursor_pointer()
+                .text_color(cx.theme().primary)
+                .font_weight(FontWeight::MEDIUM)
+                .child(trf("status_bar.update.manual", &[&version]))
+                .tooltip(tooltip(hint))
+                .on_click(move |_, _, cx| cx.open_url(&url))
+                .into_any_element()
+        }
         status => {
             let (label, hint) = match status {
                 Status::UpToDate => (
@@ -166,6 +206,14 @@ fn update_status(cx: &App) -> AnyElement {
                         "{version}{}{}",
                         crate::i18n::sep(),
                         tr("status_bar.update.latest")
+                    ),
+                    tr("status_bar.update.check").to_string(),
+                ),
+                Status::NoPackage { version: newer } => (
+                    format!(
+                        "{version}{}{}",
+                        crate::i18n::sep(),
+                        trf("status_bar.update.no_package", &[&newer])
                     ),
                     tr("status_bar.update.check").to_string(),
                 ),

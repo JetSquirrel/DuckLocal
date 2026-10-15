@@ -14,7 +14,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check-version:
+    # The tag names the release; Cargo.toml is the version the app reports
+    # and the updater compares against the feed. v0.2.3 shipped built as
+    # 0.2.2: a copy that calls itself older than its release would offer
+    # itself as an update forever. Nothing is built until they agree.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml
+        env:
+          TAG: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          cargo=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [ "${TAG#v}" != "$cargo" ]; then
+            echo "::error::the tag is $TAG but Cargo.toml says $cargo; bump Cargo.toml (and Cargo.lock) first"
+            exit 1
+          fi
+
   build-macos:
+    needs: check-version
     # bundle.sh ships a .app and package-macos.sh turns it into a signed,
     # notarized dmg: the one platform with an installer and a signature.
     runs-on: macos-14
@@ -95,6 +116,7 @@ jobs:
           path: ducklocal-macos-arm64.dmg
 
   build-linux:
+    needs: check-version
     # A tarball of the binary. Ubuntu 22.04 rather than latest, so the glibc
     # it links against is old enough for most current distributions. The
     # packages are the ones gpui-kit's own CI installs for its Linux build.
@@ -138,6 +160,7 @@ jobs:
           path: ducklocal-linux-x86_64.tar.gz
 
   build-windows:
+    needs: check-version
     # A zip of the executable. It is not code-signed — there is no Windows
     # certificate — so SmartScreen warns on first run.
     runs-on: windows-latest

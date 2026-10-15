@@ -30,6 +30,7 @@ mod spec;
 mod state;
 mod storage;
 mod ui;
+mod updater;
 #[cfg(windows)]
 mod windows;
 
