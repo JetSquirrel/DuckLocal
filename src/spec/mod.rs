@@ -199,6 +199,31 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             Err(message) => failures.push(located(message)),
         }
     }
+    // Nothing picked, every `$name` is TRUE and binds anywhere; a pick puts
+    // the filter's column there, and a query that cannot see it fails on the
+    // first click. Bound (not run) with a pick in place, so the check finds
+    // that before anyone clicks. Only for a column the picking plot's query
+    // returns — one it does not is the spec's mistake, said below.
+    let returns = |query: &str, column: &str| {
+        spec.queries
+            .iter()
+            .position(|q| q.name == query)
+            .and_then(|index| query_columns[index].as_ref())
+            .is_some_and(|columns| columns.iter().any(|(name, _)| name == column))
+    };
+    for (index, query) in spec.queries.iter().enumerate() {
+        if query_columns[index].is_none() {
+            continue;
+        }
+        let bind =
+            |sql: &str| describe(&connection, &source::expand(sql, &spec.sources, &base)).map(drop);
+        for message in unpickable(&spec, query, returns, bind) {
+            failures.push(format!(
+                "{}:{}: query {:?}: {message}",
+                path_display, query.line, query.name
+            ));
+        }
+    }
     if !failures.is_empty() && diagnostics.is_empty() {
         return Err(CliError::failure("sql", failures.join("\n")));
     }
@@ -366,6 +391,58 @@ pub(crate) fn names_a_missing_table(message: &str) -> bool {
         && message.contains("does not exist")
 }
 
+/// Each filter `query` names whose column it cannot see, as a message: the
+/// query bound by `bind` with that one filter picked. A filter names a column
+/// of the plot it is picked on, and the other queries must have one by the
+/// same name — a `CASE … AS payment` in the picking query is not a column the
+/// table it narrows has. The picking plot's own query sees TRUE (see
+/// `filter`), so it is never asked; nor is any query about a column that
+/// query does not return (`returns`: query, column), the spec's mistake.
+fn unpickable(
+    spec: &model::Spec,
+    query: &model::Query,
+    returns: impl Fn(&str, &str) -> bool,
+    bind: impl Fn(&str) -> Result<(), String>,
+) -> Vec<String> {
+    let mut named: Vec<String> = filter::placeholders(&query.sql)
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    named.sort();
+    named.dedup();
+    let mut problems = Vec::new();
+    for name in named {
+        let Some(picked) = spec.filters.iter().find(|f| f.name == name) else {
+            continue;
+        };
+        let Some(picking) = spec.plots.iter().find(|plot| plot.name == picked.plot) else {
+            continue;
+        };
+        if picking.query == query.name || !returns(&picking.query, &picked.column) {
+            continue;
+        }
+        // NULL picked: a predicate that binds for a column of any type, so
+        // only a missing column fails.
+        let pick = filter::Pick {
+            column: picked.column.clone(),
+            value: None,
+        };
+        let sql = filter::apply(
+            &query.sql,
+            &std::collections::HashMap::from([(name.clone(), pick)]),
+        );
+        if let Err(error) = bind(&sql) {
+            let reason = error.lines().next().unwrap_or_default().to_string();
+            problems.push(format!(
+                "${name} compares {:?}, picked on plot {:?}, and this query has \
+                 no such column, so a click fails it: {reason}",
+                picked.column, picked.plot
+            ));
+        }
+    }
+    problems
+}
+
 /// The columns a query returns, per DuckDB's own description of it.
 fn describe(connection: &duckdb::Connection, sql: &str) -> Result<Vec<(String, String)>, String> {
     let mut statement = connection
@@ -406,7 +483,60 @@ fn spec_error_all(file: &str, diagnostics: Vec<model::Diagnostic>) -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_query_sql;
+    use super::{model, unpickable, validate_query_sql};
+
+    #[test]
+    fn a_filter_column_the_narrowed_query_lacks_is_caught_before_a_click() {
+        let source = r#"
+query "kinds" {
+  sql = "SELECT CASE k WHEN 1 THEN 'a' ELSE 'b' END AS kind, count(*) AS n FROM t GROUP BY 1"
+}
+query "daily" {
+  sql = "SELECT d, count(*) AS n FROM t WHERE $kind AND $kind GROUP BY 1"
+}
+filter "kind" {
+  plot = plot.kinds
+}
+plot "kinds" {
+  type = "bar"
+  query = query.kinds
+  x = kind
+  y = n
+}
+plot "daily" {
+  type = "line"
+  query = query.daily
+  x = d
+  y = n
+}
+"#;
+        let (spec, diagnostics) = model::validate_partial(&model::parse(source).unwrap());
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let connection = duckdb::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE t AS SELECT 1 AS k, DATE '2024-01-01' AS d")
+            .unwrap();
+        let bind = |sql: &str| {
+            connection
+                .prepare(&format!("DESCRIBE {sql}"))
+                .map(drop)
+                .map_err(|e| e.to_string())
+        };
+        let query = |name: &str| spec.queries.iter().find(|q| q.name == name).unwrap();
+        // Named twice, said once; the picking plot's own query is not asked.
+        let returns = |query: &str, column: &str| query == "kinds" && column == "kind";
+        let problems = unpickable(&spec, query("daily"), returns, bind);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("\"kind\""), "{}", problems[0]);
+        assert!(unpickable(&spec, query("kinds"), returns, bind).is_empty());
+        // A column the picking query does not return is not asked about.
+        assert!(unpickable(&spec, query("daily"), |_: &str, _: &str| false, bind).is_empty());
+        // Once the table has the column, the pick binds.
+        connection
+            .execute_batch("ALTER TABLE t ADD COLUMN kind VARCHAR")
+            .unwrap();
+        assert!(unpickable(&spec, query("daily"), returns, bind).is_empty());
+    }
 
     #[test]
     fn a_dashboard_query_may_only_read() {
