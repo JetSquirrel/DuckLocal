@@ -23,15 +23,38 @@ Your data stays on your machine, and there is no account. The only optional netw
 
 ## Features
 
-- SQL editor with highlighting, autocompletion, formatting, and multiple tabs; run with Cmd+Enter on macOS or Ctrl+Enter on Windows/Linux, inspect plans with EXPLAIN, and Profile a query to see which operators took the time (EXPLAIN ANALYZE)
-- Schema sidebar: browse tables and columns, generate SELECTs, change a column's type; attach more DuckDB or SQLite databases beside the open one, kept across launches
-- Extensions tab: list, install, load and update DuckDB extensions
-- Results grid with filtering, copy, CSV/Parquet export, built-in charts, and an Overview tab that summarizes every column (nulls, distinct values, range, distribution)
-- Dashboards as `.dash` files: line, bar, area, scatter, pie and map plots, tables, cards with notes and tones, and text panels, with cross-filtering
-- On macOS, Parquet and DuckDB files open from Finder with a double-click, and Quick Look previews Parquet, DuckDB, CSV, TSV and JSON Lines files with the Space bar
-- A database file that will not open says why (a newer DuckDB, an old storage format, SQLite) and what to run instead; the status bar shows the oldest DuckDB that reads the open file and the release that wrote it
-- Query history, S3 via httpfs (session-only credentials)
-- Light and dark themes, four interface sizes, English and 简体中文
+### SQL Editor
+- Syntax highlighting, autocompletion, and formatting
+- Multiple tabs for concurrent queries
+- Run with `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux)
+- Query inspection with `EXPLAIN` and performance profiling with `EXPLAIN ANALYZE`
+
+### Data Exploration
+- **Schema sidebar**: browse tables/columns, generate SELECT statements, modify column types
+- **Results grid**: filtering, copy, CSV/Parquet export, and built-in visualization
+- **Overview tab**: column statistics (nulls, distinct values, range, distribution)
+- **Extensions tab**: manage DuckDB extensions (list, install, load, update)
+- **Query history**: recall and rerun previous queries
+
+### Dashboards
+Define `.dash` files with:
+- Charts: line, bar, area, scatter, pie, and map plots
+- Components: tables, metric cards with notes and tones, and text panels
+- Interactive cross-filtering
+
+### Platform Integration (macOS)
+- Double-click to open Parquet and DuckDB files from Finder
+- Quick Look previews for Parquet, DuckDB, CSV, TSV, and JSON Lines
+
+### Error Handling & Diagnostics
+- Clear error messages when database files won't open (wrong version, old format, SQLite)
+- Status bar shows DuckDB version compatibility info
+
+### User Experience
+- Light and dark themes
+- Four interface size options
+- Available in English and 简体中文
+- S3 support via httpfs (session-only credentials)
 
 ## CLI for agents
 

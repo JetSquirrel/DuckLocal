@@ -26,11 +26,12 @@ use crate::ui::sidebar::Sidebar;
 use crate::ui::title_bar::TitleBarView;
 use crate::ui::workspace::Workspace;
 
-/// Both tests drive the process-wide language setting, so they must not run
-/// at the same time.
+/// These tests drive the process-wide language setting, so they must not run
+/// at the same time, nor beside another test whose sidebar a switch would
+/// rebuild under it.
 static LANGUAGE_LOCK: Mutex<()> = Mutex::new(());
 
-fn language_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn language_guard() -> std::sync::MutexGuard<'static, ()> {
     LANGUAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 

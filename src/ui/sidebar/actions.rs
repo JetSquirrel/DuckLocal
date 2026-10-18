@@ -79,18 +79,22 @@ impl Sidebar {
         .detach();
     }
 
-    pub(super) fn confirm_remove_file(
+    pub(super) fn confirm_remove_files(
         &mut self,
-        file: FileRef,
+        files: Vec<FileRef>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let view = cx.entity().downgrade();
+        let title = match files.as_slice() {
+            [file] => trf("dialog.remove_file.title", &[&file.view_name]),
+            _ => trf("dialog.remove_files.title", &[&files.len().to_string()]),
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let on_ok_view = view.clone();
-            let on_ok_file = file.clone();
+            let on_ok_files = files.clone();
             alert
-                .title(trf("dialog.remove_file.title", &[&file.view_name]))
+                .title(title.clone())
                 .description(tr("dialog.remove_file.description"))
                 .button_props(
                     DialogButtonProps::default()
@@ -101,7 +105,7 @@ impl Sidebar {
                         .on_ok(move |_, window, cx| {
                             if let Some(view) = on_ok_view.upgrade() {
                                 view.update(cx, |this, cx| {
-                                    this.remove_file(on_ok_file.clone(), window, cx);
+                                    this.remove_files(on_ok_files.clone(), window, cx);
                                 });
                             }
                             true
@@ -110,21 +114,28 @@ impl Sidebar {
         });
     }
 
-    /// Remove from the registry and DROP the view, then refresh both lists.
-    fn remove_file(&mut self, file: FileRef, window: &mut Window, cx: &mut Context<Self>) {
+    /// Remove each file from the registry and DROP its view, then refresh
+    /// both lists. One that fails does not keep the rest.
+    fn remove_files(&mut self, files: Vec<FileRef>, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.clone();
         cx.spawn_in(window, async move |_, cx| {
-            let result = smol::unblock(move || -> anyhow::Result<()> {
-                crate::history::remove_attached_file(file.id)?;
-                crate::db::with_connection(|conn| {
-                    let quoted = file.view_name.replace('"', "\"\"");
-                    conn.execute_batch(&format!("DROP VIEW IF EXISTS \"{quoted}\""))?;
-                    Ok(())
-                })?;
-                Ok(())
+            let removed = smol::unblock(move || {
+                files
+                    .iter()
+                    .filter(|file| {
+                        let result = crate::history::remove_attached_file(file.id).and_then(|()| {
+                            crate::db::with_connection(|conn| {
+                                let quoted = file.view_name.replace('"', "\"\"");
+                                conn.execute_batch(&format!("DROP VIEW IF EXISTS \"{quoted}\""))?;
+                                Ok(())
+                            })
+                        });
+                        result.is_ok()
+                    })
+                    .count()
             })
             .await;
-            if result.is_ok() {
+            if removed > 0 {
                 let (catalog, attached) = smol::unblock(|| {
                     (
                         crate::schema::load_catalog().unwrap_or_default(),

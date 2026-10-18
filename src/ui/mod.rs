@@ -13,6 +13,8 @@ pub mod scale;
 pub mod scroll_bench;
 pub mod setup_dialog;
 pub mod sidebar;
+#[cfg(test)]
+mod sidebar_select_tests;
 pub mod status_bar;
 pub mod theme;
 pub mod tiles;

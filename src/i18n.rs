@@ -219,6 +219,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.menu.copy_table_info", "复制表信息", "Copy table info"),
     ("sidebar.menu.remove_recent", "从列表移除", "Remove from list"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
+    ("sidebar.file.remove_many", "从本地文件移除选中的 {} 个", "Remove {} selected from local files"),
     ("sidebar.menu.overview", "列概览", "Column overview"),
     ("sidebar.database.read_only", "只读", "read-only"),
     ("sidebar.database.use", "设为默认数据库", "Use as default database"),
@@ -234,6 +235,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "{} no longer exists; removed from recents",
     ),
     ("dialog.remove_file.title", "移除“{}”？", "Remove “{}”?"),
+    ("dialog.remove_files.title", "移除 {} 个文件？", "Remove {} files?"),
     (
         "dialog.remove_file.description",
         "将从本地文件注册表移除，并删除当前数据库中的视图；原始文件不受影响。",
@@ -867,12 +869,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "dashboard.source.show",
-        "查看 spec",
+        "查看源码",
         "View spec",
     ),
     (
         "dashboard.source.back",
-        "返回 dashboard",
+        "返回视图",
         "Back to dashboard",
     ),
     (
@@ -971,6 +973,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.sql.hide", "图表", "Chart"),
     ("dashboard.sql.show_tooltip", "查看这张图的 SQL", "Show this plot's SQL"),
     ("dashboard.sql.hide_tooltip", "回到图表", "Back to the plot"),
+    ("dashboard.maximize.tooltip", "放大这张图", "Enlarge this plot"),
+    (
+        "dashboard.restore_plot.tooltip",
+        "放回看板（Esc）",
+        "Back to the dashboard (Esc)",
+    ),
     ("dashboard.sql.copy", "复制", "Copy"),
     ("dashboard.sql.open", "在查询页打开", "Open in a query tab"),
     ("dashboard.table.copy_cell", "复制单元格", "Copy cell"),
