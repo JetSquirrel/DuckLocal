@@ -183,6 +183,11 @@ pub struct Dashboard {
     table_subscriptions: Vec<(EntityId, Subscription)>,
     /// The plots turned over to show their SQL, by plot name.
     sql_shown: HashSet<String>,
+    /// The plot blown up to fill the dashboard, by plot name; Esc or its
+    /// button puts it back on the grid.
+    maximized: Option<String>,
+    /// Takes Esc while a plot is blown up.
+    focus: FocusHandle,
     /// Each card's value size for this frame, by plot index: the smallest
     /// any card in its grid row needs, so a row of numbers reads as one.
     card_sizes: HashMap<usize, f32>,
@@ -257,6 +262,8 @@ impl Dashboard {
             plot_bounds: HashMap::new(),
             table_subscriptions: Vec::new(),
             sql_shown: HashSet::new(),
+            maximized: None,
+            focus: cx.focus_handle(),
             card_sizes: HashMap::new(),
             comments: Comments::default(),
             comments_error: None,
@@ -985,6 +992,26 @@ impl Dashboard {
                     cx.notify();
                 }
             }));
+        let is_max = self.maximized.as_deref() == Some(name.as_str());
+        let maximize = Button::new(("dashboard-maximize", ix))
+            .xsmall()
+            .ghost()
+            .icon(Icon::new(if is_max {
+                AssetIcon::Minimize2
+            } else {
+                AssetIcon::Maximize2
+            }))
+            .tooltip(if is_max {
+                tr("dashboard.restore_plot.tooltip")
+            } else {
+                tr("dashboard.maximize.tooltip")
+            })
+            .on_click(cx.listener({
+                let name = name.clone();
+                move |this, _, window, cx| {
+                    this.toggle_maximized(&name, window, cx);
+                }
+            }));
         // A text panel runs no query: there is no SQL to show.
         let has_sql = self.plots[ix].kind != "text";
         let comments = self.render_comment_button(ix, window, cx);
@@ -1017,7 +1044,67 @@ impl Dashboard {
                                 .bg(cx.theme().background)
                                 .child(toggle),
                         )
-                    }),
+                    })
+                    .child(
+                        hover_only(div(), is_max)
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().background)
+                            .child(maximize),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Blow plot `name` up to fill the dashboard, or put it back.
+    fn toggle_maximized(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.maximized.as_deref() == Some(name) {
+            self.maximized = None;
+        } else {
+            self.maximized = Some(name.to_string());
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// The blown-up plot's index; `None` once a reload drops it.
+    fn maximized_ix(&self) -> Option<usize> {
+        let name = self.maximized.as_deref()?;
+        self.plots.iter().position(|plot| plot.name == name)
+    }
+
+    /// The blown-up plot alone, as a card filling the dashboard.
+    fn render_maximized(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.plots[ix].kind == "card" {
+            let room = self
+                .wheel
+                .viewport()
+                .get()
+                .map(|viewport| viewport.size.width.as_f32() - CARD_PADDING - PAGE_GAP);
+            let size = card_value_size(self.plots[ix].card.as_deref().unwrap_or_default(), room);
+            self.card_sizes.insert(ix, size);
+        }
+        let boxed = self.plots[ix].kind != "text";
+        div()
+            .size_full()
+            .p(px(PAGE_GAP))
+            .child(
+                div()
+                    .size_full()
+                    .relative()
+                    .overflow_hidden()
+                    .when(boxed, |this| {
+                        this.bg(crate::ui::palette::panel(cx))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded(px(PANEL_RADIUS))
+                    })
+                    .child(self.render_plot(ix, window, cx))
+                    .children(self.render_plot_presence(ix, cx)),
             )
             .into_any_element()
     }
@@ -2018,6 +2105,8 @@ impl Render for Dashboard {
             self.render_source(window, cx)
         } else if let Some(error) = self.spec_error.clone() {
             self.render_spec_failure(error, cx)
+        } else if let Some(ix) = self.maximized_ix() {
+            self.render_maximized(ix, window, cx)
         } else if self.plots.is_empty() {
             // The first run has not landed yet: loading, not empty. A spec
             // that ran and has no plots is the empty state.
@@ -2186,6 +2275,13 @@ impl Render for Dashboard {
         v_flex()
             .size_full()
             .relative()
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.maximized.take().is_some() {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .bg(crate::ui::palette::page(cx))
             .text_color(cx.theme().foreground)
             .children(self.render_conflict_warning(cx))

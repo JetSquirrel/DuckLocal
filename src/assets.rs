@@ -33,7 +33,9 @@ icon_assets!(
         DatabaseX,
         MessageSquare,
         ChartNoAxesColumn,
-        UserRound
+        UserRound,
+        Maximize2,
+        Minimize2
     ]
 );
 

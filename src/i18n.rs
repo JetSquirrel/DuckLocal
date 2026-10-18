@@ -869,12 +869,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "dashboard.source.show",
-        "查看 spec",
+        "查看源码",
         "View spec",
     ),
     (
         "dashboard.source.back",
-        "返回 dashboard",
+        "返回视图",
         "Back to dashboard",
     ),
     (
@@ -973,6 +973,12 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.sql.hide", "图表", "Chart"),
     ("dashboard.sql.show_tooltip", "查看这张图的 SQL", "Show this plot's SQL"),
     ("dashboard.sql.hide_tooltip", "回到图表", "Back to the plot"),
+    ("dashboard.maximize.tooltip", "放大这张图", "Enlarge this plot"),
+    (
+        "dashboard.restore_plot.tooltip",
+        "放回看板（Esc）",
+        "Back to the dashboard (Esc)",
+    ),
     ("dashboard.sql.copy", "复制", "Copy"),
     ("dashboard.sql.open", "在查询页打开", "Open in a query tab"),
     ("dashboard.table.copy_cell", "复制单元格", "Copy cell"),
