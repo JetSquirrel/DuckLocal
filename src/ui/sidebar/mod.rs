@@ -9,6 +9,7 @@
 //! src/ui/sidebar/s3.rs       the lazy S3 browse tree and its async loads
 //! src/ui/sidebar/tree.rs     catalog + files + S3, as TreeItems
 //! src/ui/sidebar/actions.rs  refresh, remove-file, alter-type actions
+//! src/ui/sidebar/selection.rs  files picked together with Shift/Cmd+click
 //! src/ui/sidebar/extensions.rs  the 扩展 page
 //! ```
 
@@ -16,6 +17,7 @@ mod actions;
 mod extensions;
 mod model;
 mod s3;
+mod selection;
 mod sql;
 mod tree;
 
@@ -46,6 +48,7 @@ use crate::ui::workspace::Workspace;
 use self::extensions::ExtensionList;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
+use self::selection::FileSelection;
 use self::sql::{
     overview_sql, select_column_sql, select_s3_file_sql, select_star_sql, table_info_text,
 };
@@ -73,6 +76,8 @@ pub struct Sidebar {
     /// A schema reload is in flight; the refresh button shows loading and
     /// repeat clicks are ignored until it finishes.
     refreshing_schema: bool,
+    /// Local files picked together with Shift or Cmd+click, for one remove.
+    file_selection: FileSelection,
     extensions: ExtensionList,
     /// The extension an install, load or update is running for; every
     /// extension button waits while one is.
@@ -148,6 +153,7 @@ impl Sidebar {
             s3_browse,
             recents: Rc::new(crate::recents::list()),
             refreshing_schema: false,
+            file_selection: FileSelection::default(),
             extensions: ExtensionList::NotLoaded,
             extension_busy: None,
             tree_language: crate::i18n::current(),
@@ -167,10 +173,72 @@ impl Sidebar {
             self.s3_browse.as_ref(),
         );
         self.node_meta = Rc::new(meta);
+        let order: Vec<i64> = attached_files.iter().map(|file| file.id).collect();
+        self.file_selection.retain(&order);
         self.tree_language = crate::i18n::current();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
         });
+    }
+
+    /// The registered files' ids, in the order the list shows them.
+    fn file_order(&self, cx: &App) -> Vec<i64> {
+        self.state
+            .read(cx)
+            .attached_files
+            .iter()
+            .map(|file| file.id)
+            .collect()
+    }
+
+    fn click_file(&mut self, id: i64, shift: bool, toggle: bool, cx: &mut Context<Self>) {
+        let order = self.file_order(cx);
+        self.file_selection.click(id, &order, shift, toggle);
+        // The tree draws its own one selected row over whatever the row
+        // asks for: keep it on the file just clicked, or on none when that
+        // click dropped it.
+        let row = SharedString::from(format!("file:{id}"));
+        let picked = self.file_selection.contains(id);
+        self.tree_state.update(cx, |tree, cx| {
+            let ix = tree.index_of(&row).filter(|_| picked);
+            tree.set_selected_index(ix, cx);
+        });
+        cx.notify();
+    }
+
+    fn clear_file_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.file_selection.is_empty() {
+            self.file_selection.clear();
+            cx.notify();
+        }
+    }
+
+    /// Ask to remove file `id`, and with it every file picked beside it.
+    fn confirm_remove_files_from(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let targets = self.file_selection.targets(id, &self.file_order(cx));
+        let files: Vec<_> = targets
+            .iter()
+            .filter_map(|id| {
+                self.node_meta
+                    .get(&SharedString::from(format!("file:{id}")))
+                    .and_then(|meta| meta.file.clone())
+            })
+            .collect();
+        if !files.is_empty() {
+            self.confirm_remove_files(files, window, cx);
+        }
+    }
+
+    /// The picked files' ids, in list order, and the tree's own selected row.
+    #[cfg(test)]
+    pub(crate) fn picked_files(&self, cx: &App) -> (Vec<i64>, Option<usize>) {
+        let order = self.file_order(cx);
+        let picked = order
+            .iter()
+            .copied()
+            .filter(|id| self.file_selection.contains(*id))
+            .collect();
+        (picked, self.tree_state.read(cx).selected_index())
     }
 
     /// The label of the tree row at `ix`, as the tree would draw it.
@@ -282,7 +350,17 @@ impl Sidebar {
             .s3_config
             .as_ref()
             .map(|config| config.endpoint.clone());
+        // What the rows draw and count from; a click re-renders with the new one.
+        let order = self.file_order(cx);
+        let picked: Rc<Vec<i64>> = Rc::new(
+            order
+                .iter()
+                .copied()
+                .filter(|id| self.file_selection.contains(*id))
+                .collect(),
+        );
         let menu = RowMenu {
+            picked: picked.clone(),
             meta: meta.clone(),
             sidebar: sidebar.clone(),
             workspace: workspace.clone(),
@@ -350,8 +428,43 @@ impl Sidebar {
                 || removable_doc.is_some()
                 || file.is_some();
             let detail = node_meta.and_then(|m| m.detail.clone());
+            // The tree marks only its own selected row, and overrides
+            // `selected` with it: the other picked files take the same
+            // background themselves.
+            let file_id = file.as_ref().map(|file| file.id);
+            let also_picked = !selected && file_id.is_some_and(|id| picked.contains(&id));
+            let remove_count = match file_id {
+                Some(id) if picked.contains(&id) => picked.len(),
+                _ => 1,
+            };
             ListItem::new(ix)
                 .selected(selected)
+                .when(also_picked, |this| {
+                    this.bg(if cx.theme().list.active_highlight {
+                        cx.theme().list_active
+                    } else {
+                        cx.theme().accent
+                    })
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let sidebar = sidebar.clone();
+                    move |event, _, cx| {
+                        let Some(sidebar) = sidebar.upgrade() else {
+                            return;
+                        };
+                        let shift = event.modifiers.shift;
+                        let toggle = event.modifiers.secondary();
+                        sidebar.update(cx, |this, cx| match file_id {
+                            Some(id) => this.click_file(id, shift, toggle, cx),
+                            None => this.clear_file_selection(cx),
+                        });
+                        // A Shift or Cmd+click picks; it does not also open
+                        // the file's columns the way a plain click does.
+                        if file_id.is_some() && (shift || toggle) {
+                            cx.stop_propagation();
+                        }
+                    }
+                })
                 .pl(INDENT_PER_DEPTH * entry.depth() + px(12.))
                 .child(
                     h_flex()
@@ -512,6 +625,11 @@ impl Sidebar {
                                         .gap_1()
                                         .opacity(0.)
                                         .group_hover(group_name, |style| style.opacity(1.))
+                                        // A press on a button is not a click on
+                                        // the row: it keeps the files picked.
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx: &mut App| {
+                                            cx.stop_propagation()
+                                        })
                                         .on_click(|_, _, cx: &mut App| cx.stop_propagation())
                                         .when(is_s3_root, |this| {
                                             let sidebar = sidebar.clone();
@@ -599,14 +717,14 @@ impl Sidebar {
                                                     .ghost()
                                                     .xsmall()
                                                     .icon(IconName::Close)
-                                                    .tooltip(tr("sidebar.file.remove"))
+                                                    .tooltip(remove_label(remove_count))
                                                     .on_click({
                                                         let sidebar = sidebar.clone();
                                                         move |_, window, cx| {
                                                             if let Some(sidebar) = sidebar.upgrade() {
                                                                 sidebar.update(cx, |this, cx| {
-                                                                    this.confirm_remove_file(
-                                                                        file.clone(),
+                                                                    this.confirm_remove_files_from(
+                                                                        file.id,
                                                                         window,
                                                                         cx,
                                                                     );
@@ -631,6 +749,8 @@ impl Sidebar {
 /// What a schema row's context menu needs: the row's metadata and handles
 /// to act on.
 struct RowMenu {
+    /// The files picked together, in list order.
+    picked: Rc<Vec<i64>>,
     meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
     sidebar: WeakEntity<Sidebar>,
     workspace: Entity<Workspace>,
@@ -791,19 +911,34 @@ impl RowMenu {
         }
         if let Some(file) = meta.file.clone() {
             let sidebar = self.sidebar.clone();
+            let count = if self.picked.contains(&file.id) {
+                self.picked.len()
+            } else {
+                1
+            };
             menu = menu.separator().item(
-                PopupMenuItem::new(tr("sidebar.file.remove"))
+                PopupMenuItem::new(remove_label(count))
                     .icon(IconName::Close)
                     .on_click(move |_, window, cx| {
                         if let Some(sidebar) = sidebar.upgrade() {
                             sidebar.update(cx, |this, cx| {
-                                this.confirm_remove_file(file.clone(), window, cx)
+                                this.confirm_remove_files_from(file.id, window, cx)
                             });
                         }
                     }),
             );
         }
         menu
+    }
+}
+
+/// What the remove action on a file row says: the picked files' count when
+/// it takes more than the one.
+fn remove_label(count: usize) -> SharedString {
+    if count > 1 {
+        trf("sidebar.file.remove_many", &[&count.to_string()]).into()
+    } else {
+        tr("sidebar.file.remove").into()
     }
 }
 

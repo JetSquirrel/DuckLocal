@@ -219,6 +219,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.menu.copy_table_info", "复制表信息", "Copy table info"),
     ("sidebar.menu.remove_recent", "从列表移除", "Remove from list"),
     ("sidebar.file.remove", "从本地文件移除", "Remove from local files"),
+    ("sidebar.file.remove_many", "从本地文件移除选中的 {} 个", "Remove {} selected from local files"),
     ("sidebar.menu.overview", "列概览", "Column overview"),
     ("sidebar.database.read_only", "只读", "read-only"),
     ("sidebar.database.use", "设为默认数据库", "Use as default database"),
@@ -234,6 +235,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "{} no longer exists; removed from recents",
     ),
     ("dialog.remove_file.title", "移除“{}”？", "Remove “{}”?"),
+    ("dialog.remove_files.title", "移除 {} 个文件？", "Remove {} files?"),
     (
         "dialog.remove_file.description",
         "将从本地文件注册表移除，并删除当前数据库中的视图；原始文件不受影响。",
