@@ -1,6 +1,9 @@
-//! The registered files picked together in the sidebar, so one remove takes
+//! What is picked in the sidebar. Registered files, so one remove takes
 //! them all: a click picks one file, Shift+click the run from the last
-//! picked to here, Cmd+click (Ctrl elsewhere) adds or drops one.
+//! picked to here, Cmd+click (Ctrl elsewhere) adds or drops one. And the
+//! ticked columns of one table, which the editor selects.
+
+use super::model::TableRef;
 
 /// File ids, in the order they were picked, and the file a Shift+click
 /// measures its run from.
@@ -81,9 +84,58 @@ impl FileSelection {
     }
 }
 
+/// Columns ticked in the sidebar, all of one table: ticking a column of
+/// another table starts over there.
+#[derive(Default, Clone)]
+pub(super) struct ColumnPick {
+    table: Option<TableRef>,
+    /// In the table's column order, whatever order they were ticked in.
+    names: Vec<String>,
+}
+
+impl ColumnPick {
+    /// Tick or untick column `name` of `table`; `order` is the table's
+    /// columns as the catalog lists them.
+    pub(super) fn toggle(&mut self, table: &TableRef, name: &str, order: &[String]) {
+        if self.table.as_ref() != Some(table) {
+            self.table = Some(table.clone());
+            self.names.clear();
+        }
+        if let Some(at) = self.names.iter().position(|x| x == name) {
+            self.names.remove(at);
+        } else {
+            self.names.push(name.to_string());
+            let rank = |x: &String| order.iter().position(|o| o == x).unwrap_or(usize::MAX);
+            self.names.sort_by_key(rank);
+        }
+    }
+
+    pub(super) fn contains(&self, table: &TableRef, name: &str) -> bool {
+        self.table.as_ref() == Some(table) && self.names.iter().any(|x| x == name)
+    }
+
+    /// The table the ticks are in, with its ticked columns.
+    pub(super) fn picked(&self) -> Option<(&TableRef, Vec<&str>)> {
+        let table = self.table.as_ref()?;
+        Some((table, self.names.iter().map(String::as_str).collect()))
+    }
+
+    /// Forget ticks on columns `exists` no longer finds.
+    pub(super) fn retain(&mut self, exists: impl Fn(&TableRef, &str) -> bool) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        self.names.retain(|name| exists(table, name));
+        if self.names.is_empty() {
+            self.table = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FileSelection;
+    use super::{ColumnPick, FileSelection};
+    use crate::ui::sidebar::model::TableRef;
 
     const ORDER: [i64; 5] = [10, 11, 12, 13, 14];
 
@@ -145,5 +197,54 @@ mod tests {
         assert_eq!(s.targets(11, &[11, 13, 14]), [11]);
         s.retain(&[]);
         assert!(s.is_empty());
+    }
+
+    fn table(name: &str) -> TableRef {
+        TableRef {
+            database: "memory".to_string(),
+            schema: "main".to_string(),
+            name: name.to_string(),
+            is_view: false,
+        }
+    }
+
+    fn columns(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn ticked_columns_keep_the_tables_order() {
+        let order = columns(&["id", "name", "total"]);
+        let mut pick = ColumnPick::default();
+        pick.toggle(&table("orders"), "total", &order);
+        pick.toggle(&table("orders"), "id", &order);
+        let (_, names) = pick.picked().unwrap();
+        assert_eq!(names, ["id", "total"]);
+        pick.toggle(&table("orders"), "total", &order);
+        assert!(!pick.contains(&table("orders"), "total"));
+        assert!(pick.contains(&table("orders"), "id"));
+    }
+
+    #[test]
+    fn a_tick_in_another_table_starts_over() {
+        let mut pick = ColumnPick::default();
+        pick.toggle(&table("orders"), "id", &columns(&["id"]));
+        pick.toggle(&table("users"), "email", &columns(&["email"]));
+        let (picked_table, names) = pick.picked().unwrap();
+        assert_eq!(picked_table.name, "users");
+        assert_eq!(names, ["email"]);
+        assert!(!pick.contains(&table("orders"), "id"));
+    }
+
+    #[test]
+    fn dropped_columns_leave_the_pick() {
+        let order = columns(&["id", "total"]);
+        let mut pick = ColumnPick::default();
+        pick.toggle(&table("orders"), "id", &order);
+        pick.toggle(&table("orders"), "total", &order);
+        pick.retain(|_, name| name == "total");
+        assert_eq!(pick.picked().unwrap().1, ["total"]);
+        pick.retain(|_, _| false);
+        assert!(pick.picked().is_none());
     }
 }

@@ -626,3 +626,27 @@ fn connections_never_install_extensions_on_their_own() {
     assert_eq!(setting(&ours, "autoinstall_known_extensions"), "false");
     assert_eq!(setting(&ours, "autoload_known_extensions"), "true");
 }
+
+/// DuckDB autoloads ICU while binding the statement that needs it, and that
+/// statement then cannot bind the functions ICU overloads (the error names
+/// a wrong function, a different one from run to run); the next statement
+/// can. `db::preload_extensions` loads ICU first, so the first one works
+/// too. Skipped where ICU is not installed, as on CI.
+#[test]
+fn a_preloaded_icu_formats_a_converted_timestamp_first_time() {
+    let sql = "SELECT strftime(TIMESTAMP '2026-10-20 01:02:03' AT TIME ZONE 'UTC', '%m-%d')";
+    let installed: bool = mem()
+        .query_row(
+            "SELECT count(*) > 0 FROM duckdb_extensions() WHERE extension_name = 'icu' AND installed",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    if !installed {
+        return;
+    }
+    let preloaded = mem();
+    crate::db::preload_extensions(&preloaded);
+    let formatted: String = preloaded.query_row(sql, [], |r| r.get(0)).unwrap();
+    assert_eq!(formatted, "10-20");
+}

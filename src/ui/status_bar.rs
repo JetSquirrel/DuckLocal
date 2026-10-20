@@ -150,14 +150,31 @@ fn update_status(cx: &App) -> AnyElement {
             .child(Spinner::new().xsmall())
             .child(tr("status_bar.update.checking"))
             .into_any_element(),
-        Status::Available(tag) => div()
-            .id("update-available")
+        Status::Downloading(tag) => h_flex()
+            .gap_1p5()
+            .items_center()
+            .child(Spinner::new().xsmall())
+            .child(trf("status_bar.update.downloading", &[&tag]))
+            .into_any_element(),
+        Status::Ready(tag) => div()
+            .id("update-ready")
             .cursor_pointer()
             .text_color(cx.theme().primary)
             .font_weight(FontWeight::MEDIUM)
+            .child(trf("status_bar.update.restart", &[&tag]))
+            .tooltip(tooltip(tr("status_bar.update.restart_hint").to_string()))
+            .on_click(|_, _, cx| update::restart(cx))
+            .into_any_element(),
+        Status::Available { tag, url } => div()
+            .id("update-available")
+            .text_color(cx.theme().primary)
+            .font_weight(FontWeight::MEDIUM)
             .child(trf("status_bar.update.available", &[&tag]))
-            .tooltip(tooltip(update::RELEASES_URL.to_string()))
-            .on_click(|_, _, cx| cx.open_url(update::RELEASES_URL))
+            .when_some(url, |this, url| {
+                this.cursor_pointer()
+                    .tooltip(tooltip(url.clone()))
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+            })
             .into_any_element(),
         status => {
             let (label, hint) = match status {

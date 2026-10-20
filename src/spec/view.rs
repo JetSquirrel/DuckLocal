@@ -1595,8 +1595,9 @@ impl Dashboard {
                         DataTable::new(&table)
                             .small()
                             .stripe(overflows)
-                            .scrollbar_visible(true, true),
+                            .scrollbar_visible(true, false),
                     )
+                    .child(crate::ui::results::horizontal_scrollbar(&table, cx))
                     .child(
                         canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
                             .absolute()

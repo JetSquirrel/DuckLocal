@@ -148,6 +148,11 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     // a database the check was not given: it is listed as `unresolved`, not
     // failed, and its plots' columns go unchecked.
     let mut query_columns: Vec<Option<Vec<(String, String)>>> = vec![None; spec.queries.len()];
+    // Rows each query returned with nothing picked, and whether the row
+    // budget cut them off. A query that runs and returns nothing — a regex
+    // that matches no line, a join on the wrong key — passes every other
+    // test, so it is reported as `empty`.
+    let mut query_rows: Vec<Option<(usize, bool)>> = vec![None; spec.queries.len()];
     let mut unresolved = Vec::new();
     let base = source::base_of(&file);
     let connection = crate::cli::open(database.clone(), false)?;
@@ -183,7 +188,9 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         let sql = source::expand(&filter::neutral(&query.sql), &spec.sources, &base);
         let outcome = describe(&connection, &sql).and_then(|columns| {
             match crate::query::run_of(&connection, &sql) {
-                Ok(crate::query::QueryOutcome::Rows(_)) => Ok(columns),
+                Ok(crate::query::QueryOutcome::Rows(result)) => {
+                    Ok((columns, result.row_count(), result.truncated))
+                }
                 Ok(crate::query::QueryOutcome::Affected { .. }) => {
                     Err("returns no rows to plot".to_string())
                 }
@@ -191,7 +198,10 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             }
         });
         match outcome {
-            Ok(columns) => query_columns[index] = Some(columns),
+            Ok((columns, rows, truncated)) => {
+                query_columns[index] = Some(columns);
+                query_rows[index] = Some((rows, truncated));
+            }
             Err(message) if database.is_none() && names_a_missing_table(&message) => {
                 unresolved
                     .push(json!({"query": query.name, "line": query.line, "reason": message}));
@@ -265,9 +275,23 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         return Err(error);
     }
 
-    // After an edit the question is only whether it passed: counts, and the
+    let empty: Vec<serde_json::Value> = spec
+        .queries
+        .iter()
+        .zip(&query_rows)
+        .filter(|(_, rows)| matches!(rows, Some((0, _))))
+        .map(|(q, _)| {
+            json!({
+                "query": q.name,
+                "line": q.line,
+                "message": "returns no rows with nothing picked",
+            })
+        })
+        .collect();
+
+    // After an edit the question is only whether it passed: counts, the
     // queries it could not run, whose plots went unchecked — passing says
-    // nothing about those.
+    // nothing about those — and the ones that ran and came back empty.
     if summary {
         return Ok(json!({
             "file": path_display,
@@ -277,6 +301,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "filters": spec.filters.len(),
             "plots": spec.plots.len(),
             "unresolved": unresolved.iter().map(|u| &u["query"]).collect::<Vec<_>>(),
+            "empty": empty.iter().map(|e| &e["query"]).collect::<Vec<_>>(),
         })
         .to_string());
     }
@@ -295,6 +320,14 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
                 entry["columns"] = json!(columns.iter().map(|(name, ty)| {
                     json!({"name": name, "type": ty})
                 }).collect::<Vec<_>>());
+            }
+            if let Some((rows, truncated)) = query_rows[index] {
+                entry["rows"] = json!(rows);
+                // The dashboard stops at the same budget: `rows` is what it
+                // shows, not what the query would return.
+                if truncated {
+                    entry["truncated"] = json!(true);
+                }
             }
             entry
         }).collect::<Vec<_>>(),
@@ -334,6 +367,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         })).collect::<Vec<_>>(),
         "database": database.as_ref().map(|p| p.display().to_string()),
         "unresolved": unresolved,
+        "empty": empty,
     })
     .to_string())
 }

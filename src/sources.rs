@@ -168,7 +168,7 @@ fn add_file(path: String, sources: &mut Sources, seen: &mut BTreeSet<String>) {
 /// Whether `path` is a pattern to expand here. Only `*` and `?` are patterns;
 /// the shell normally expands them before DuckLocal starts, so this matters
 /// for the quoted form (`ducklocal './data/*.csv'`) and for dropped paths.
-fn is_pattern(path: &str) -> bool {
+pub(crate) fn is_pattern(path: &str) -> bool {
     path.contains('*') || path.contains('?')
 }
 

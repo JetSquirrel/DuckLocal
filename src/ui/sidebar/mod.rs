@@ -9,7 +9,7 @@
 //! src/ui/sidebar/s3.rs       the lazy S3 browse tree and its async loads
 //! src/ui/sidebar/tree.rs     catalog + files + S3, as TreeItems
 //! src/ui/sidebar/actions.rs  refresh, remove-file, alter-type actions
-//! src/ui/sidebar/selection.rs  files picked together with Shift/Cmd+click
+//! src/ui/sidebar/selection.rs  files picked together, columns ticked
 //! src/ui/sidebar/extensions.rs  the 扩展 page
 //! ```
 
@@ -25,6 +25,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -46,13 +48,15 @@ use crate::state::{
 use crate::ui::workspace::Workspace;
 
 use self::extensions::ExtensionList;
+use self::model::ColumnRef;
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
-use self::selection::FileSelection;
+use self::selection::{ColumnPick, FileSelection};
 use self::sql::{
-    overview_sql, select_column_sql, select_s3_file_sql, select_star_sql, table_info_text,
+    overview_sql, select_column_sql, select_columns_sql, select_s3_file_sql, select_star_sql,
+    table_info_text,
 };
-use self::tree::build_tree_items;
+use self::tree::{build_tree_items, filter_tree};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarTab {
@@ -78,6 +82,10 @@ pub struct Sidebar {
     refreshing_schema: bool,
     /// Local files picked together with Shift or Cmd+click, for one remove.
     file_selection: FileSelection,
+    /// Columns ticked in the tree, which the editor selects.
+    column_pick: ColumnPick,
+    /// Narrows the schema tree to rows whose name holds the text.
+    search: Entity<InputState>,
     extensions: ExtensionList,
     /// The extension an install, load or update is running for; every
     /// extension button waits while one is.
@@ -93,11 +101,19 @@ impl Sidebar {
     pub fn new(
         state: Entity<AppState>,
         workspace: Entity<Workspace>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(tr("sidebar.search.placeholder")));
         let subscriptions = vec![
+            cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.rebuild_tree(cx);
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&state, |this, _, _: &CatalogChanged, cx| {
                 // A new connection also emits CatalogChanged; only drop the
                 // browse tree when S3 actually became unconfigured.
@@ -154,6 +170,8 @@ impl Sidebar {
             recents: Rc::new(crate::recents::list()),
             refreshing_schema: false,
             file_selection: FileSelection::default(),
+            column_pick: ColumnPick::default(),
+            search,
             extensions: ExtensionList::NotLoaded,
             extension_busy: None,
             tree_language: crate::i18n::current(),
@@ -172,6 +190,12 @@ impl Sidebar {
             &self.recents,
             self.s3_browse.as_ref(),
         );
+        self.column_pick.retain(|table, name| {
+            meta.values()
+                .filter_map(|meta| meta.column.as_ref())
+                .any(|column| column.table == *table && column.name == name)
+        });
+        let items = filter_tree(items, &self.search.read(cx).value());
         self.node_meta = Rc::new(meta);
         let order: Vec<i64> = attached_files.iter().map(|file| file.id).collect();
         self.file_selection.retain(&order);
@@ -203,6 +227,31 @@ impl Sidebar {
             let ix = tree.index_of(&row).filter(|_| picked);
             tree.set_selected_index(ix, cx);
         });
+        cx.notify();
+    }
+
+    /// Tick or untick `column`, and put the ticked columns' SELECT in the
+    /// editor: all of the table's once the last is unticked.
+    fn toggle_column(&mut self, column: &ColumnRef, window: &mut Window, cx: &mut Context<Self>) {
+        let table = &column.table;
+        let order: Vec<String> = self
+            .state
+            .read(cx)
+            .catalog
+            .iter()
+            .filter(|db| db.name == table.database)
+            .flat_map(|db| db.tables.iter())
+            .find(|t| t.schema == table.schema && t.name == table.name)
+            .map(|t| t.columns.iter().map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
+        self.column_pick.toggle(table, &column.name, &order);
+        let path = self.state.read(cx).search_path.clone();
+        let sql = match self.column_pick.picked() {
+            Some((table, names)) => select_columns_sql(table, &names, path.as_ref()),
+            None => return,
+        };
+        self.workspace
+            .update(cx, |ws, cx| ws.fill_active_editor(sql, window, cx));
         cx.notify();
     }
 
@@ -359,6 +408,9 @@ impl Sidebar {
                 .filter(|id| self.file_selection.contains(*id))
                 .collect(),
         );
+        let ticked = Rc::new(self.column_pick.clone());
+        let no_match = !self.search.read(cx).value().trim().is_empty()
+            && self.tree_state.read(cx).entry(0).is_none();
         let menu = RowMenu {
             picked: picked.clone(),
             meta: meta.clone(),
@@ -366,7 +418,7 @@ impl Sidebar {
             workspace: workspace.clone(),
             state: state.clone(),
         };
-        tree(&self.tree_state, move |ix, entry, selected, _window, cx| {
+        let rows = tree(&self.tree_state, move |ix, entry, selected, _window, cx| {
             let item = entry.item();
             let node_meta = meta.get(&item.id);
             let icon: Option<gpui_kit::assets::IconName> = node_meta.and_then(|m| match m.kind {
@@ -472,13 +524,29 @@ impl Sidebar {
                         .gap_2()
                         .items_center()
                         .group(group_name.clone())
-                        .child(match icon {
-                            Some(icon) => Icon::new(icon)
+                        .child(match (icon, &column) {
+                            (Some(icon), _) => Icon::new(icon)
                                 .xsmall()
                                 .text_color(cx.theme().muted_foreground)
                                 .into_any_element(),
+                            // A column's tick puts it in the editor's SELECT.
+                            (None, Some(column)) => {
+                                let sidebar = sidebar.clone();
+                                let column = column.clone();
+                                Checkbox::new(("pick-column", ix))
+                                    .xsmall()
+                                    .checked(ticked.contains(&column.table, &column.name))
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(sidebar) = sidebar.upgrade() {
+                                            sidebar.update(cx, |this, cx| {
+                                                this.toggle_column(&column, window, cx)
+                                            });
+                                        }
+                                    })
+                                    .into_any_element()
+                            }
                             // The width of an xsmall icon, so rows line up at every size.
-                            None => div().w_3().flex_shrink_0().into_any_element(),
+                            (None, None) => div().w_3().flex_shrink_0().into_any_element(),
                         })
                         .child(
                             h_flex()
@@ -525,23 +593,20 @@ impl Sidebar {
                                         Tooltip::new(tooltip.clone()).build(window, cx)
                                     })
                                 })
+                                // The name ticks the column as its box does.
                                 .when_some(column, |this, column| {
-                                    let workspace = workspace.clone();
-                                    let state = state.clone();
+                                    let sidebar = sidebar.clone();
                                     this.cursor_pointer()
                                         .hover(|this| this.text_color(cx.theme().primary))
                                         .active(|this| {
                                             this.text_color(cx.theme().primary.opacity(0.7))
                                         })
                                         .on_click(move |_, window, cx| {
-                                            let path = state.read(cx).search_path.clone();
-                                            workspace.update(cx, |ws, cx| {
-                                                ws.fill_active_editor(
-                                                    select_column_sql(&column, path.as_ref()),
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
+                                            if let Some(sidebar) = sidebar.upgrade() {
+                                                sidebar.update(cx, |this, cx| {
+                                                    this.toggle_column(&column, window, cx)
+                                                });
+                                            }
                                         })
                                 })
                                 .when_some(s3_uri, |this, uri| {
@@ -741,8 +806,30 @@ impl Sidebar {
         // Every hover button on a row is a shortcut to an entry here: the
         // buttons only show under the pointer, and a command that can only
         // be found by hovering is not one a keyboard or a new user finds.
-        .context_menu(move |_, entry, popup, _, cx| menu.build(&entry.item().id, popup, cx))
-        .into_any_element()
+        .context_menu(move |_, entry, popup, _, cx| menu.build(&entry.item().id, popup, cx));
+
+        v_flex()
+            .size_full()
+            .child(
+                div().px_2().pb_2().child(
+                    Input::new(&self.search)
+                        .prefix(Icon::new(IconName::Search).xsmall())
+                        .cleanable(true)
+                        .small(),
+                ),
+            )
+            .child(div().flex_1().min_h_0().map(|this| {
+                if no_match {
+                    this.p_4()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_center()
+                        .child(tr("sidebar.search.no_match"))
+                } else {
+                    this.child(rows)
+                }
+            }))
+            .into_any_element()
     }
 }
 

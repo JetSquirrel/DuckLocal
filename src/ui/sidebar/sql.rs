@@ -28,10 +28,24 @@ pub(super) fn overview_sql(table: &TableRef, path: Option<&SearchPath>) -> Strin
 }
 
 pub(super) fn select_column_sql(column: &ColumnRef, path: Option<&SearchPath>) -> String {
+    select_columns_sql(&column.table, &[column.name.as_str()], path)
+}
+
+/// The picked columns of `table`, in the order given; none picked is every
+/// column.
+pub(super) fn select_columns_sql(
+    table: &TableRef,
+    names: &[&str],
+    path: Option<&SearchPath>,
+) -> String {
+    if names.is_empty() {
+        return select_star_sql(table, path);
+    }
+    let columns: Vec<String> = names.iter().map(|name| identifier_insert(name)).collect();
     format!(
         "SELECT {}\nFROM {}\nLIMIT 100;",
-        identifier_insert(&column.name),
-        qualified_table_name(&column.table, path)
+        columns.join(", "),
+        qualified_table_name(table, path)
     )
 }
 
@@ -84,8 +98,8 @@ mod tests {
     // import chain drags gpui's `test` attribute macro into scope and shadows
     // the built-in `#[test]`.
     use super::{
-        alter_column_type_sql, select_column_sql, select_s3_file_sql, select_star_sql,
-        table_info_text,
+        alter_column_type_sql, select_column_sql, select_columns_sql, select_s3_file_sql,
+        select_star_sql, table_info_text,
     };
     use crate::schema::{ColumnInfo, NodeKind, TableInfo};
     use crate::script::SearchPath;
@@ -132,6 +146,19 @@ mod tests {
         assert_eq!(
             select_column_sql(&column, None),
             "SELECT \"total amount\"\nFROM memory.main.orders\nLIMIT 100;"
+        );
+    }
+
+    #[test]
+    fn picked_columns_select_in_the_order_given() {
+        let orders = table_ref("orders", false);
+        assert_eq!(
+            select_columns_sql(&orders, &["id", "total amount"], None),
+            "SELECT id, \"total amount\"\nFROM memory.main.orders\nLIMIT 100;"
+        );
+        assert_eq!(
+            select_columns_sql(&orders, &[], None),
+            select_star_sql(&orders, None)
         );
     }
 
