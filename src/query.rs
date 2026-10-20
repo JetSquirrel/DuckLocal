@@ -68,6 +68,11 @@ pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResul
             arrow_type: format!("{ty:?}"),
         });
     }
+    // A zoned timestamp's value is a UTC instant; its `iso` says so.
+    let zoned: Vec<bool> = columns
+        .iter()
+        .map(|c| c.arrow_type.starts_with("Timestamp(") && !c.arrow_type.ends_with("None)"))
+        .collect();
     let row_budget = limit.min(MAX_CELLS / column_count.max(1));
     let mut out = Vec::new();
     let mut truncated = false;
@@ -77,8 +82,8 @@ pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResul
             break;
         }
         let mut cells = Vec::with_capacity(column_count);
-        for ix in 0..column_count {
-            cells.push(cli_value(row.get_ref(ix)?)?);
+        for (ix, &zoned) in zoned.iter().enumerate() {
+            cells.push(cli_value(row.get_ref(ix)?, zoned)?);
         }
         out.push(cells);
     }
@@ -117,7 +122,8 @@ fn cli_integer(value: i128) -> serde_json::Value {
     }
 }
 
-fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
+/// `zoned`: the value is from a TIMESTAMPTZ column, so its `iso` ends in `Z`.
+fn cli_value(value: ValueRef<'_>, zoned: bool) -> Result<serde_json::Value> {
     use serde_json::json;
     Ok(match value {
         ValueRef::Null => serde_json::Value::Null,
@@ -154,20 +160,25 @@ fn cli_value(value: ValueRef<'_>) -> Result<serde_json::Value> {
             }
             tagged([("encoding", json!("hex")), ("value", json!(hex))])
         }
+        // The exact count, and beside it the same moment as ISO 8601 text
+        // for a person or a script that only wants to read it.
         ValueRef::Date32(v) => tagged([
             ("encoding", json!("date")),
             ("unit", json!("Day")),
             ("value", json!(v.to_string())),
+            ("iso", json!(format_date(v))),
         ]),
         ValueRef::Timestamp(unit, v) => tagged([
             ("encoding", json!("timestamp")),
             ("unit", json!(unit_name(unit))),
             ("value", json!(v.to_string())),
+            ("iso", json!(iso_timestamp(unit, v, zoned))),
         ]),
         ValueRef::Time64(unit, v) => tagged([
             ("encoding", json!("time")),
             ("unit", json!(unit_name(unit))),
             ("value", json!(v.to_string())),
+            ("iso", json!(format_precise_time(unit_name(unit), v))),
         ]),
         ValueRef::Interval {
             months,
@@ -223,7 +234,8 @@ fn cli_owned(value: &Value) -> Result<serde_json::Value> {
         Value::Map(entries) => json!({"encoding": "map", "entries": entries.iter().map(|(key, value)| Ok(json!([cli_owned(key)?, cli_owned(value)?]))).collect::<Result<Vec<_>>>()?}),
         Value::Union(value) => json!({"encoding": "union-value", "value": cli_owned(value)?}),
         Value::HugeInt(_) => anyhow::bail!("Nested HUGEINT/UHUGEINT/DECIMAL(38,0) has ambiguous Arrow metadata; CAST it to VARCHAR explicitly"),
-        other => cli_value(ValueRef::from(other))?,
+        // Nested values carry no column type: a zoned one's `iso` has no `Z`.
+        other => cli_value(ValueRef::from(other), false)?,
     })
 }
 
@@ -369,6 +381,21 @@ fn format_precise_timestamp(unit: &str, value: i64) -> String {
     };
     let seconds = moment.format("%Y-%m-%d %H:%M:%S").to_string();
     fraction(seconds, moment.timestamp_subsec_micros())
+}
+
+/// A timestamp as ISO 8601: `2026-10-20T01:02:03.5`, with `Z` when it is a
+/// UTC instant. Out of chrono's range, the count itself.
+fn iso_timestamp(unit: TimeUnit, value: i64, zoned: bool) -> String {
+    let Some(moment) = chrono::DateTime::from_timestamp_micros(unit.to_micros(value)) else {
+        return value.to_string();
+    };
+    let seconds = moment.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let text = fraction(seconds, moment.timestamp_subsec_micros());
+    if zoned {
+        text + "Z"
+    } else {
+        text
+    }
 }
 
 fn format_precise_time(unit: &str, value: i64) -> String {

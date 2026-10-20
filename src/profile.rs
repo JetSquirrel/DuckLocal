@@ -61,7 +61,7 @@ fn quote(name: &str) -> String {
 /// The relation to profile, as SQL.
 ///
 /// A path that names a CSV/Parquet/JSON file this build can read becomes that
-/// reader's call; a workbook has no table function, so its first sheet is
+/// reader's call, and so does a glob over such files, read as one; a workbook has no table function, so its first sheet is
 /// imported into `conn` as a TEMP table (which a read-only connection still
 /// allows) and that table's name is the relation. Anything else is a table or
 /// view name, quoted part by part so `main.orders` and a name with a space
@@ -69,7 +69,14 @@ fn quote(name: &str) -> String {
 pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
     let expanded = crate::db::expand_tilde(target);
     if let Some(reader) = crate::db::data_file_reader(&expanded) {
-        if !std::path::Path::new(&expanded).is_file() {
+        let found = if crate::sources::is_pattern(&expanded) {
+            !crate::sources::resolve(std::slice::from_ref(&expanded))
+                .files
+                .is_empty()
+        } else {
+            std::path::Path::new(&expanded).is_file()
+        };
+        if !found {
             return Err(anyhow!("No such file: {target}"));
         }
         return Ok(format!("{reader}('{}')", expanded.replace('\'', "''")));

@@ -187,8 +187,22 @@ pub fn close() -> Result<()> {
     replace(None)
 }
 
+/// Load ICU up front, when it is installed. DuckDB otherwise autoloads it
+/// in the middle of binding the first statement that needs it (`AT TIME
+/// ZONE`, a TIMESTAMPTZ), and the rest of that statement then finds none of
+/// the functions ICU overloads: `strftime(ts AT TIME ZONE 'Asia/Shanghai',
+/// '%m-%d')` fails with "No function matches" and no candidates, and works
+/// when run again. Not installed, the LOAD fails without a download
+/// (`config` turns autoinstall off) and nothing changes.
+pub(crate) fn preload_extensions(conn: &Connection) {
+    let _ = conn.execute_batch("LOAD icu");
+}
+
 /// Put the process on `connection`, releasing whatever it was on.
 fn replace(connection: Option<Connection>) -> Result<()> {
+    if let Some(conn) = &connection {
+        preload_extensions(conn);
+    }
     let handle = connection.as_ref().map(Connection::interrupt_handle);
     let mut guard = lock()?;
     *guard = connection;

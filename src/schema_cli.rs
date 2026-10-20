@@ -3,7 +3,9 @@
 //! An agent about to write SQL needs the relations and their columns, and
 //! learning them one `DESCRIBE` at a time costs a call per table. This answers
 //! in one: data files (PATHs — files, folders and globs, expanded the way the
-//! GUI expands a drop) and, with a database, its tables and views.
+//! GUI expands a drop) and, with a database, its tables and views. A glob is
+//! one relation, as a dashboard `source` reads it, when its files share a
+//! reader; a folder is its files.
 //!
 //! A small catalog comes back whole. A large one would drown the prompt it is
 //! meant for, so past [`FULL_RELATIONS`] relations or [`FULL_COLUMNS`] columns
@@ -32,6 +34,8 @@ Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME] [--full|--st
 
 What there is to query, as JSON sized for a prompt: data files (PATHs are
 files, folders or globs) and, with --database, a database's tables and views.
+A glob is one relation (kind \"glob\", with its file count) when its files
+are all one format, as a .dash source reads it; a folder lists its files.
 A small catalog lists every relation with its columns; a large one gives the
 columns of the largest few, and name, kind, rows and column count for the rest.
 
@@ -91,6 +95,8 @@ struct Relation {
     error: Option<String>,
     /// A workbook's sheets, which have no table function to read them by.
     sheets: Option<Vec<String>>,
+    /// How many files a glob matched.
+    files: Option<usize>,
 }
 
 #[hotpath::measure]
@@ -159,11 +165,28 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     let cwd = crate::sources::canonical_file_path(&cwd.to_string_lossy())
         .map(PathBuf::from)
         .unwrap_or(cwd);
-    let mut relations: Vec<Relation> = sources
-        .files
-        .iter()
-        .map(|file| file_relation(&connection, file, &cwd))
-        .collect();
+    // A glob over files of one format reads as one relation; its files are
+    // not listed again on their own.
+    let mut relations = Vec::new();
+    let mut in_a_glob = std::collections::HashSet::new();
+    for path in &paths {
+        let expanded = crate::db::expand_tilde(path);
+        if !crate::sources::is_pattern(&expanded) {
+            continue;
+        }
+        let files = crate::sources::resolve(std::slice::from_ref(path)).files;
+        if let Some(relation) = glob_relation(&connection, &expanded, &files, &cwd) {
+            relations.push(relation);
+            in_a_glob.extend(files);
+        }
+    }
+    relations.extend(
+        sources
+            .files
+            .iter()
+            .filter(|file| !in_a_glob.contains(*file))
+            .map(|file| file_relation(&connection, file, &cwd)),
+    );
     if database.is_some() {
         relations.extend(database_relations(&connection)?);
     }
@@ -245,6 +268,9 @@ fn entry(relation: &Relation, with_columns: bool) -> Value {
     if let Some(sheets) = &relation.sheets {
         value["sheets"] = json!(sheets);
     }
+    if let Some(files) = relation.files {
+        value["files"] = json!(files);
+    }
     if with_columns {
         value["columns"] = json!(relation
             .columns
@@ -311,6 +337,7 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
                     .to_string(),
             ),
             sheets: crate::excel::sheets(file).ok(),
+            files: None,
         };
     }
     let reader = crate::db::data_file_reader(file).unwrap_or("read_csv_auto");
@@ -348,7 +375,67 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
         columns,
         error,
         sheets: None,
+        files: None,
     }
+}
+
+/// Glob `pattern` as one relation over its matched `files`, read the way a
+/// `source` reads it — `None` when they are not all of one format (or the
+/// pattern matched nothing), and are listed one by one instead.
+fn glob_relation(
+    connection: &duckdb::Connection,
+    pattern: &str,
+    files: &[String],
+    cwd: &Path,
+) -> Option<Relation> {
+    let first = files.first()?;
+    let reader = crate::db::data_file_reader(first)?;
+    if files
+        .iter()
+        .any(|file| crate::db::data_file_reader(file) != Some(reader))
+    {
+        return None;
+    }
+    let absolute = std::path::absolute(pattern).unwrap_or_else(|_| PathBuf::from(pattern));
+    let shown = absolute
+        .strip_prefix(cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| pattern.to_string());
+    let literal = |path: &str| format!("'{}'", path.replace('\'', "''"));
+    let read = literal(&absolute.to_string_lossy());
+    let (columns, error) = match describe(connection, &format!("SELECT * FROM {reader}({read})")) {
+        Ok(columns) => (columns, None),
+        Err(message) => (Vec::new(), Some(message)),
+    };
+    let rows = (reader == "read_parquet")
+        .then(|| {
+            connection
+                .query_row(
+                    &format!("SELECT sum(num_rows)::BIGINT FROM parquet_file_metadata({read})"),
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .ok()
+                .flatten()
+        })
+        .flatten();
+    let csv = pattern.to_ascii_lowercase().ends_with(".csv");
+    Some(Relation {
+        name: shown.clone(),
+        kind: "glob",
+        from: if reader == "read_csv_auto" && !csv {
+            format!("{reader}({})", literal(&shown))
+        } else {
+            literal(&shown)
+        },
+        target: shown.clone(),
+        path: Some(shown),
+        rows,
+        columns,
+        error,
+        sheets: None,
+        files: Some(files.len()),
+    })
 }
 
 /// Every table and view the database holds, named as SQL on this connection
@@ -393,6 +480,7 @@ fn database_relations(connection: &duckdb::Connection) -> Result<Vec<Relation>, 
                     .collect(),
                 error: None,
                 sheets: None,
+                files: None,
             }
         })
         .collect())
@@ -443,6 +531,7 @@ mod tests {
             columns: Vec::new(),
             error: None,
             sheets: None,
+            files: None,
         }
     }
 

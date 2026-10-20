@@ -65,10 +65,14 @@ in memory otherwise; in memory, a query that reads a table no source defines
 is listed under \"unresolved\" instead of failing. Relative file paths, in
 source blocks and in the SQL alike, start from the spec's folder.
 
-On success the output describes every source, query, filter and plot.
---summary prints one line instead: {file, ok, sources, queries, filters,
-plots, unresolved}, with unresolved the names of the queries not run.
-Failures print the same either way.
+On success the output describes every source, query, filter and plot;
+each query that ran has its rows (with nothing picked), and truncated: true
+when the dashboard's row budget cut it off. \"empty\" lists the queries that
+ran and returned no rows: not a failure, but usually a pattern or join that
+matched nothing. --summary prints one line instead: {file, ok, sources,
+queries, filters, plots, unresolved, empty}, with unresolved the names of the
+queries not run and empty those that returned no rows. Failures print the
+same either way.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.
 
@@ -676,7 +680,7 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
         let config = config
             .access_mode(mode)
             .map_err(|e| CliError::failure("database", e))?;
-        return Connection::open_with_flags(&path, config).map_err(|e| {
+        let conn = Connection::open_with_flags(&path, config).map_err(|e| {
             CliError::failure(
                 "database",
                 crate::storage::explain_error(
@@ -685,9 +689,14 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
                     crate::i18n::Language::En,
                 ),
             )
-        });
+        })?;
+        crate::db::preload_extensions(&conn);
+        return Ok(conn);
     }
-    Connection::open_in_memory_with_flags(config).map_err(|e| CliError::failure("database", e))
+    let conn = Connection::open_in_memory_with_flags(config)
+        .map_err(|e| CliError::failure("database", e))?;
+    crate::db::preload_extensions(&conn);
+    Ok(conn)
 }
 
 /// `ducklocal profile TARGET [--database PATH]`: the deprecated spelling of

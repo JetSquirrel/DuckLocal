@@ -235,9 +235,11 @@ fn temporal_binary_and_nested_encodings_are_unambiguous() {
     assert_eq!(
         out["rows"][0],
         json!([
-            {"encoding":"date","unit":"Day","value":"1"},
-            {"encoding":"timestamp","unit":"Nanosecond","value":"123456789"},
-            {"encoding":"time","unit":"Microsecond","value":"123456"},
+            {"encoding":"date","unit":"Day","value":"1","iso":"1970-01-02"},
+            // `iso` is for reading, to the microsecond; `value` is exact.
+            {"encoding":"timestamp","unit":"Nanosecond","value":"123456789",
+             "iso":"1970-01-01T00:00:00.123456"},
+            {"encoding":"time","unit":"Microsecond","value":"123456","iso":"00:00:00.123456"},
             {"encoding":"interval","months":1,"days":2,"nanos":"3000"},
             {"encoding":"hex","value":"00ff"},
             [null,"NULL"], {"encoding":"struct","fields":[["a",null],["b","NULL"]]},
@@ -247,6 +249,14 @@ fn temporal_binary_and_nested_encodings_are_unambiguous() {
             {"encoding":"float","value":"-inf"}, "red"
         ])
     );
+    // A zoned timestamp is a UTC instant, and says so.
+    let out = s.success(&[
+        "query",
+        "--sql",
+        "SELECT TIMESTAMPTZ '2026-10-20 01:02:03+00' AS tz, TIMESTAMP '2026-10-20 01:02:03' AS ts",
+    ]);
+    assert_eq!(out["rows"][0][0]["iso"], "2026-10-20T01:02:03Z");
+    assert_eq!(out["rows"][0][1]["iso"], "2026-10-20T01:02:03");
     let error = s.error(
         &[
             "query",
@@ -755,9 +765,26 @@ fn check_reads_sql_paths_from_the_specs_folder_and_can_summarize() {
         assert_eq!(out["plots"], 1);
         assert_eq!(out["unresolved"], serde_json::json!([]));
     }
-    // Without --summary, the full report, as before.
+    // Without --summary, the full report, as before, with the rows each
+    // query returned.
     let full = s.object(&["check", "proj/d.dash"]);
     assert_eq!(full["queries"][0]["columns"][1]["name"], "total");
+    assert_eq!(full["queries"][0]["rows"], 1);
+    assert_eq!(full["empty"], serde_json::json!([]));
+
+    // A query that runs and matches nothing passes, and says so.
+    std::fs::write(
+        proj.join("none.dash"),
+        "query \"q\" {\n  sql = <<SQL\n    SELECT metric FROM 'data/m.csv' WHERE metric ~ '^zzz'\n  SQL\n}\n\
+         plot \"q\" {\n  type  = \"table\"\n  query = query.q\n}\n",
+    )
+    .unwrap();
+    let out = s.object(&["check", "proj/none.dash", "--summary"]);
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["empty"], serde_json::json!(["q"]));
+    let full = s.object(&["check", "proj/none.dash"]);
+    assert_eq!(full["queries"][0]["rows"], 0);
+    assert_eq!(full["empty"][0]["query"], "q");
 
     // A missing file still fails, with the hint.
     dash("missing.dash", "data/none.csv", "AS total");
@@ -1309,6 +1336,38 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     s.error(&["schema", "missing.csv"], 2, "argument");
     let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
     assert!(error["error"]["hint"].as_str().is_some());
+}
+
+/// A glob over files of one format is one relation, as a `.dash` source reads
+/// it; over mixed formats, its files are listed one by one.
+#[test]
+fn schema_reads_a_glob_as_one_relation() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.0.join("logs")).unwrap();
+    for day in 1..=3 {
+        std::fs::write(
+            s.0.join(format!("logs/{day}.json")),
+            format!("{{\"day\": {day}, \"msg\": \"m\"}}\n"),
+        )
+        .unwrap();
+    }
+
+    let out = s.object(&["schema", "logs/*.json"]);
+    let relations = out["relations"].as_array().unwrap();
+    assert_eq!(relations.len(), 1, "{out}");
+    assert_eq!(relations[0]["kind"], "glob");
+    assert_eq!(relations[0]["files"], 3);
+    assert_eq!(relations[0]["columns"][0]["name"], "day");
+    let from = relations[0]["from"].as_str().unwrap();
+    let rows = s.success(&["query", "--sql", &format!("SELECT count(*) FROM {from}")]);
+    assert_eq!(rows["rows"][0][0], 3);
+    let stats = s.object(&["schema", "logs/*.json", "--stats"]);
+    assert_eq!(stats["row_count"], 3);
+
+    std::fs::write(s.0.join("logs/extra.csv"), "a\n1\n").unwrap();
+    let out = s.object(&["schema", "logs/*"]);
+    assert_eq!(out["relations"].as_array().unwrap().len(), 4, "{out}");
+    assert_eq!(out["relations"][0]["kind"], "file");
 }
 
 #[test]
