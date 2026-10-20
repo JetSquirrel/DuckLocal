@@ -630,7 +630,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("status_bar.update.checking", "正在检查更新…", "Checking for updates…"),
     ("status_bar.update.latest", "已是最新", "Up to date"),
     ("status_bar.update.available", "有新版本 {}", "Update available: {}"),
-    ("status_bar.update.download", "打开下载页", "Open the download page"),
+    ("status_bar.update.downloading", "正在下载 {}…", "Downloading {}…"),
+    ("status_bar.update.restart", "重启以更新到 {}", "Restart to update to {}"),
+    (
+        "status_bar.update.restart_hint",
+        "新版本已下载，重启或下次退出时安装",
+        "Downloaded; installs when DuckLocal restarts or next quits"
+    ),
     ("status_bar.update.failed", "检查更新失败", "Update check failed"),
     (
         "menu.base_map",

@@ -59,6 +59,7 @@ fn main() {
 
     // The window logs to a file too, and leaves a report when it panics.
     crash::init();
+    ui::update::clean_up();
 
     // Resolve the UI language before the first frame: open the history store
     // here (app.rs re-opens it harmlessly later) and read the persisted

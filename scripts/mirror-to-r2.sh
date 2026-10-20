@@ -13,6 +13,10 @@
 # (it holds a "-") — to latest/<name> as well. Versioned copies never change;
 # latest/ is revalidated every few minutes so a new release shows up soon.
 #
+# A release also writes latest/latest.json, what the app's update check reads:
+# the tag, and each package's SHA-256 and size. It goes up last, so it never
+# names a package that is not there yet; the app downloads <tag>/<name>.
+#
 # Needs CLOUDFLARE_API_TOKEN (R2 Storage:Edit) and CLOUDFLARE_ACCOUNT_ID, or a
 # `wrangler login`. R2_BUCKET overrides the bucket name.
 set -eu
@@ -22,9 +26,10 @@ shift
 bucket=${R2_BUCKET:-ducklocalapp}
 names="ducklocal-macos-arm64.dmg ducklocal-linux-x86_64.tar.gz ducklocal-windows-x86_64.zip"
 
+manifest=$(mktemp)
+trap 'rm -f "$manifest"; [ -n "${dir:-}" ] && rm -rf "$dir"' EXIT
 if [ $# -eq 0 ]; then
   dir=$(mktemp -d)
-  trap 'rm -rf "$dir"' EXIT
   for name in $names; do
     echo "fetching $name from the GitHub release $tag"
     curl -fsSL -o "$dir/$name" \
@@ -38,6 +43,15 @@ put() {
     --file "$2" --content-type "$3" --cache-control "$4"
 }
 
+sha256() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+entries=""
 for file in "$@"; do
   name=$(basename "$file")
   case "$name" in
@@ -51,4 +65,16 @@ for file in "$@"; do
     *-*) ;;
     *) put "latest/$name" "$file" "$type" "public, max-age=300" ;;
   esac
+  size=$(wc -c < "$file" | tr -d ' ')
+  entries="$entries${entries:+,}
+    \"$name\": {\"sha256\": \"$(sha256 "$file")\", \"size\": $size}"
 done
+
+case "$tag" in
+  *-*) ;;
+  *)
+    printf '{\n  "version": "%s",\n  "packages": {%s\n  }\n}\n' "$tag" "$entries" > "$manifest"
+    cat "$manifest"
+    put latest/latest.json "$manifest" application/json "public, max-age=300"
+    ;;
+esac
