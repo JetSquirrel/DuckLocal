@@ -215,6 +215,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.s3.refresh_buckets", "刷新 bucket 列表", "Refresh bucket list"),
     ("sidebar.table.generate_select", "生成 SELECT 查询", "Generate SELECT query"),
     ("sidebar.column.edit_type", "修改数据类型", "Change data type"),
+    ("sidebar.search.placeholder", "搜索表或列", "Search tables and columns"),
+    ("sidebar.search.no_match", "没有匹配的表或列", "No table or column matches"),
     ("sidebar.menu.copy_name", "复制名称", "Copy name"),
     ("sidebar.menu.copy_table_info", "复制表信息", "Copy table info"),
     ("sidebar.menu.remove_recent", "从列表移除", "Remove from list"),

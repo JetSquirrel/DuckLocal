@@ -328,6 +328,36 @@ fn table_tree_item(
     TreeItem::new(table_id, table.name.clone()).children(columns)
 }
 
+/// `items` cut down to the rows whose label contains `query`, ignoring case,
+/// and the rows above them. A row that matches keeps all its rows below (a
+/// table its columns, to tick from); one kept only for a match further down
+/// opens to show it. An empty query keeps everything as it was.
+pub(super) fn filter_tree(items: Vec<TreeItem>, query: &str) -> Vec<TreeItem> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return items;
+    }
+    fn keep(item: TreeItem, query: &str) -> Option<TreeItem> {
+        if item.label.to_lowercase().contains(query) {
+            return Some(item);
+        }
+        let children: Vec<TreeItem> = item
+            .children
+            .into_iter()
+            .filter_map(|child| keep(child, query))
+            .collect();
+        (!children.is_empty()).then(|| {
+            TreeItem::new(item.id, item.label)
+                .expanded(true)
+                .children(children)
+        })
+    }
+    items
+        .into_iter()
+        .filter_map(|item| keep(item, &query))
+        .collect()
+}
+
 /// The sidebar's order for recent documents: by title, case-insensitively,
 /// then by path, so same-titled documents keep their places too.
 fn sort_documents(documents: &mut [&RecentDocument]) {
@@ -372,8 +402,9 @@ fn file_hint(path: &str, view_name: &str, duplicate: bool) -> Option<SharedStrin
 
 #[cfg(test)]
 mod file_hint_tests {
-    use super::{file_hint, sort_documents};
+    use super::{file_hint, filter_tree, sort_documents};
     use crate::recents::{RecentDocument, RecentKind};
+    use gpui_kit::component::tree::TreeItem;
 
     #[test]
     fn recent_documents_keep_their_places_whichever_was_opened_last() {
@@ -420,5 +451,57 @@ mod file_hint_tests {
             file_hint("/x/book.xlsx", "book_Extra", true).as_deref(),
             Some(format!("book.xlsx{}x", crate::i18n::sep()).as_str())
         );
+    }
+
+    /// Each kept row as `depth:label`, open or not, in tree order.
+    fn outline(items: &[TreeItem]) -> Vec<String> {
+        fn walk(item: &TreeItem, depth: usize, out: &mut Vec<String>) {
+            let open = if item.is_expanded() { "+" } else { "" };
+            out.push(format!("{depth}:{}{open}", item.label));
+            for child in &item.children {
+                walk(child, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        for item in items {
+            walk(item, 0, &mut out);
+        }
+        out
+    }
+
+    fn catalog() -> Vec<TreeItem> {
+        let table = |name: &str, columns: &[&str]| {
+            TreeItem::new(format!("t:{name}"), name.to_string()).children(
+                columns
+                    .iter()
+                    .map(|c| TreeItem::new(format!("c:{name}.{c}"), c.to_string())),
+            )
+        };
+        vec![TreeItem::new("db", "memory").expanded(true).children([
+            table("orders", &["order_id", "Amount"]),
+            table("users", &["user_id", "email"]),
+        ])]
+    }
+
+    #[test]
+    fn a_column_match_opens_its_table_and_hides_the_rest() {
+        assert_eq!(
+            outline(&filter_tree(catalog(), "amount")),
+            ["0:memory+", "1:orders+", "2:Amount"]
+        );
+    }
+
+    #[test]
+    fn a_table_match_keeps_all_its_columns_closed() {
+        assert_eq!(
+            outline(&filter_tree(catalog(), "USERS")),
+            ["0:memory+", "1:users", "2:user_id", "2:email"]
+        );
+    }
+
+    #[test]
+    fn no_query_keeps_everything_and_no_match_keeps_nothing() {
+        assert_eq!(outline(&filter_tree(catalog(), "  ")), outline(&catalog()));
+        assert!(filter_tree(catalog(), "zzz").is_empty());
     }
 }

@@ -142,6 +142,32 @@ pub(crate) fn fit_column_width(header: &str, rows: &[Vec<String>], col: usize, e
     fitted
 }
 
+/// A horizontal scrollbar for `table` that stays up whenever its columns
+/// overflow, in place of the table's own. That one follows the system
+/// setting, which on macOS shows it only mid-scroll, so a wide result gave no
+/// sign it went on to the right. `Always` still hides it when the columns fit.
+/// Goes in a `relative` container around the table, with the table's own
+/// horizontal scrollbar turned off.
+pub(crate) fn horizontal_scrollbar<D: TableDelegate>(
+    table: &Entity<TableState<D>>,
+    cx: &App,
+) -> impl IntoElement {
+    use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
+    let handle = table.read(cx).horizontal_scroll_handle.clone();
+    // Inset by the table's 1px border, where its own scrollbar sat.
+    div()
+        .absolute()
+        .left(px(1.))
+        .right(px(1.))
+        .bottom(px(1.))
+        .h(Scrollbar::width())
+        .child(
+            Scrollbar::horizontal(&handle)
+                .mode(ScrollbarMode::Always)
+                .viewport_from_layout(),
+        )
+}
+
 /// Monospace columns `text` occupies on its widest line.
 fn display_columns(text: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
@@ -1244,12 +1270,17 @@ impl ResultsPanel {
                         )
                     })
                     .child(
-                        div().flex_1().min_h_0().child(
-                            DataTable::new(&self.table)
-                                .small()
-                                .stripe(true)
-                                .scrollbar_visible(true, true),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .relative()
+                            .child(
+                                DataTable::new(&self.table)
+                                    .small()
+                                    .stripe(true)
+                                    .scrollbar_visible(true, false),
+                            )
+                            .child(horizontal_scrollbar(&self.table, cx)),
                     )
                     .child(self.render_filter_bar(cx))
                     .into_any_element()

@@ -40,7 +40,7 @@ pub(super) struct DatabaseRef {
 }
 
 /// A catalog table or view a tree node can act on (generate queries, alter).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct TableRef {
     pub(super) database: String,
     pub(super) schema: String,
