@@ -873,12 +873,16 @@ fn subtree_seconds(node: &PlanNode) -> f64 {
 }
 
 /// The operators under `value`. The profile's root is the query itself and
-/// its first child the `EXPLAIN_ANALYZE` wrapper; neither is part of the
-/// plan the user wrote, so both give way to their children.
+/// wraps the plan in `EXPLAIN_ANALYZE` (and, since DuckDB 2.0,
+/// `RESULT_COLLECTOR` and `EXECUTE`); none is part of the plan the user
+/// wrote, so each gives way to its children. DuckDB 2.0 also hangs the tree
+/// off `operator` rather than `children` and shortens the keys
+/// (`type`, `timing`, `intermediate_rows`); both shapes are read.
 fn plan_nodes(value: &serde_json::Value) -> Vec<PlanNode> {
     let children = || -> Vec<PlanNode> {
         value
             .get("children")
+            .or_else(|| value.get("operator"))
             .and_then(|c| c.as_array())
             .map(|c| c.iter().flat_map(plan_nodes).collect())
             .unwrap_or_default()
@@ -886,13 +890,21 @@ fn plan_nodes(value: &serde_json::Value) -> Vec<PlanNode> {
     let name = value
         .get("operator_name")
         .or_else(|| value.get("operator_type"))
+        .or_else(|| value.get("type"))
         .and_then(|n| n.as_str())
         .map(str::trim)
         .unwrap_or("");
-    if name.is_empty() || name == "EXPLAIN_ANALYZE" {
+    if matches!(
+        name,
+        "" | "EXPLAIN_ANALYZE" | "RESULT_COLLECTOR" | "EXECUTE"
+    ) {
         return children();
     }
-    let number = |key: &str| value.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let number = |keys: [&str; 2]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(|v| v.as_f64()))
+            .unwrap_or(0.0)
+    };
     let mut estimated = None;
     let mut details = Vec::new();
     if let Some(extra) = value.get("extra_info").and_then(|e| e.as_object()) {
@@ -919,8 +931,8 @@ fn plan_nodes(value: &serde_json::Value) -> Vec<PlanNode> {
     }
     vec![PlanNode {
         name: name.to_string(),
-        seconds: number("operator_timing"),
-        rows: number("operator_cardinality") as u64,
+        seconds: number(["operator_timing", "timing"]),
+        rows: number(["operator_cardinality", "intermediate_rows"]) as u64,
         estimated,
         details,
         children: children(),
@@ -1316,7 +1328,7 @@ mod tests {
     use super::*;
 
     fn mem() -> Connection {
-        Connection::open_in_memory().unwrap()
+        Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap()
     }
 
     /// The message shapes here are real DuckDB renderings; the assertions are
