@@ -166,13 +166,6 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
             );
         }
     }
-    // Before the general advice below, which a PIVOT's second statement
-    // would only mislead: it is not a step to split off.
-    if kind == "argument" && has("A PIVOT counts as two") {
-        return Some(
-            "Name the values to pivot on with IN; `SELECT DISTINCT col FROM t` lists them",
-        );
-    }
     if kind == "argument" && has("Expected exactly one SQL statement") {
         return Some(
             "Run one statement per call: chain steps with WITH … AS (…), or make separate calls",
@@ -558,7 +551,6 @@ impl Drop for ExtractedStatements {
 /// (say `COPY ... TO ...; SELECT 2`) is rejected before anything has a chance
 /// to run it.
 pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
-    let text = sql;
     let sql =
         CString::new(sql).map_err(|_| CliError::argument("SQL must not contain NUL bytes"))?;
     unsafe {
@@ -594,17 +586,9 @@ pub(crate) fn validate_sql(sql: &str) -> Result<(), CliError> {
             ));
         }
         if count != 1 {
-            let mut message = format!("Expected exactly one SQL statement; found {count}");
-            // A PIVOT without an IN list is two statements to the parser:
-            // DuckDB first finds the values to pivot on. The one statement
-            // the person wrote is not let through on a guess at that; they
-            // are told how to write it as one.
-            if count == 2 && text.to_ascii_lowercase().contains("pivot") {
-                message.push_str(
-                    ". A PIVOT counts as two unless it names its values: PIVOT t ON col IN ('a', 'b') USING sum(x)",
-                );
-            }
-            return Err(CliError::argument(message));
+            return Err(CliError::argument(format!(
+                "Expected exactly one SQL statement; found {count}"
+            )));
         }
     }
     Ok(())
@@ -862,18 +846,27 @@ mod tests {
     fn a_keyword_left_as_a_bare_alias_is_named() {
         for (sql, word) in [
             ("SELECT 1 minutes", "minutes"),
-            ("SELECT 1 sample", "sample"),
             ("SELECT count(*) minutes FROM range(3)", "minutes"),
-            ("SELECT round(2.5) before;", "before"),
             ("SELECT x year FROM (SELECT 1 x)", "year"),
-            ("SELECT 'a' time", "time"),
-            // `at` gives no position at the end, and the comma after it in
-            // the middle.
+            // The parser points at `at` itself at the end, and past it at a
+            // `;` or `,`.
             ("SELECT 1 at", "at"),
             ("SELECT 1 at;", "at"),
             ("SELECT 1 at, 2 b", "at"),
         ] {
             assert_eq!(alias_in(sql).as_deref(), Some(word), "{sql}");
+        }
+        // DuckDB 2.0 takes these as bare aliases, so there is nothing to hint.
+        for sql in [
+            "SELECT 1 sample",
+            "SELECT round(2.5) before;",
+            "SELECT 'a' time",
+        ] {
+            assert!(validate_sql(sql).is_ok(), "{sql}");
+            assert!(
+                Connection::open_in_memory().unwrap().prepare(sql).is_ok(),
+                "{sql}"
+            );
         }
     }
 
@@ -918,10 +911,6 @@ mod tests {
         );
         let two = "Expected exactly one SQL statement; found 2";
         assert!(hint_for("argument", two).unwrap().contains("WITH"));
-        // A PIVOT's second statement is not a step to split off.
-        let pivot = format!("{two}. A PIVOT counts as two unless it names its values: …");
-        let hint = hint_for("argument", &pivot).unwrap();
-        assert!(hint.contains("IN") && !hint.contains("WITH"), "{hint}");
         // A kind the hint is not about gets none.
         assert!(hint_for("io", "Table with name x does not exist").is_none());
         assert!(hint_for("sql", "Parser Error: syntax error at or near \"x\"").is_none());

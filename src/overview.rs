@@ -191,7 +191,7 @@ fn distribution_sql(column: &ColumnOverview) -> Option<String> {
     let ranked = |histogram: String| {
         format!(
             "CAST(to_json(list_reverse_sort(list_transform(map_entries({histogram}), \
-             e -> {{'n': e.value, 'v': CAST(e.key AS VARCHAR)}}))[1:{TOP_VALUES}]) AS VARCHAR)"
+             lambda e: {{'n': e.value, 'v': CAST(e.key AS VARCHAR)}}))[1:{TOP_VALUES}]) AS VARCHAR)"
         )
     };
     match column.shape {
@@ -210,7 +210,7 @@ fn distribution_sql(column: &ColumnOverview) -> Option<String> {
             Some(format!(
                 "CAST(to_json(list_transform(map_entries(histogram(CAST({name} AS {cast}), \
                  equi_width_bins(CAST({} AS {cast}), CAST({} AS {cast}), {BINS}, true))), \
-                 e -> {{'v': CAST(e.key AS VARCHAR), 'n': e.value}})) AS VARCHAR)",
+                 lambda e: {{'v': CAST(e.key AS VARCHAR), 'n': e.value}})) AS VARCHAR)",
                 literal(min),
                 literal(max),
             ))
@@ -220,7 +220,7 @@ fn distribution_sql(column: &ColumnOverview) -> Option<String> {
         }
         Shape::Boolean | Shape::Text => Some(format!(
             "CAST(to_json(list_transform(approx_top_k({name}, {TOP_VALUES}), \
-             v -> {{'v': CAST(v AS VARCHAR)}})) AS VARCHAR)"
+             lambda v: {{'v': CAST(v AS VARCHAR)}})) AS VARCHAR)"
         )),
     }
 }

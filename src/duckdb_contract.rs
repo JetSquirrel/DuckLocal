@@ -260,31 +260,23 @@ fn json_serialize_sql_refuses_all_but_reads() {
     assert!(crate::spec::validate_query_sql("SELECT 1; DROP TABLE t").is_err());
 }
 
-/// A PIVOT without an `IN` list is two statements to the C API — DuckDB
-/// first finds the values to pivot on — so `cli::validate_sql` refuses it,
-/// nested or not, before the carve-out above is reached, and says how to
-/// write it as one. It would run (a read-only database included): the gate
-/// refuses it rather than guess that the second statement is DuckDB's own.
-/// An `IN` list, UNPIVOT and the standard `PIVOT (… FOR … IN …)` get through.
+/// Since DuckDB 2.0 a PIVOT without an `IN` list is one statement to the C
+/// API, nested or not (1.x made it two: finding the values to pivot on came
+/// first), so `cli::validate_sql` lets it through like any other query.
+/// The dashboard gate's carve-out then takes one that leads; a nested one
+/// still fails `json_serialize_sql` and is told to name its values.
 #[test]
-fn a_pivot_without_values_counts_as_two_statements() {
+fn a_pivot_without_values_is_one_statement() {
     for sql in [
         "PIVOT t ON a USING sum(b)",
         "SELECT * FROM (PIVOT t ON a USING sum(b))",
         "WITH p AS (PIVOT t ON a USING sum(b)) SELECT * FROM p",
     ] {
-        let message = crate::cli::validate_sql(sql)
-            .unwrap_err()
-            .message()
-            .to_string();
-        assert_eq!(
-            message,
-            "Expected exactly one SQL statement; found 2. A PIVOT counts as two unless it \
-             names its values: PIVOT t ON col IN ('a', 'b') USING sum(x)",
-            "{sql}"
-        );
+        assert!(crate::cli::validate_sql(sql).is_ok(), "{sql}");
     }
-    // Two statements that are not a PIVOT get no PIVOT advice.
+    assert!(crate::spec::validate_query_sql("PIVOT t ON a USING sum(b)").is_ok());
+    let nested = crate::spec::validate_query_sql("SELECT * FROM (PIVOT t ON a USING sum(b))");
+    assert!(nested.unwrap_err().contains("names its values with IN"));
     let message = crate::cli::validate_sql("SELECT 1; SELECT 2")
         .unwrap_err()
         .message()
@@ -649,4 +641,75 @@ fn a_preloaded_icu_formats_a_converted_timestamp_first_time() {
     crate::db::preload_extensions(&preloaded);
     let formatted: String = preloaded.query_row(sql, [], |r| r.get(0)).unwrap();
     assert_eq!(formatted, "10-20");
+}
+
+/// DuckDB 2.0 lets the NULL type leave the binder, and duckdb-rs panics on
+/// the Arrow Null it becomes, top-level or nested. `db::config` sets
+/// `legacy_disable_null_type` to keep it in; this pins both halves, so the
+/// day the setting goes (or duckdb-rs learns Null) says so here.
+#[test]
+fn an_untyped_null_is_typed_by_the_legacy_setting() {
+    use duckdb::arrow::datatypes::DataType;
+    let sql = "SELECT NULL AS a, {'x': NULL} AS b, [NULL] AS c";
+    let types = |conn: &Connection| {
+        let mut stmt = conn.prepare(sql).unwrap();
+        stmt.execute([]).unwrap();
+        (0..3).map(|ix| stmt.column_type(ix)).collect::<Vec<_>>()
+    };
+    let free = types(&mem());
+    assert_eq!(free[0], DataType::Null);
+    let configured = Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+    assert!(
+        !format!("{:?}", types(&configured)).contains("Null"),
+        "{:?}",
+        types(&configured)
+    );
+    let outcome = run_of(&configured, sql).unwrap();
+    let QueryOutcome::Rows(result) = outcome else {
+        panic!("expected rows");
+    };
+    assert_eq!(result.rows[0][0], "NULL");
+}
+
+/// A database DuckLocal creates is written in the format DuckDB 1.x wrote
+/// (`v1.0.0+`, as the v1.5.5 fixtures are), not 2.0's own, which 1.x cannot
+/// open; `db::config` pins `storage_compatibility_version` for it.
+#[test]
+fn a_new_database_file_opens_in_duckdb_1() {
+    let tags = |conn: &Connection| -> String {
+        conn.query_row(
+            "SELECT tags::VARCHAR FROM duckdb_databases() \
+             WHERE NOT internal AND database_name <> 'memory'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let dir = scratch("storage");
+    let pinned =
+        Connection::open_with_flags(dir.join("pinned.duckdb"), crate::db::config().unwrap())
+            .unwrap();
+    assert_eq!(tags(&pinned), "{storage_version=v1.0.0+}");
+    // Unpinned, the default is 2.0's own format.
+    let free = Connection::open(dir.join("free.duckdb")).unwrap();
+    assert!(tags(&free).contains("v2."), "{}", tags(&free));
+}
+
+/// The bundled DuckDB names itself a release, so INSTALL looks for
+/// extensions under `v2.0.0/` rather than under its commit, which
+/// extensions.duckdb.org does not serve. duckdb-rs 1.20000.0 packaged the
+/// v2.0.0 tag as `v2.0.0-dev88614`; `.cargo/config.toml` defines the version
+/// back. A newer bundled commit fails here: drop that override, or move it.
+#[test]
+fn bundled_duckdb_is_v2_0_0() {
+    let (version, source_id, codename): (String, String, String) = mem()
+        .query_row(
+            "SELECT library_version, source_id, codename FROM pragma_version()",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(source_id, "d54cbbe3df", "the bundled DuckDB moved");
+    assert_eq!(version, "v2.0.0");
+    assert_ne!(codename, "Development Version");
 }

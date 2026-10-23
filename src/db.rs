@@ -37,8 +37,19 @@ pub fn interrupt() {
 /// from extensions.duckdb.org nobody asked for; DuckLocal makes no request
 /// nobody asked for, so that is off. An extension already installed (from
 /// the Extensions tab, or an explicit `INSTALL`) still loads on its own.
+///
+/// Since DuckDB 2.0 an untyped NULL (`SELECT NULL`, `{'a': NULL}`) keeps its
+/// own type and comes back as Arrow's Null, which duckdb-rs's `Row::get_ref`
+/// and `Value::from` panic on; the legacy setting types it as before.
+///
+/// DuckDB 2.0 also writes a new database file in its own format, which no
+/// 1.x release opens. A file DuckLocal creates is often opened elsewhere
+/// (the duckdb CLI, Python, DBeaver), so it is written as 1.x wrote it.
 pub(crate) fn config() -> duckdb::Result<duckdb::Config> {
-    duckdb::Config::default().with("autoinstall_known_extensions", "false")
+    duckdb::Config::default()
+        .with("autoinstall_known_extensions", "false")?
+        .with("legacy_disable_null_type", "true")?
+        .with("storage_compatibility_version", "v1.0.0")
 }
 
 /// How the current database was opened.
