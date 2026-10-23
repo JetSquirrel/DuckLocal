@@ -856,6 +856,18 @@ mod tests {
         ] {
             assert_eq!(alias_in(sql).as_deref(), Some(word), "{sql}");
         }
+        // DuckDB 2.0 takes these as bare aliases, so there is nothing to hint.
+        for sql in [
+            "SELECT 1 sample",
+            "SELECT round(2.5) before;",
+            "SELECT 'a' time",
+        ] {
+            assert!(validate_sql(sql).is_ok(), "{sql}");
+            assert!(
+                Connection::open_in_memory().unwrap().prepare(sql).is_ok(),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResul
         .iter()
         .map(|c| c.arrow_type.starts_with("Timestamp(") && !c.arrow_type.ends_with("None)"))
         .collect();
+    let untyped: Vec<bool> = columns.iter().map(|c| c.arrow_type == "Null").collect();
     let row_budget = limit.min(MAX_CELLS / column_count.max(1));
     let mut out = Vec::new();
     let mut truncated = false;
@@ -83,7 +84,12 @@ pub fn run_cli_of(conn: &Connection, sql: &str, limit: usize) -> Result<CliResul
         }
         let mut cells = Vec::with_capacity(column_count);
         for (ix, &zoned) in zoned.iter().enumerate() {
-            cells.push(cli_value(row.get_ref(ix)?, zoned)?);
+            let value = if untyped[ix] {
+                ValueRef::Null
+            } else {
+                row.get_ref(ix)?
+            };
+            cells.push(cli_value(value, zoned)?);
         }
         out.push(cells);
     }
@@ -615,6 +621,12 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
         });
     }
 
+    // `db::config` keeps DuckDB 2.0's NULL type out of results, but a script
+    // can `RESET legacy_disable_null_type`; an untyped NULL column then comes
+    // back as Arrow's Null, which `Row::get_ref` panics on. Every cell of one
+    // is NULL. (Nested in a struct or list it still panics in duckdb-rs.)
+    let untyped: Vec<bool> = columns.iter().map(|c| c.duck_type == "Null").collect();
+
     // Whichever of the two caps binds for this result's shape.
     let row_budget = MAX_ROWS.min(MAX_CELLS / column_count.max(1)).max(1);
 
@@ -626,10 +638,15 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
             break;
         }
         let mut cells = Vec::with_capacity(column_count);
-        for ix in 0..column_count {
+        for (ix, &untyped) in untyped.iter().enumerate() {
             // `get_ref` borrows out of the result vector; `get::<Value>` would
             // allocate an owned value per cell just to throw it away here.
-            cells.push(value_ref_to_string(row.get_ref(ix)?));
+            let value = if untyped {
+                ValueRef::Null
+            } else {
+                row.get_ref(ix)?
+            };
+            cells.push(value_ref_to_string(value));
         }
         out_rows.push(cells);
     }
@@ -1504,6 +1521,42 @@ mod tests {
         assert_eq!(scan.details, vec![("Projections".into(), "i, g".into())]);
         assert!((profile.operator_seconds - 0.012).abs() < 1e-9);
         assert_eq!(profile.hottest().unwrap().name, "TABLE_SCAN");
+    }
+
+    /// DuckDB 2.0's shape: the tree under `operator`, short keys, and two
+    /// more wrappers above `EXPLAIN_ANALYZE`, whose own timing is not counted.
+    #[test]
+    fn profile_reads_the_duckdb_2_shape() {
+        let json = r#"{"io":{},"query":{"total_time":0.02},"operator":[
+            {"type":"RESULT_COLLECTOR","timing":0.5,"intermediate_rows":0,"extra_info":{},"children":[
+            {"type":"EXECUTE","timing":0.5,"intermediate_rows":0,"extra_info":{},"children":[
+            {"type":"EXPLAIN_ANALYZE","timing":0.5,"intermediate_rows":0,"extra_info":{},"children":[
+            {"type":"FILTER","timing":0.002,"intermediate_rows":5,
+             "extra_info":{"Expression":"(i > 10)","Estimated Cardinality":"400"},
+             "children":[{"type":"TABLE_SCAN","timing":0.01,"intermediate_rows":400,
+             "extra_info":{"Projections":["i","g"]},"children":[]}]}]}]}]}]}"#;
+        let profile = parse_profile(json, 3).unwrap();
+        assert_eq!(profile.roots.len(), 1);
+        let filter = &profile.roots[0];
+        assert_eq!(filter.name, "FILTER");
+        assert_eq!(filter.rows, 5);
+        assert_eq!(filter.estimated, Some(400));
+        assert_eq!(filter.children[0].rows, 400);
+        assert!((profile.operator_seconds - 0.012).abs() < 1e-9);
+        assert_eq!(profile.hottest().unwrap().name, "TABLE_SCAN");
+    }
+
+    #[test]
+    fn an_untyped_null_column_reads_after_the_setting_is_reset() {
+        let conn = mem();
+        conn.execute_batch("RESET legacy_disable_null_type")
+            .unwrap();
+        let QueryOutcome::Rows(result) = run_of(&conn, "SELECT NULL AS a, 1 AS b").unwrap() else {
+            panic!("expected rows");
+        };
+        assert_eq!(result.rows, vec![vec!["NULL", "1"]]);
+        let cli = run_cli_of(&conn, "SELECT NULL AS a", 10).unwrap();
+        assert_eq!(cli.rows, vec![vec![serde_json::Value::Null]]);
     }
 
     #[test]

@@ -13,4 +13,4 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # The same DuckDB as the app, from the same lockfile, so it is built once.
-duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
+duckdb = { version = "1.20000", features = ["bundled", "json", "parquet"] }

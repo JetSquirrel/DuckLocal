@@ -7,3 +7,11 @@
 # platforms ignore it.
 [env]
 MACOSX_DEPLOYMENT_TARGET = "12.0"
+
+# duckdb-rs 1.20000.0 bundles DuckDB at the v2.0.0 tag (d54cbbe3df) but
+# packaged it as `v2.0.0-dev88614`. DuckDB takes a dev version's extensions
+# from a directory named after the commit, which extensions.duckdb.org does
+# not have, so every INSTALL failed with a 404. The sources only define these
+# when they are not set already. `duckdb_contract::bundled_duckdb_is_v2_0_0`
+# fails when the bundled commit moves, which is when this should go.
+CXXFLAGS = '-DDUCKDB_VERSION="v2.0.0" -DDUCKDB_PATCH_VERSION="0"'
