@@ -94,7 +94,7 @@ fn release(version: &str) -> Option<(u64, u64, u64)> {
 /// `None` when the header does not explain the failure and DuckDB's own
 /// message is the best there is.
 ///
-/// `ours` is the bundled DuckDB's version (`v1.5.5`); `error` is DuckDB's
+/// `ours` is the bundled DuckDB's version (`v2.0.0`); `error` is DuckDB's
 /// message. A file's version only explains a failure DuckDB blamed on the
 /// version: a newer release's file that this one can still read fails for
 /// other reasons too — a lock held by that release, above all.
@@ -119,7 +119,7 @@ pub fn explain_open_failure(path: &str, ours: &str, error: &str, lang: Language)
     }
 }
 
-/// The bundled DuckDB's release, `v1.5.5`, without opening a database.
+/// The bundled DuckDB's release, `v2.0.0`, without opening a database.
 pub fn library_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
@@ -132,9 +132,10 @@ pub fn library_version() -> &'static str {
 
 /// Whether DuckDB refused a file over its storage version: the two messages
 /// it opens a file with, for the header's version number and for the
-/// serialization a newer release wrote.
+/// serialization a newer release wrote. DuckDB 2.0 says "storage version
+/// number" where 1.x said "version number", so the match stops short of it.
 pub(crate) fn refused_for_its_version(error: &str) -> bool {
-    error.contains("database file with version number")
+    error.contains("Trying to read a database file with")
         || error.contains("storage version greater than the latest version")
 }
 
@@ -262,8 +263,18 @@ mod tests {
     /// DuckDB's messages for a file it will not read for its version.
     const TOO_NEW: &str = "Invalid Input Error: Error opening \"x.duckdb\": file was written with \
         a storage version greater than the latest version supported by this DuckDB instance.";
-    const OLD_NUMBER: &str = "IO Error: Trying to read a database file with version number 51, \
+    const OLD_NUMBER: &str = "IO Error: Trying to read a database file with storage version \
+        number 51, but we can only read storage versions between 64 and 67.\n\
+        The database file was created with an older development version of DuckDB.";
+    /// The same refusal as DuckDB 1.x worded it.
+    const OLD_NUMBER_1X: &str = "IO Error: Trying to read a database file with version number 51, \
         but we can only read versions between 64 and 67.";
+
+    #[test]
+    fn both_wordings_of_the_too_old_refusal_are_recognized() {
+        assert!(refused_for_its_version(OLD_NUMBER));
+        assert!(refused_for_its_version(OLD_NUMBER_1X));
+    }
 
     #[test]
     fn a_newer_file_that_failed_for_another_reason_is_not_called_too_new() {
