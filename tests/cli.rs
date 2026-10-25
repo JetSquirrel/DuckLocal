@@ -236,9 +236,9 @@ fn temporal_binary_and_nested_encodings_are_unambiguous() {
         out["rows"][0],
         json!([
             {"encoding":"date","unit":"Day","value":"1","iso":"1970-01-02"},
-            // `iso` is for reading, to the microsecond; `value` is exact.
+            // `iso` is for reading, to the unit's precision; `value` is exact.
             {"encoding":"timestamp","unit":"Nanosecond","value":"123456789",
-             "iso":"1970-01-01T00:00:00.123456"},
+             "iso":"1970-01-01T00:00:00.123456789"},
             {"encoding":"time","unit":"Microsecond","value":"123456","iso":"00:00:00.123456"},
             {"encoding":"interval","months":1,"days":2,"nanos":"3000"},
             {"encoding":"hex","value":"00ff"},

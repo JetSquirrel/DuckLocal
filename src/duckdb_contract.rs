@@ -327,8 +327,7 @@ fn every_type_renders_as_pinned() {
             ("dec38", "123456789012345678901234567890.1234567"),
             ("ts_ms", "2024-10-04 07:08:09.123"),
             ("ts_s", "2024-10-04 07:08:09"),
-            // Lossy today: the nanoseconds are cut to microseconds.
-            ("ts_ns", "2024-10-04 07:08:09.123456"),
+            ("ts_ns", "2024-10-04 07:08:09.123456789"),
             // Lossy today: the instant in UTC, with no zone said.
             ("tstz", "2024-10-04 05:08:09"),
             // Lossy today: the offset is dropped.
@@ -341,7 +340,10 @@ fn every_type_renders_as_pinned() {
             ("days", "3 days"),
             ("day_hours", "1 day 02:00:00"),
             ("nothing", "00:00:00"),
-            // Unreadable today: Arrow hands both over as bytes.
+            // Unreadable today: Arrow hands both over as bytes, typed as
+            // Binary like any BLOB. `arrow_lossless_conversion` does not
+            // help: duckdb-rs ignores the extension type it adds (and the
+            // same setting turns TIMETZ into 8 opaque bytes).
             ("bit", "<blob 2 bytes>"),
             ("bignum", "<blob 24 bytes>"),
         ]
@@ -712,4 +714,44 @@ fn bundled_duckdb_is_v2_0_0() {
     assert_eq!(source_id, "d54cbbe3df", "the bundled DuckDB moved");
     assert_eq!(version, "v2.0.0");
     assert_ne!(codename, "Development Version");
+}
+
+/// The pin above lowers what a new file is written as, never what an
+/// existing one is read as: a file in 2.0's own format — from the duckdb
+/// CLI, Python, or DuckLocal before the pin — opens with `db::config`, by
+/// path or by ATTACH, and takes writes without being rewritten as 1.x.
+#[test]
+fn a_file_in_2_0_format_opens_with_the_pinned_config() {
+    let dir = scratch("v2_format");
+    let path = dir.join("v2.duckdb");
+    let _ = std::fs::remove_file(&path);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE TABLE t AS SELECT 1 AS n; CHECKPOINT;")
+        .unwrap();
+
+    let pinned = Connection::open_with_flags(&path, crate::db::config().unwrap()).unwrap();
+    pinned
+        .execute_batch("INSERT INTO t VALUES (2); CHECKPOINT;")
+        .unwrap();
+    let (count, tags): (i64, String) = pinned
+        .query_row(
+            "SELECT (SELECT count(*) FROM t), tags::VARCHAR FROM duckdb_databases()              WHERE database_name = 'v2'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    assert!(tags.contains("v2."), "{tags}");
+    drop(pinned);
+
+    let attached = Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+    let path = path.to_str().unwrap().replace('\\', "/");
+    attached
+        .execute_batch(&format!("ATTACH '{path}' AS other (READ_ONLY)"))
+        .unwrap();
+    let count: i64 = attached
+        .query_row("SELECT count(*) FROM other.t", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
 }

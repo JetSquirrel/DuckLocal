@@ -382,21 +382,21 @@ fn format_precise_timestamp(unit: &str, value: i64) -> String {
     let Some(unit) = time_unit(unit) else {
         return value.to_string();
     };
-    let Some(moment) = chrono::DateTime::from_timestamp_micros(unit.to_micros(value)) else {
+    let Some(moment) = moment(unit, value) else {
         return value.to_string();
     };
     let seconds = moment.format("%Y-%m-%d %H:%M:%S").to_string();
-    fraction(seconds, moment.timestamp_subsec_micros())
+    fraction(seconds, moment.timestamp_subsec_nanos())
 }
 
 /// A timestamp as ISO 8601: `2026-10-20T01:02:03.5`, with `Z` when it is a
 /// UTC instant. Out of chrono's range, the count itself.
 fn iso_timestamp(unit: TimeUnit, value: i64, zoned: bool) -> String {
-    let Some(moment) = chrono::DateTime::from_timestamp_micros(unit.to_micros(value)) else {
+    let Some(moment) = moment(unit, value) else {
         return value.to_string();
     };
     let seconds = moment.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let text = fraction(seconds, moment.timestamp_subsec_micros());
+    let text = fraction(seconds, moment.timestamp_subsec_nanos());
     if zoned {
         text + "Z"
     } else {
@@ -408,22 +408,38 @@ fn format_precise_time(unit: &str, value: i64) -> String {
     let Some(unit) = time_unit(unit) else {
         return value.to_string();
     };
-    let micros = unit.to_micros(value);
-    let seconds = micros.div_euclid(1_000_000);
-    let text = format!(
-        "{:02}:{:02}:{:02}",
-        seconds.div_euclid(3_600),
-        seconds.div_euclid(60) % 60,
-        seconds % 60
-    );
-    fraction(text, micros.rem_euclid(1_000_000) as u32)
+    format_time(unit, value)
 }
 
-fn fraction(prefix: String, micros: u32) -> String {
-    if micros == 0 {
+/// A count of `unit`s as whole seconds and the nanoseconds past them. Going
+/// through microseconds would cut a TIMESTAMP_NS's last three digits, and
+/// through nanoseconds would overflow a TIMESTAMP_S past the year 2262.
+fn split_seconds(unit: TimeUnit, value: i64) -> (i64, u32) {
+    let per_second: i64 = match unit {
+        TimeUnit::Second => 1,
+        TimeUnit::Millisecond => 1_000,
+        TimeUnit::Microsecond => 1_000_000,
+        TimeUnit::Nanosecond => 1_000_000_000,
+    };
+    let nanos_per_unit = 1_000_000_000 / per_second;
+    (
+        value.div_euclid(per_second),
+        (value.rem_euclid(per_second) * nanos_per_unit) as u32,
+    )
+}
+
+fn moment(unit: TimeUnit, value: i64) -> Option<chrono::DateTime<chrono::Utc>> {
+    let (seconds, nanos) = split_seconds(unit, value);
+    chrono::DateTime::from_timestamp(seconds, nanos)
+}
+
+/// `.123` for 123 ms, `.123456789` for a nanosecond count: as many digits as
+/// the value has, as DuckDB prints it.
+fn fraction(prefix: String, nanos: u32) -> String {
+    if nanos == 0 {
         return prefix;
     }
-    let digits = format!("{micros:06}");
+    let digits = format!("{nanos:09}");
     format!("{prefix}.{}", digits.trim_end_matches('0'))
 }
 
@@ -1262,9 +1278,8 @@ fn format_float(v: f64) -> String {
 // cell is also what a dashboard filter compares against, and a timestamp cut
 // to whole seconds matched no row that had a fraction.
 fn format_timestamp(unit: TimeUnit, v: i64) -> String {
-    let micros = unit.to_micros(v);
     use chrono::{Datelike as _, Timelike as _};
-    match chrono::DateTime::from_timestamp_micros(micros) {
+    match moment(unit, v) {
         Some(t) if (0..=9999).contains(&t.year()) => fraction(
             format!(
                 "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
@@ -1275,26 +1290,22 @@ fn format_timestamp(unit: TimeUnit, v: i64) -> String {
                 t.minute(),
                 t.second()
             ),
-            t.timestamp_subsec_micros(),
+            t.timestamp_subsec_nanos(),
         ),
         Some(t) => fraction(
             t.format("%Y-%m-%d %H:%M:%S").to_string(),
-            t.timestamp_subsec_micros(),
+            t.timestamp_subsec_nanos(),
         ),
         None => v.to_string(),
     }
 }
 
 fn format_time(unit: TimeUnit, v: i64) -> String {
-    let micros = unit.to_micros(v);
-    let secs = micros.div_euclid(1_000_000);
+    let (secs, nanos) = split_seconds(unit, v);
     let h = secs.div_euclid(3600);
     let m = secs.div_euclid(60) % 60;
     let s = secs % 60;
-    fraction(
-        format!("{h:02}:{m:02}:{s:02}"),
-        micros.rem_euclid(1_000_000) as u32,
-    )
+    fraction(format!("{h:02}:{m:02}:{s:02}"), nanos)
 }
 
 /// An interval as DuckDB writes one (`CAST(… AS VARCHAR)`): `1 year 2
@@ -1931,6 +1942,25 @@ mod tests {
         assert_eq!(
             value_to_string(&Value::Time64(TimeUnit::Microsecond, 3_723_000_120)),
             "01:02:03.00012"
+        );
+        // Nanoseconds keep all nine digits; before 1970 the fraction still
+        // counts forward from the second.
+        assert_eq!(
+            value_to_string(&Value::Timestamp(TimeUnit::Nanosecond, 1_000_000_001)),
+            "1970-01-01 00:00:01.000000001"
+        );
+        assert_eq!(
+            value_to_string(&Value::Timestamp(TimeUnit::Nanosecond, -1)),
+            "1969-12-31 23:59:59.999999999"
+        );
+        assert_eq!(
+            value_to_string(&Value::Time64(TimeUnit::Nanosecond, 3_723_000_000_005)),
+            "01:02:03.000000005"
+        );
+        // Seconds past the year 2262, where a count of nanoseconds overflows.
+        assert_eq!(
+            value_to_string(&Value::Timestamp(TimeUnit::Second, 253_402_300_799)),
+            "9999-12-31 23:59:59"
         );
     }
 
