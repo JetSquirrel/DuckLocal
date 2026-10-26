@@ -1536,7 +1536,12 @@ fn schema_stats_profiles_one_relation() {
     assert_eq!(stats["row_count"], 2);
     // Two relations need --table to say which.
     let error = s.error(&["schema", ".", "--stats"], 2, "argument");
-    assert!(error["error"]["hint"].as_str().unwrap().contains("--table"));
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(hint.starts_with("Add --table NAME to pick one: "), "{hint}");
+    assert!(
+        hint.contains("orders.csv") && hint.contains("other.csv"),
+        "{hint}"
+    );
     let picked = s.object(&["schema", ".", "--stats", "--table", "orders.csv"]);
     assert_eq!(picked["row_count"], 2);
     s.success(&[

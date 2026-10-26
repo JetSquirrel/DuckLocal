@@ -220,7 +220,19 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
                 "--stats profiles one relation; these arguments name {}",
                 relations.len()
             ))
-            .with_hint("Add --table NAME to pick one"));
+            .with_hint({
+                // The names to pick from, enough of them to pick by.
+                const SHOWN: usize = 8;
+                let mut names: Vec<&str> = relations
+                    .iter()
+                    .take(SHOWN)
+                    .map(|r| r.name.as_str())
+                    .collect();
+                if relations.len() > SHOWN {
+                    names.push("…");
+                }
+                format!("Add --table NAME to pick one: {}", names.join(", "))
+            }));
         };
         let target = only.target.clone();
         drop(connection);
