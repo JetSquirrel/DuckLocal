@@ -30,7 +30,8 @@ use serde_json::{json, Value};
 use crate::cli::{parse_args, Arg, CliError, FlagSpec};
 
 pub(crate) const SCHEMA_HELP: &str = "\
-Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME] [--full|--stats]
+Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME]
+                        [--full|--stats]
 
 What there is to query, as JSON sized for a prompt: data files (PATHs are
 files, folders or globs) and, with --database, a database's tables and views.
@@ -51,7 +52,8 @@ Options:
 Output: {detail, relations: [{name, kind, from, rows, column_count, columns?}],
 without_columns, hint?}. `from` is the SQL that reads the relation. `rows` is
 an estimate for tables, exact for Parquet, and null where it would need a scan.
-With --stats: {target, row_count, columns: [{name, type, nulls, distinct, ...}]}.
+With --stats: {target, row_count,
+columns: [{name, type, nulls, distinct, ...}]}.
 ";
 
 const SPEC: &[FlagSpec] = &[
@@ -192,13 +194,14 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 
     if let Some(wanted) = table {
-        let found = relations
-            .into_iter()
-            .find(|r| names_match(r, &wanted))
-            .ok_or_else(|| {
-                CliError::argument(format!("No relation named {wanted:?}"))
-                    .with_hint("Run the same command without --table to list the names")
-            })?;
+        let Some(index) = relations.iter().position(|r| names_match(r, &wanted)) else {
+            let error = CliError::argument(format!("No relation named {wanted:?}"));
+            return Err(match closest_name(&relations, &wanted) {
+                Some(name) => error.with_hint(format!("Did you mean {name:?}?")),
+                None => error.with_hint("Run the same command without --table to list the names"),
+            });
+        };
+        let found = relations.swap_remove(index);
         if stats {
             drop(connection);
             return crate::cli::profile_target(&found.target, database);
@@ -295,6 +298,23 @@ fn largest(relations: &[Relation], n: usize) -> Vec<bool> {
 
 /// `--table` matches a relation's name as listed, its unqualified table name,
 /// or — for a file — the path as given or its file name.
+/// The relation name `wanted` is a slip of — one or two edits away, ignoring
+/// case — as DuckDB suggests for a table a query misnames.
+fn closest_name<'a>(relations: &'a [Relation], wanted: &str) -> Option<&'a str> {
+    let wanted = wanted.trim().to_lowercase();
+    relations
+        .iter()
+        .map(|r| {
+            let distance = crate::cli::edit_distance(&wanted, &r.name.to_lowercase());
+            (distance, r.name.as_str())
+        })
+        // A short name is a few edits from anything; it has to keep most of
+        // its letters to be a slip.
+        .filter(|(distance, _)| *distance <= 2 && *distance * 2 < wanted.chars().count())
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
+}
+
 fn names_match(relation: &Relation, wanted: &str) -> bool {
     let wanted = wanted.trim();
     if relation.name.eq_ignore_ascii_case(wanted) {
@@ -342,11 +362,17 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
     }
     let reader = crate::db::data_file_reader(file).unwrap_or("read_csv_auto");
     let absolute = format!("'{}'", file.replace('\'', "''"));
-    let (columns, error) =
+    // DuckDB reads an empty CSV as one VARCHAR column named column0, which
+    // is a column the file does not have.
+    let empty = std::fs::metadata(file).is_ok_and(|m| m.len() == 0);
+    let (columns, error) = if empty {
+        (Vec::new(), Some("The file is empty (0 bytes)".to_string()))
+    } else {
         match describe(connection, &format!("SELECT * FROM {reader}({absolute})")) {
             Ok(columns) => (columns, None),
             Err(message) => (Vec::new(), Some(message)),
-        };
+        }
+    };
     let rows = (reader == "read_parquet")
         .then(|| {
             connection
@@ -371,7 +397,7 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
         },
         target: shown.clone(),
         path: Some(shown),
-        rows,
+        rows: if empty { Some(0) } else { rows },
         columns,
         error,
         sheets: None,

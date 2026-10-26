@@ -13,10 +13,10 @@ Usage:
   ducklocal [PATH ...]          Open the GUI on files, folders or globs
   ducklocal query [OPTIONS]     Run one SQL statement, print JSON
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
-  ducklocal open [OPTIONS]      Show work in the running window; --state reads it
+  ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
   ducklocal comments FILE       Read and answer review comments on a dashboard
-  ducklocal presence FILE       Show the person which plots you are reading or editing
+  ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
 
 Run `ducklocal <command> --help` for its options.
@@ -288,7 +288,7 @@ fn closest_flag<'a>(text: &str, spec: &'a [FlagSpec]) -> Option<&'a str> {
 }
 
 /// Levenshtein distance, over chars; flag names are short.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
@@ -462,10 +462,16 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
             }
             Arg::Flag("--read-write", None) => options.read_write = true,
             Arg::Flag("--format", Some(value)) => {
-                options.format = match value.to_str() {
-                    Some("json") => Format::Json,
-                    Some("md") => Format::Markdown,
-                    _ => return Err(CliError::argument("--format must be json or md")),
+                let text = value.to_string_lossy().to_ascii_lowercase();
+                options.format = match text.as_str() {
+                    "json" => Format::Json,
+                    "md" | "markdown" => Format::Markdown,
+                    _ => {
+                        return Err(CliError::argument(format!(
+                            "--format must be json or md; got {:?}",
+                            value.to_string_lossy()
+                        )))
+                    }
                 };
             }
             Arg::Flag("--limit", Some(value)) => {
@@ -476,7 +482,9 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                     .filter(|n| *n > 0)
                     .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
                     .ok_or_else(|| {
-                        CliError::argument("--limit must be a positive integer fitting usize")
+                        CliError::argument(format!(
+                            "--limit must be a whole number of rows, 1 or more; got {text:?}"
+                        ))
                     })?;
             }
             Arg::Positional(value) => {
@@ -647,8 +655,19 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
     let config = crate::db::config().map_err(|e| CliError::failure("database", e))?;
     if let Some(path) = database {
         if !read_write {
-            let metadata =
-                std::fs::metadata(&path).map_err(|e| CliError::failure("database", e))?;
+            let metadata = std::fs::metadata(&path).map_err(|e| {
+                // The OS's own wording names neither the file nor the way
+                // out, and on Windows it is in the system's language.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    CliError::failure(
+                        "database",
+                        format!("No database file at {}", path.display()),
+                    )
+                    .with_hint("--database opens an existing file; add --read-write to create it")
+                } else {
+                    CliError::failure("database", format!("{}: {e}", path.display()))
+                }
+            })?;
             if !metadata.is_file() {
                 return Err(CliError::failure(
                     "database",
@@ -757,6 +776,10 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     }
     #[cfg(windows)]
     crate::windows::attach_cli_console();
+    // The CLI speaks English whatever the window does; shared code that
+    // words its messages in the UI's language (`sources`' file problems)
+    // reads this process's language, which is never persisted from here.
+    crate::i18n::set_current(crate::i18n::Language::En);
 
     // The language server's stdio is a frame stream, not a document: it
     // handles its own output and exit code, so it never reaches the writeln

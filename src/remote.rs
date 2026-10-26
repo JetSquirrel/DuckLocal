@@ -57,8 +57,9 @@ be reached.
 With --state, nothing opens and no window starts: the output is what the
 running window shows — {database, attached, active_tab, tabs}: each query
 tab's SQL and result (columns, row count, the first 20 rows, or the error),
-and each dashboard's plots and the values its filters have picked. Exit 1 with kind not_running when no window is up, timeout when it
-does not answer within 5s.
+and each dashboard's plots and the values its filters have picked. Exit 1
+with kind not_running when no window is up, timeout when it does not answer
+within 5s. --no-launch is accepted and changes nothing.
 
 --state PATH keeps only the tabs showing that .dash file (exit 1 with kind
 not_open, and the open dashboards, when none does); --state --active keeps
@@ -538,12 +539,11 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
         return Err(CliError::argument("--active narrows --state; add --state"));
     }
     if state {
-        // What may come along: one spec to narrow to, or --active.
-        let opens_something = request.sql.is_some()
-            || sql_file.is_some()
-            || request.title.is_some()
-            || request.run
-            || !launch;
+        // What may come along: one spec to narrow to, or --active. And
+        // --no-launch, which --state already is: a caller that always passes
+        // it to keep a window from appearing should not have to drop it here.
+        let opens_something =
+            request.sql.is_some() || sql_file.is_some() || request.title.is_some() || request.run;
         let scope = match (request.paths.as_slice(), active, opens_something) {
             ([], false, false) => StateScope::All,
             ([], true, false) => StateScope::Active,

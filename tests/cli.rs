@@ -366,11 +366,19 @@ fn parser_rejects_scripts_before_any_side_effect() {
 #[test]
 fn database_is_read_only_by_default_and_copy_is_not_sandboxed() {
     let s = Sandbox::new();
-    s.error(
+    let missing = s.error(
         &["query", "--database", "missing.duckdb", "--sql", "SELECT 1"],
         1,
         "database",
     );
+    assert_eq!(
+        missing["error"]["message"],
+        "No database file at missing.duckdb"
+    );
+    assert!(missing["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("--read-write"));
     assert!(!s.0.join("missing.duckdb").exists());
     std::fs::write(s.0.join("bad.duckdb"), "not a database").unwrap();
     s.error(
@@ -668,7 +676,8 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         lines,
         [
             "| a\\|b | b | c | d | e | f |",
-            "| --- | --- | --- | --- | --- | --- |",
+            // Numbers right-aligned; DuckDB types a bare NULL as INTEGER.
+            "| --- | --- | ---: | --- | ---: | ---: |",
             "| x\\|y | one<br>two | NULL | 2024-03-05 | 1.25 | 9007199254740993 |",
         ]
     );
@@ -699,6 +708,24 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "{truncated}"
     );
 
+    // The name is the format's, however it is spelled.
+    for spelling in ["MD", "markdown"] {
+        let same = s.text(&["query", "--sql", "SELECT 1 AS n", "--format", spelling]);
+        assert_eq!(
+            same,
+            "| n |
+| ---: |
+| 1 |
+",
+            "{spelling}"
+        );
+    }
+    s.error(
+        &["query", "--sql", "SELECT 1", "--format", "csv"],
+        2,
+        "argument",
+    );
+
     let empty = s.text(&[
         "query",
         "--sql",
@@ -706,7 +733,7 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "--format",
         "md",
     ]);
-    assert_eq!(empty, "| n |\n| --- |\n_0 rows._\n");
+    assert_eq!(empty, "| n |\n| ---: |\n_0 rows._\n");
 
     let ddl = s.text(&[
         "query",
@@ -1336,6 +1363,36 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     s.error(&["schema", "missing.csv"], 2, "argument");
     let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
     assert!(error["error"]["hint"].as_str().is_some());
+    // An empty file has no columns, not DuckDB's stand-in column0.
+    std::fs::write(s.0.join("empty.csv"), "").unwrap();
+    let empty = s.object(&["schema", "empty.csv"]);
+    assert_eq!(empty["relations"][0]["rows"], 0);
+    assert_eq!(empty["relations"][0]["column_count"], 0);
+    assert_eq!(
+        empty["relations"][0]["error"],
+        "The file is empty (0 bytes)"
+    );
+    // A slip of a name is answered with the name.
+    let error = s.error(&["schema", "w.duckdb", "--table", "bigg"], 2, "argument");
+    assert_eq!(error["error"]["hint"], "Did you mean \"big\"?");
+}
+
+/// The CLI speaks English whatever language the window is in, including the
+/// file problems it shares with the GUI's sidebar.
+#[test]
+fn errors_are_worded_in_english() {
+    let s = Sandbox::new();
+    let error = s.error(&["schema", "missing.csv"], 2, "argument");
+    assert_eq!(error["error"]["message"], "File not found: missing.csv");
+    let error = s.error(
+        &["query", "--sql", "SELECT 1", "--limit", "0"],
+        2,
+        "argument",
+    );
+    assert_eq!(
+        error["error"]["message"],
+        "--limit must be a whole number of rows, 1 or more; got \"0\""
+    );
 }
 
 /// A glob over files of one format is one relation, as a `.dash` source reads
@@ -1455,6 +1512,7 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
     // One spec narrows what it reads, as does --active; not both, not two.
     s.error(&["open", "--state", "a.dash"], 1, "not_running");
     s.error(&["open", "--state", "--active"], 1, "not_running");
+    s.error(&["open", "--state", "--no-launch"], 1, "not_running");
     s.error(&["open", "--state", "a.dash", "b.dash"], 2, "argument");
     s.error(&["open", "--state", "--active", "a.dash"], 2, "argument");
     s.error(&["open", "--active"], 2, "argument");
@@ -1567,4 +1625,37 @@ filter "day" {
         .as_str()
         .unwrap()
         .contains("\"nope\""));
+}
+
+/// An agent answers review threads by id, and starts them only on a plot the
+/// spec has.
+#[test]
+fn comments_take_a_threads_number_and_refuse_an_unknown_plot() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("d.dash"),
+        "query \"q\" { sql = \"SELECT 1 AS n\" }\n\
+         plot \"p\" {\n  type = \"table\"\n  query = query.q\n}\n",
+    )
+    .unwrap();
+
+    let error = s.error(
+        &["comments", "d.dash", "--add", "pp", "--text", "x"],
+        2,
+        "argument",
+    );
+    assert_eq!(error["error"]["message"], "d.dash: no plot named \"pp\"");
+    assert_eq!(error["error"]["hint"], "Plots: p");
+    assert!(!s.0.join("d.dash.comments.json").exists());
+
+    let added = s.object(&["comments", "d.dash", "--add", "p", "--text", "Sort it"]);
+    assert_eq!(added["thread"]["id"], "c1");
+    // `1` is c1, as a person reading the threads would say it.
+    let replied = s.object(&["comments", "d.dash", "--reply", "1", "--text", "Sorted"]);
+    assert_eq!(replied["thread"]["comments"].as_array().unwrap().len(), 2);
+    s.object(&["comments", "d.dash", "--resolve", "1"]);
+    assert_eq!(s.object(&["comments", "d.dash"])["open"], 0);
+    s.object(&["comments", "d.dash", "--reopen", "c1"]);
+    assert_eq!(s.object(&["comments", "d.dash"])["open"], 1);
+    s.error(&["comments", "d.dash", "--resolve", "9"], 2, "argument");
 }

@@ -415,7 +415,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "无法恢复相对路径 {}：原工作目录未知。请移除该记录并重新打开文件。",
         "Cannot restore relative path {}: its original working directory is unknown. Remove the registration and open the file again.",
     ),
-    ("notify.connect.success", "已连接到 {}", "Connected to {}."),
     ("notify.connect.failed", "无法打开数据库：{}", "Could not open database: {}"),
 
     // ── src/sources.rs ──────────────────────────────────────────────────
