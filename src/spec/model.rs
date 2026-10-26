@@ -499,8 +499,11 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
                     .iter()
                     .find(|b| b.kind == "query" && b.name == query.name);
                 let message = format!(
-                    "query {:?} reads ${}, but no filter block is named {:?}",
-                    query.name, placeholder.name, placeholder.name
+                    "query {:?} reads ${}, but no filter block is named {:?}{}",
+                    query.name,
+                    placeholder.name,
+                    placeholder.name,
+                    did_you_mean(&placeholder.name, filters.iter().map(|f| f.name.as_str()))
                 );
                 diagnostics.push(
                     match block.and_then(|b| b.attrs.iter().find(|a| a.name == "sql")) {
@@ -1110,7 +1113,7 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                 col: filter.col,
                 span: filter.span,
                 message: format!(
-                    "filter {:?} picks column {:?}, which query {:?} (plot {:?}) does not return; it returns: {}",
+                    "filter {:?} picks column {:?}, which query {:?} (plot {:?}) does not return; it returns: {}{}",
                     filter.name,
                     filter.column,
                     plot.query,
@@ -1119,7 +1122,8 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                         .iter()
                         .map(|(name, _)| name.as_str())
                         .collect::<Vec<_>>()
-                        .join(", ")
+                        .join(", "),
+                    did_you_mean(&filter.column, available.iter().map(|(name, _)| name.as_str()))
                 ),
             });
         }
@@ -1212,14 +1216,15 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                     col: plot.col,
                     span: plot.span,
                     message: format!(
-                        "plot {:?} uses {name} = {column:?}, which query {:?} does not return; it returns: {}",
+                        "plot {:?} uses {name} = {column:?}, which query {:?} does not return; it returns: {}{}",
                         plot.name,
                         query.name,
                         available
                             .iter()
                             .map(|(name, _)| name.as_str())
                             .collect::<Vec<_>>()
-                            .join(", ")
+                            .join(", "),
+                        did_you_mean(column, available.iter().map(|(name, _)| name.as_str()))
                     ),
                 });
             }
@@ -1389,6 +1394,59 @@ filter "picked" {
         ] {
             assert!(found.iter().any(|m| m.contains(wanted)), "{wanted}: {found:?}");
         }
+    }
+
+    /// A misspelled filter or column, swapped letters included, gets the one
+    /// meant; the column only once DuckDB has said what the query returns.
+    #[test]
+    fn a_misspelled_filter_or_column_gets_the_one_meant() {
+        let found: Vec<String> = validate_err(
+            "query \"q\" { sql = \"SELECT name, amount FROM t WHERE $nmae\" }
+             plot \"names\" {
+  type = \"bar\"
+  query = query.q
+  x = name
+  y = amount
+}
+             filter \"name\" { plot = plot.names }
+",
+        )
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+        assert!(
+            found
+                .iter()
+                .any(|m| m.ends_with("named \"nmae\"; did you mean \"name\"?")),
+            "{found:?}"
+        );
+
+        let spec = validate_ok(
+            "query \"q\" { sql = \"SELECT name, amount FROM t\" }
+             plot \"p\" {
+  type = \"line\"
+  query = query.q
+  x = name
+  y = amont
+}
+",
+        );
+        let returns = |_: &str| -> Result<Vec<(String, String)>, String> {
+            Ok(vec![
+                ("name".to_string(), "VARCHAR".to_string()),
+                ("amount".to_string(), "DOUBLE".to_string()),
+            ])
+        };
+        let found: Vec<String> = check_columns(&spec, &returns)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            found
+                .iter()
+                .any(|m| m.ends_with("it returns: name, amount; did you mean \"amount\"?")),
+            "{found:?}"
+        );
     }
 
     /// A reference written as a string, or a misspelled type, is answered

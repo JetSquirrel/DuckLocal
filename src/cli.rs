@@ -287,20 +287,28 @@ fn closest_flag<'a>(text: &str, spec: &'a [FlagSpec]) -> Option<&'a str> {
         .map(|(name, _)| name)
 }
 
-/// Levenshtein distance, over chars; flag names are short.
+/// Edit distance over chars, with two neighbours swapped counting as one edit
+/// (`nmae` for `name`), the slip typing makes most; names here are short.
 pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut previous = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let substitute = previous + usize::from(ca != *cb);
-            previous = row[j + 1];
-            row[j + 1] = substitute.min(row[j] + 1).min(previous + 1);
+    // Three rows: two back for a swap, one back for the rest.
+    let mut before: Vec<usize> = vec![0; b.len() + 1];
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut row = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            row[j] = (previous[j - 1] + cost)
+                .min(previous[j] + 1)
+                .min(row[j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                row[j] = row[j].min(before[j - 2] + 1);
+            }
         }
+        before = std::mem::replace(&mut previous, row);
     }
-    row[b.len()]
+    previous[b.len()]
 }
 
 /// One flag a command accepts: its name and whether it takes a value.
@@ -847,6 +855,10 @@ mod tests {
         assert_eq!(closest_flag("--databse", QUERY_SPEC), Some("--database"));
         assert_eq!(closest_flag("--everything", QUERY_SPEC), None);
         assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("nmae", "name"), 1);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(closest_flag("--lmiit", QUERY_SPEC), Some("--limit"));
     }
 
     /// The keyword a parser error trips over, from the error the SQL really
