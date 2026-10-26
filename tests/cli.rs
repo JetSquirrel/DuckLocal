@@ -1485,6 +1485,7 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
     // One spec narrows what it reads, as does --active; not both, not two.
     s.error(&["open", "--state", "a.dash"], 1, "not_running");
     s.error(&["open", "--state", "--active"], 1, "not_running");
+    s.error(&["open", "--state", "--no-launch"], 1, "not_running");
     s.error(&["open", "--state", "a.dash", "b.dash"], 2, "argument");
     s.error(&["open", "--state", "--active", "a.dash"], 2, "argument");
     s.error(&["open", "--active"], 2, "argument");

@@ -30,7 +30,8 @@ use serde_json::{json, Value};
 use crate::cli::{parse_args, Arg, CliError, FlagSpec};
 
 pub(crate) const SCHEMA_HELP: &str = "\
-Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME] [--full|--stats]
+Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME]
+                        [--full|--stats]
 
 What there is to query, as JSON sized for a prompt: data files (PATHs are
 files, folders or globs) and, with --database, a database's tables and views.
@@ -51,7 +52,8 @@ Options:
 Output: {detail, relations: [{name, kind, from, rows, column_count, columns?}],
 without_columns, hint?}. `from` is the SQL that reads the relation. `rows` is
 an estimate for tables, exact for Parquet, and null where it would need a scan.
-With --stats: {target, row_count, columns: [{name, type, nulls, distinct, ...}]}.
+With --stats: {target, row_count,
+columns: [{name, type, nulls, distinct, ...}]}.
 ";
 
 const SPEC: &[FlagSpec] = &[

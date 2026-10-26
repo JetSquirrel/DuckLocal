@@ -13,10 +13,10 @@ Usage:
   ducklocal [PATH ...]          Open the GUI on files, folders or globs
   ducklocal query [OPTIONS]     Run one SQL statement, print JSON
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
-  ducklocal open [OPTIONS]      Show work in the running window; --state reads it
+  ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
   ducklocal comments FILE       Read and answer review comments on a dashboard
-  ducklocal presence FILE       Show the person which plots you are reading or editing
+  ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
 
 Run `ducklocal <command> --help` for its options.
