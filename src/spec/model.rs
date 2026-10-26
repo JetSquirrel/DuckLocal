@@ -1012,7 +1012,7 @@ fn closest<'a>(text: &str, known: &[&'a str]) -> Option<&'a str> {
     known
         .iter()
         .map(|name| (crate::cli::edit_distance(&text, name), *name))
-        .filter(|(distance, _)| *distance <= 2)
+        .filter(|(distance, _)| *distance <= 2 && *distance * 2 < text.chars().count())
         .min_by_key(|(distance, _)| *distance)
         .map(|(_, name)| name)
 }

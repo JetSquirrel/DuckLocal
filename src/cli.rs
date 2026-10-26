@@ -649,8 +649,19 @@ pub(crate) fn open(database: Option<PathBuf>, read_write: bool) -> Result<Connec
     let config = crate::db::config().map_err(|e| CliError::failure("database", e))?;
     if let Some(path) = database {
         if !read_write {
-            let metadata =
-                std::fs::metadata(&path).map_err(|e| CliError::failure("database", e))?;
+            let metadata = std::fs::metadata(&path).map_err(|e| {
+                // The OS's own wording names neither the file nor the way
+                // out, and on Windows it is in the system's language.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    CliError::failure(
+                        "database",
+                        format!("No database file at {}", path.display()),
+                    )
+                    .with_hint("--database opens an existing file; add --read-write to create it")
+                } else {
+                    CliError::failure("database", format!("{}: {e}", path.display()))
+                }
+            })?;
             if !metadata.is_file() {
                 return Err(CliError::failure(
                     "database",

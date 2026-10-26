@@ -192,13 +192,14 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 
     if let Some(wanted) = table {
-        let found = relations
-            .into_iter()
-            .find(|r| names_match(r, &wanted))
-            .ok_or_else(|| {
-                CliError::argument(format!("No relation named {wanted:?}"))
-                    .with_hint("Run the same command without --table to list the names")
-            })?;
+        let Some(index) = relations.iter().position(|r| names_match(r, &wanted)) else {
+            let error = CliError::argument(format!("No relation named {wanted:?}"));
+            return Err(match closest_name(&relations, &wanted) {
+                Some(name) => error.with_hint(format!("Did you mean {name:?}?")),
+                None => error.with_hint("Run the same command without --table to list the names"),
+            });
+        };
+        let found = relations.swap_remove(index);
         if stats {
             drop(connection);
             return crate::cli::profile_target(&found.target, database);
@@ -295,6 +296,23 @@ fn largest(relations: &[Relation], n: usize) -> Vec<bool> {
 
 /// `--table` matches a relation's name as listed, its unqualified table name,
 /// or — for a file — the path as given or its file name.
+/// The relation name `wanted` is a slip of — one or two edits away, ignoring
+/// case — as DuckDB suggests for a table a query misnames.
+fn closest_name<'a>(relations: &'a [Relation], wanted: &str) -> Option<&'a str> {
+    let wanted = wanted.trim().to_lowercase();
+    relations
+        .iter()
+        .map(|r| {
+            let distance = crate::cli::edit_distance(&wanted, &r.name.to_lowercase());
+            (distance, r.name.as_str())
+        })
+        // A short name is a few edits from anything; it has to keep most of
+        // its letters to be a slip.
+        .filter(|(distance, _)| *distance <= 2 && *distance * 2 < wanted.chars().count())
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
+}
+
 fn names_match(relation: &Relation, wanted: &str) -> bool {
     let wanted = wanted.trim();
     if relation.name.eq_ignore_ascii_case(wanted) {

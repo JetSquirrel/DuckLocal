@@ -366,11 +366,19 @@ fn parser_rejects_scripts_before_any_side_effect() {
 #[test]
 fn database_is_read_only_by_default_and_copy_is_not_sandboxed() {
     let s = Sandbox::new();
-    s.error(
+    let missing = s.error(
         &["query", "--database", "missing.duckdb", "--sql", "SELECT 1"],
         1,
         "database",
     );
+    assert_eq!(
+        missing["error"]["message"],
+        "No database file at missing.duckdb"
+    );
+    assert!(missing["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("--read-write"));
     assert!(!s.0.join("missing.duckdb").exists());
     std::fs::write(s.0.join("bad.duckdb"), "not a database").unwrap();
     s.error(
@@ -1337,6 +1345,9 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     s.error(&["schema", "missing.csv"], 2, "argument");
     let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
     assert!(error["error"]["hint"].as_str().is_some());
+    // A slip of a name is answered with the name.
+    let error = s.error(&["schema", "w.duckdb", "--table", "bigg"], 2, "argument");
+    assert_eq!(error["error"]["hint"], "Did you mean \"big\"?");
 }
 
 /// The CLI speaks English whatever language the window is in, including the
