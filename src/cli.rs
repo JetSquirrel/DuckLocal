@@ -462,10 +462,16 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
             }
             Arg::Flag("--read-write", None) => options.read_write = true,
             Arg::Flag("--format", Some(value)) => {
-                options.format = match value.to_str() {
-                    Some("json") => Format::Json,
-                    Some("md") => Format::Markdown,
-                    _ => return Err(CliError::argument("--format must be json or md")),
+                let text = value.to_string_lossy().to_ascii_lowercase();
+                options.format = match text.as_str() {
+                    "json" => Format::Json,
+                    "md" | "markdown" => Format::Markdown,
+                    _ => {
+                        return Err(CliError::argument(format!(
+                            "--format must be json or md; got {:?}",
+                            value.to_string_lossy()
+                        )))
+                    }
                 };
             }
             Arg::Flag("--limit", Some(value)) => {

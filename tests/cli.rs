@@ -708,6 +708,24 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "{truncated}"
     );
 
+    // The name is the format's, however it is spelled.
+    for spelling in ["MD", "markdown"] {
+        let same = s.text(&["query", "--sql", "SELECT 1 AS n", "--format", spelling]);
+        assert_eq!(
+            same,
+            "| n |
+| ---: |
+| 1 |
+",
+            "{spelling}"
+        );
+    }
+    s.error(
+        &["query", "--sql", "SELECT 1", "--format", "csv"],
+        2,
+        "argument",
+    );
+
     let empty = s.text(&[
         "query",
         "--sql",
@@ -1345,6 +1363,15 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     s.error(&["schema", "missing.csv"], 2, "argument");
     let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
     assert!(error["error"]["hint"].as_str().is_some());
+    // An empty file has no columns, not DuckDB's stand-in column0.
+    std::fs::write(s.0.join("empty.csv"), "").unwrap();
+    let empty = s.object(&["schema", "empty.csv"]);
+    assert_eq!(empty["relations"][0]["rows"], 0);
+    assert_eq!(empty["relations"][0]["column_count"], 0);
+    assert_eq!(
+        empty["relations"][0]["error"],
+        "The file is empty (0 bytes)"
+    );
     // A slip of a name is answered with the name.
     let error = s.error(&["schema", "w.duckdb", "--table", "bigg"], 2, "argument");
     assert_eq!(error["error"]["hint"], "Did you mean \"big\"?");

@@ -362,11 +362,17 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
     }
     let reader = crate::db::data_file_reader(file).unwrap_or("read_csv_auto");
     let absolute = format!("'{}'", file.replace('\'', "''"));
-    let (columns, error) =
+    // DuckDB reads an empty CSV as one VARCHAR column named column0, which
+    // is a column the file does not have.
+    let empty = std::fs::metadata(file).is_ok_and(|m| m.len() == 0);
+    let (columns, error) = if empty {
+        (Vec::new(), Some("The file is empty (0 bytes)".to_string()))
+    } else {
         match describe(connection, &format!("SELECT * FROM {reader}({absolute})")) {
             Ok(columns) => (columns, None),
             Err(message) => (Vec::new(), Some(message)),
-        };
+        }
+    };
     let rows = (reader == "read_parquet")
         .then(|| {
             connection
@@ -391,7 +397,7 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
         },
         target: shown.clone(),
         path: Some(shown),
-        rows,
+        rows: if empty { Some(0) } else { rows },
         columns,
         error,
         sheets: None,
