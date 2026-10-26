@@ -460,8 +460,13 @@ pub fn format_markdown(result: &CliResult) -> String {
         let _ = write!(out, "| {} ", markdown_cell(&column.name));
     }
     out.push_str("|\n");
-    for _ in &result.columns {
-        out.push_str("| --- ");
+    for column in &result.columns {
+        // Numbers right-aligned, so digits line up by place when rendered.
+        out.push_str(if is_numeric_arrow(&column.arrow_type) {
+            "| ---: "
+        } else {
+            "| --- "
+        });
     }
     out.push_str("|\n");
     for row in &result.rows {
@@ -486,6 +491,14 @@ pub fn format_markdown(result: &CliResult) -> String {
         );
     }
     out
+}
+
+/// Whether a [`CliColumn`]'s Arrow type name is a number: `Int64`,
+/// `UInt8`, `Float64`, `Decimal128(18, 2)`.
+fn is_numeric_arrow(name: &str) -> bool {
+    ["Int", "UInt", "Float", "Decimal"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// A cell as one line of a table.
@@ -2117,6 +2130,23 @@ mod tests {
              | C:\\Users |\n\
              | a\\\\\\|b |\n\
              | one<br>two |\n"
+        );
+    }
+
+    #[test]
+    fn markdown_right_aligns_numbers() {
+        let conn = mem();
+        let result = run_cli_of(
+            &conn,
+            "SELECT 'a' AS name, 1 AS n, 2.5::DOUBLE AS f, 1.25::DECIMAL(5,2) AS d,              170141183460469231731687303715884105727::HUGEINT AS h, DATE '2024-01-01' AS day",
+            10,
+        )
+        .unwrap();
+        let text = format_markdown(&result);
+        assert_eq!(
+            text.lines().nth(1),
+            Some("| --- | ---: | ---: | ---: | ---: | --- |"),
+            "{text}"
         );
     }
 

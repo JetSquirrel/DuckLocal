@@ -668,7 +668,8 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         lines,
         [
             "| a\\|b | b | c | d | e | f |",
-            "| --- | --- | --- | --- | --- | --- |",
+            // Numbers right-aligned; DuckDB types a bare NULL as INTEGER.
+            "| --- | --- | ---: | --- | ---: | ---: |",
             "| x\\|y | one<br>two | NULL | 2024-03-05 | 1.25 | 9007199254740993 |",
         ]
     );
@@ -706,7 +707,7 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
         "--format",
         "md",
     ]);
-    assert_eq!(empty, "| n |\n| --- |\n_0 rows._\n");
+    assert_eq!(empty, "| n |\n| ---: |\n_0 rows._\n");
 
     let ddl = s.text(&[
         "query",
@@ -1336,6 +1337,24 @@ fn schema_lists_files_and_databases_sized_for_a_prompt() {
     s.error(&["schema", "missing.csv"], 2, "argument");
     let error = s.error(&["schema", "w.duckdb", "--table", "nope"], 2, "argument");
     assert!(error["error"]["hint"].as_str().is_some());
+}
+
+/// The CLI speaks English whatever language the window is in, including the
+/// file problems it shares with the GUI's sidebar.
+#[test]
+fn errors_are_worded_in_english() {
+    let s = Sandbox::new();
+    let error = s.error(&["schema", "missing.csv"], 2, "argument");
+    assert_eq!(error["error"]["message"], "File not found: missing.csv");
+    let error = s.error(
+        &["query", "--sql", "SELECT 1", "--limit", "0"],
+        2,
+        "argument",
+    );
+    assert_eq!(
+        error["error"]["message"],
+        "--limit must be a whole number of rows, 1 or more; got \"0\""
+    );
 }
 
 /// A glob over files of one format is one relation, as a `.dash` source reads

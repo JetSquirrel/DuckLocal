@@ -639,7 +639,10 @@ fn filter(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Filter {
                 }
                 _ => diagnostics.push(Diagnostic::at_attr(
                     attr,
-                    "plot names the plot a value is picked on: plot = plot.some_name",
+                    format!(
+                        "plot names the plot a value is picked on: plot = plot.{}",
+                        meant_name(&attr.value, "plot")
+                    ),
                 )),
             },
             "column" => column_name = column(attr, diagnostics),
@@ -737,10 +740,16 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 Some(text) if PLOT_TYPES.contains(&text.as_str()) => kind = Some(text),
                 Some(text) => diagnostics.push(Diagnostic::at_attr(
                     attr,
-                    format!(
-                        "Unknown plot type: {text:?}; one of {}",
-                        PLOT_TYPES.join(", ")
-                    ),
+                    match closest(&text, PLOT_TYPES) {
+                        Some(meant) => format!(
+                            "Unknown plot type: {text:?}; did you mean {meant:?}? One of {}",
+                            PLOT_TYPES.join(", ")
+                        ),
+                        None => format!(
+                            "Unknown plot type: {text:?}; one of {}",
+                            PLOT_TYPES.join(", ")
+                        ),
+                    },
                 )),
                 None => {}
             },
@@ -752,7 +761,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 }
                 _ => diagnostics.push(Diagnostic::at_attr(
                     attr,
-                    "query names a query block: query = query.some_name",
+                    format!(
+                        "query names a query block: query = query.{}",
+                        meant_name(&attr.value, "query")
+                    ),
                 )),
             },
             "x" => x = column(attr, diagnostics),
@@ -970,6 +982,39 @@ fn columns(attr: &Attr, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<String>
         return None;
     }
     Some(names)
+}
+
+/// The block name a reference written the wrong way most likely meant —
+/// `"latency"`, `"query.latency"` or a bare `latency` for `query.latency` —
+/// so the message shows the line to write; `some_name` when there is no
+/// telling, or the name could not stand in a reference.
+fn meant_name(value: &Value, kind: &str) -> String {
+    let name = match value {
+        Value::Str(text) => text.strip_prefix(&format!("{kind}.")).unwrap_or(text),
+        Value::Ref(segments) if segments.len() == 1 => &segments[0],
+        _ => "",
+    };
+    let mut chars = name.chars();
+    let identifier = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if identifier {
+        name.to_string()
+    } else {
+        "some_name".to_string()
+    }
+}
+
+/// The one of `known` that `text` is a slip of: one or two edits away.
+fn closest<'a>(text: &str, known: &[&'a str]) -> Option<&'a str> {
+    let text = text.to_ascii_lowercase();
+    known
+        .iter()
+        .map(|name| (crate::cli::edit_distance(&text, name), *name))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
 }
 
 /// A column name, written as a bare identifier or — for the names SQL quoting
@@ -1284,6 +1329,58 @@ filter "picked" {
   column = id
 }
 "#;
+
+    /// A reference written as a string, or a misspelled type, is answered
+    /// with the line to write rather than a placeholder to fill in.
+    #[test]
+    fn a_slip_is_answered_with_the_line_meant() {
+        let messages = |source: &str| -> Vec<String> {
+            validate_err(source)
+                .into_iter()
+                .map(|d| d.message)
+                .collect()
+        };
+        let plot = |query: &str, kind: &str| {
+            format!(
+                "query \"rows\" {{ sql = \"SELECT 1 AS n\" }}
+                 plot \"p\" {{
+  type = \"{kind}\"
+  query = {query}
+}}
+"
+            )
+        };
+        for written in ["\"rows\"", "\"query.rows\"", "rows"] {
+            let found = messages(&plot(written, "table"));
+            assert!(
+                found.contains(&"query names a query block: query = query.rows".to_string()),
+                "{written}: {found:?}"
+            );
+        }
+        let found = messages(&plot("\"my rows\"", "table"));
+        assert!(found[0].ends_with("query = query.some_name"), "{found:?}");
+
+        let found = messages(&plot("query.rows", "barr"));
+        assert!(found[0].contains("did you mean \"bar\"?"), "{found:?}");
+        let found = messages(&plot("query.rows", "histogram"));
+        assert!(!found[0].contains("did you mean"), "{found:?}");
+
+        let found = messages(
+            "query \"q\" { sql = \"SELECT 1 AS n\" }
+             plot \"p\" {
+  type = \"bar\"
+  query = query.q
+  x = n
+  y = n
+}
+             filter \"f\" { plot = \"p\" }
+",
+        );
+        assert!(
+            found.contains(&"plot names the plot a value is picked on: plot = plot.p".to_string()),
+            "{found:?}"
+        );
+    }
 
     #[test]
     fn a_filter_picks_on_a_bar_or_a_table_and_queries_read_it() {

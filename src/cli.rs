@@ -288,7 +288,7 @@ fn closest_flag<'a>(text: &str, spec: &'a [FlagSpec]) -> Option<&'a str> {
 }
 
 /// Levenshtein distance, over chars; flag names are short.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
@@ -476,7 +476,9 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                     .filter(|n| *n > 0)
                     .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
                     .ok_or_else(|| {
-                        CliError::argument("--limit must be a positive integer fitting usize")
+                        CliError::argument(format!(
+                            "--limit must be a whole number of rows, 1 or more; got {text:?}"
+                        ))
                     })?;
             }
             Arg::Positional(value) => {
@@ -757,6 +759,10 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     }
     #[cfg(windows)]
     crate::windows::attach_cli_console();
+    // The CLI speaks English whatever the window does; shared code that
+    // words its messages in the UI's language (`sources`' file problems)
+    // reads this process's language, which is never persisted from here.
+    crate::i18n::set_current(crate::i18n::Language::En);
 
     // The language server's stdio is a frame stream, not a document: it
     // handles its own output and exit code, so it never reaches the writeln
