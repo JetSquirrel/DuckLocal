@@ -1599,3 +1599,36 @@ filter "day" {
         .unwrap()
         .contains("\"nope\""));
 }
+
+/// An agent answers review threads by id, and starts them only on a plot the
+/// spec has.
+#[test]
+fn comments_take_a_threads_number_and_refuse_an_unknown_plot() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("d.dash"),
+        "query \"q\" { sql = \"SELECT 1 AS n\" }\n\
+         plot \"p\" {\n  type = \"table\"\n  query = query.q\n}\n",
+    )
+    .unwrap();
+
+    let error = s.error(
+        &["comments", "d.dash", "--add", "pp", "--text", "x"],
+        2,
+        "argument",
+    );
+    assert_eq!(error["error"]["message"], "d.dash: no plot named \"pp\"");
+    assert_eq!(error["error"]["hint"], "Plots: p");
+    assert!(!s.0.join("d.dash.comments.json").exists());
+
+    let added = s.object(&["comments", "d.dash", "--add", "p", "--text", "Sort it"]);
+    assert_eq!(added["thread"]["id"], "c1");
+    // `1` is c1, as a person reading the threads would say it.
+    let replied = s.object(&["comments", "d.dash", "--reply", "1", "--text", "Sorted"]);
+    assert_eq!(replied["thread"]["comments"].as_array().unwrap().len(), 2);
+    s.object(&["comments", "d.dash", "--resolve", "1"]);
+    assert_eq!(s.object(&["comments", "d.dash"])["open"], 0);
+    s.object(&["comments", "d.dash", "--reopen", "c1"]);
+    assert_eq!(s.object(&["comments", "d.dash"])["open"], 1);
+    s.error(&["comments", "d.dash", "--resolve", "9"], 2, "argument");
+}

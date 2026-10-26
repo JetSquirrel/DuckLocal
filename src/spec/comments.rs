@@ -180,7 +180,8 @@ asked for can be made in the spec. --all includes resolved threads.
 
 A typical review: read the open threads, edit FILE, run `ducklocal check
 FILE`, then answer each thread with --reply ID --text \"what changed\"
---resolve. Replies are signed as the agent.
+--resolve. Replies are signed as the agent. An ID is a thread's id, c1, or
+its number, 1. --add starts a thread on a PLOT the spec has.
 ";
 
 const SPEC: &[FlagSpec] = &[
@@ -227,10 +228,10 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
         let value = |v: Option<OsString>| v.map(|v| v.to_string_lossy().into_owned());
         match arg {
             Arg::Flag("--all", _) => all = true,
-            Arg::Flag("--reply", v) => reply = value(v),
+            Arg::Flag("--reply", v) => reply = value(v).map(thread_id),
             Arg::Flag("--text", v) => text = value(v),
             Arg::Flag("--resolve", _) => resolve = true,
-            Arg::Flag("--reopen", v) => reopen = value(v),
+            Arg::Flag("--reopen", v) => reopen = value(v).map(thread_id),
             Arg::Flag("--add", v) => add = value(v),
             Arg::Positional(v) => positionals.push(v),
             Arg::Flag(..) => unreachable!("comments declares every flag it matches"),
@@ -241,7 +242,9 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
         file = Some(PathBuf::from(first));
     }
     let resolve_id = match positionals.next() {
-        Some(id) if resolve && reply.is_none() => Some(id.to_string_lossy().into_owned()),
+        Some(id) if resolve && reply.is_none() => {
+            Some(thread_id(id.to_string_lossy().into_owned()))
+        }
         Some(_) => return Err(CliError::argument("Name one .dash file")),
         None => None,
     };
@@ -251,6 +254,19 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
             "io",
             format!("{}: no such file", file.display()),
         ));
+    }
+    // A thread on a plot the spec does not have is a slip of the name, and
+    // would sit on no plot in the window; `presence` refuses it the same way.
+    if let Some(plot) = &add {
+        let known = std::fs::read_to_string(&file)
+            .map(|source| plot_names(&source))
+            .unwrap_or_default();
+        if !known.is_empty() && !known.contains(plot) {
+            return Err(
+                CliError::argument(format!("{}: no plot named {plot:?}", file.display()))
+                    .with_hint(format!("Plots: {}", known.join(", "))),
+            );
+        }
     }
     let need_text = || {
         text.clone()
@@ -386,6 +402,16 @@ struct PlotSite {
 /// The plot blocks of a spec, read leniently: a spec that does not parse
 /// lists no plots, and the threads are still listed by name.
 /// The names of a spec's plots, read leniently like [`plot_sites`].
+/// A thread id as written on the command line: `c3`, or `3` for it — the
+/// number is what a person reading the threads remembers.
+fn thread_id(id: String) -> String {
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
+        format!("c{id}")
+    } else {
+        id
+    }
+}
+
 pub(crate) fn plot_names(source: &str) -> Vec<String> {
     plot_sites(source)
         .into_iter()
