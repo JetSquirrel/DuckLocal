@@ -94,6 +94,44 @@ fn resolve_one(raw: &str, sources: &mut Sources, seen: &mut BTreeSet<String>) {
     }
 }
 
+/// Order paths the way a person reads a folder: runs of digits by their value,
+/// so `day2.csv` comes before `day10.csv`, and letters without regard to
+/// case. The plain order breaks what that leaves tied, so the order is total.
+fn natural_cmp(a: &Path, b: &Path) -> std::cmp::Ordering {
+    let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(&b),
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let run = |chars: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut digits = String::new();
+                    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+                        digits.push(c);
+                    }
+                    digits
+                };
+                let (m, n) = (run(&mut x), run(&mut y));
+                let (m, n) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let order = m.len().cmp(&n.len()).then_with(|| m.cmp(n));
+                if order.is_ne() {
+                    return order;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let order = c.to_lowercase().cmp(d.to_lowercase());
+                if order.is_ne() {
+                    return order;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
 /// Collect the data files under `dir`, recursively, in a deterministic order.
 /// Hidden entries are skipped, and so are symlinks: a link back up the tree
 /// would not terminate, and the linked-to directory is normally walked where
@@ -107,7 +145,7 @@ fn collect_data_files(dir: &Path, out: &mut Vec<String>) {
         .map(|entry| entry.path())
         .filter(|path| !is_hidden(path))
         .collect();
-    paths.sort();
+    paths.sort_by(|a, b| natural_cmp(a, b));
 
     for path in paths {
         let Ok(file_type) = std::fs::symlink_metadata(&path).map(|meta| meta.file_type()) else {
@@ -212,7 +250,7 @@ fn glob(pattern: &str) -> Vec<String> {
                                 .is_some_and(|name| match_pattern(&part, name))
                     })
                     .collect();
-                matches.sort();
+                matches.sort_by(|a, b| natural_cmp(a, b));
                 next.extend(matches);
             }
         } else {
@@ -314,6 +352,36 @@ mod tests {
         assert_eq!(names, ["a.parquet", "b.csv", "d.xlsx", "c.json"]);
         assert!(sources.problems.is_empty());
         assert_eq!(sources.database, None);
+    }
+
+    #[test]
+    fn folders_list_in_reading_order() {
+        let order = |names: &[&str]| {
+            let mut paths: Vec<PathBuf> = names.iter().map(PathBuf::from).collect();
+            paths.sort_by(|a, b| natural_cmp(a, b));
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&[
+                "day10.csv",
+                "day2.csv",
+                "Day1.csv",
+                "day02.csv",
+                "b.csv",
+                "A.csv"
+            ]),
+            [
+                "A.csv",
+                "b.csv",
+                "Day1.csv",
+                "day02.csv",
+                "day2.csv",
+                "day10.csv"
+            ]
+        );
     }
 
     #[test]
