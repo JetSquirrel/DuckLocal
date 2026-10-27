@@ -129,6 +129,39 @@ impl CliError {
     }
 }
 
+/// The next step for a CSV the reader typed from its first rows and then
+/// could not read: a column of numbers in which `NA` first appears past the
+/// sample. The message names the value; a short word is a missing-value
+/// marker to read as NULL, anything else needs every row sampled.
+pub(crate) fn sniffed_type_hint(message: &str) -> Option<String> {
+    if !message.contains("auto-detected from the CSV file") {
+        return None;
+    }
+    let value = message
+        .split_once("Could not convert string \"")
+        .and_then(|(_, rest)| rest.split_once("\" to '"))
+        .map(|(value, _)| value)?;
+    // The reader's settings name the file, as it was given.
+    let file = message
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("file = "))
+        .map(|path| format!("'{}'", path.replace('\'', "''")))
+        .unwrap_or_else(|| "'PATH'".to_string());
+    let short = !value.is_empty() && value.chars().count() <= 6 && !value.contains('\'');
+    Some(if short {
+        format!(
+            "The reader typed the column from its first rows, then met \"{value}\": read \
+             it as missing with read_csv({file}, nullstr = '{value}'), or type from every \
+             row with sample_size = -1"
+        )
+    } else {
+        format!(
+            "The reader typed the column from its first rows only: read_csv({file}, \
+             sample_size = -1) types it from every row"
+        )
+    })
+}
+
 /// The next step for an error whose site gave none, read off its message.
 ///
 /// DuckDB's messages say what went wrong; these say what to run next, in this
@@ -157,6 +190,16 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
             return Some(
                 "Relative paths resolve against the current directory, and in a .dash against \
                  the spec's folder; check the name, or use an absolute path",
+            );
+        }
+        // DuckDB 2.0 refuses the 1.x lambda arrow, and its message offers a
+        // SET that cannot help here: each call is its own connection, and a
+        // .dash query is one SELECT. The rewrite is the way through.
+        if has("Deprecated lambda arrow") {
+            return Some(
+                "Rewrite the lambda for DuckDB 2.0: `x -> x * 2` becomes `lambda x: x * 2`, \
+                 `(x, i) -> …` becomes `lambda x, i: …`; a SET lambda_syntax does not carry \
+                 over to the next call, and a .dash query cannot run one",
             );
         }
         if has("Could not convert") || has("Conversion Error") {
@@ -833,6 +876,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             let hint = error
                 .hint
                 .clone()
+                .or_else(|| sniffed_type_hint(&error.message))
                 .or_else(|| hint_for(error.kind, &error.message).map(str::to_string));
             let mut body = json!({"kind": error.kind, "message": error.message});
             if let Some(hint) = hint {
@@ -944,6 +988,31 @@ mod tests {
                 .unwrap()
                 .contains("ducklocal schema")
         );
+        // DuckDB's own wording, cut to the lines the hint reads.
+        let sniffed = [
+            "Conversion Error: CSV Error on Line: 24108",
+            "Error when converting column \"p\". Could not convert string \"NA\" to 'DOUBLE'",
+            "This type was auto-detected from the CSV file.",
+            "  file = data/play.csv",
+            "  delimiter = ,",
+        ]
+        .join("\n");
+        let sniffed = sniffed.as_str();
+        let hint = sniffed_type_hint(sniffed).unwrap();
+        assert!(
+            hint.contains("read_csv('data/play.csv', nullstr = 'NA')"),
+            "{hint}"
+        );
+        let long = sniffed.replace("\"NA\"", "\"twenty-one\"");
+        assert!(sniffed_type_hint(&long)
+            .unwrap()
+            .contains("sample_size = -1"));
+        assert!(
+            sniffed_type_hint("Conversion Error: Could not convert string \"x\" to 'INT'")
+                .is_none()
+        );
+        let arrow = "Binder Error: Deprecated lambda arrow (->) detected. Please transition to the new lambda syntax, i.e.., lambda x, i: x + i, before DuckDB's next release.";
+        assert!(hint_for("sql", arrow).unwrap().contains("lambda x: x * 2"));
         let two = "Expected exactly one SQL statement; found 2";
         assert!(hint_for("argument", two).unwrap().contains("WITH"));
         // A kind the hint is not about gets none.
