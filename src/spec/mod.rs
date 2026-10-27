@@ -271,6 +271,12 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         // The hint a failing query alone would have had, read off its message
         // as for any sql error.
         error.hint = keyword_hint
+            .or_else(|| {
+                crate::cli::sniffed_type_hint(&failures.join(
+                    "
+",
+                ))
+            })
             .or_else(|| crate::cli::hint_for("sql", &failures.join("\n")).map(str::to_string));
         return Err(error);
     }

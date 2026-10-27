@@ -101,7 +101,7 @@ pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
 
 /// One column's aggregates, as one branch of the union.
 ///
-/// Every branch selects the same nine columns in the same types so the branches
+/// Every branch selects the same twelve columns in the same types so the branches
 /// can be read back as one result; a statistic a shape does not support is a
 /// typed `NULL` rather than a missing column.
 fn branch(name: &str, data_type: &str, relation: &str) -> String {
@@ -156,6 +156,29 @@ fn branch(name: &str, data_type: &str, relation: &str) -> String {
         ),
     };
 
+    // A text column of numbers in which one short word stands for "missing" —
+    // R's `NA`, a spreadsheet's `#N/A`, a `-`. The word makes the reader type
+    // the whole column VARCHAR, so its nulls count 0 and its min and max sort
+    // as strings, and nothing else in the report says why. The word and its
+    // rows are what to name; the numbers are what makes it a marker.
+    let (marker, marker_rows, numbers) = if is_text(data_type) {
+        let other = format!("TRY_CAST({column} AS DOUBLE) IS NULL AND {column} IS NOT NULL");
+        (
+            format!(
+                "CASE WHEN count(DISTINCT {column}) FILTER (WHERE {other}) = 1 \
+                 THEN CAST(any_value({column}) FILTER (WHERE {other}) AS VARCHAR) END"
+            ),
+            format!("CAST(count(*) FILTER (WHERE {other}) AS BIGINT)"),
+            format!("CAST(count(TRY_CAST({column} AS DOUBLE)) AS BIGINT)"),
+        )
+    } else {
+        (
+            "CAST(NULL AS VARCHAR)".to_string(),
+            "CAST(NULL AS BIGINT)".to_string(),
+            "CAST(NULL AS BIGINT)".to_string(),
+        )
+    };
+
     format!(
         "SELECT {literal} AS name, \
          CAST(count(*) - count({column}) AS BIGINT) AS nulls, \
@@ -165,9 +188,67 @@ fn branch(name: &str, data_type: &str, relation: &str) -> String {
          {decimals} AS decimals, \
          {median} AS median, \
          {covered} AS covered_days, \
-         {span} AS span_days \
+         {span} AS span_days, \
+         {marker} AS marker, \
+         {marker_rows} AS marker_rows, \
+         {numbers} AS numbers \
          FROM {relation}"
     )
+}
+
+fn is_text(data_type: &str) -> bool {
+    matches!(
+        data_type.to_uppercase().as_str(),
+        "VARCHAR" | "TEXT" | "STRING"
+    )
+}
+
+/// The longest word read as a missing-value marker. `NA`, `N/A`, `#N/A`,
+/// `NULL`, `None`, `-` and `?` fit; a word longer than this is data.
+const MARKER_CHARS: usize = 6;
+
+/// `marker` when the column is otherwise numbers, else `None`.
+fn null_marker(statistics: &Statistics) -> Option<&str> {
+    let marker = statistics.marker.as_deref()?;
+    let numbers = statistics.numbers.unwrap_or(0);
+    (numbers > 0 && marker.chars().count() <= MARKER_CHARS).then_some(marker)
+}
+
+/// What to run instead when columns hold numbers and a marker: read the file
+/// with the marker as NULL, or — for a table — cast it away.
+fn marker_hint(relation: &str, found: &[(&str, &str)]) -> String {
+    let mut markers: Vec<&str> = found.iter().map(|(_, marker)| *marker).collect();
+    markers.sort_unstable();
+    markers.dedup();
+    let names = found
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let literal = |m: &str| format!("'{}'", m.replace('\'', "''"));
+    let nullstr = match markers.as_slice() {
+        [one] => literal(one),
+        many => format!(
+            "[{}]",
+            many.iter()
+                .map(|m| literal(m))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let file = relation
+        .strip_prefix("read_csv_auto(")
+        .and_then(|rest| rest.strip_suffix(')'));
+    match file {
+        Some(path) => format!(
+            "{names} hold numbers and {nullstr} for missing values; read them as numbers \
+             with read_csv({path}, nullstr = {nullstr})"
+        ),
+        None => format!(
+            "{names} hold numbers and {nullstr} for missing values; TRY_CAST(column AS DOUBLE) \
+             reads them as numbers with the marker as NULL"
+        ),
+    }
 }
 
 /// Profile `relation` on `conn`, as the JSON the CLI prints.
@@ -213,6 +294,9 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
                 median: row.get(6)?,
                 covered_days: row.get(7)?,
                 span_days: row.get(8)?,
+                marker: row.get(9)?,
+                marker_rows: row.get(10)?,
+                numbers: row.get(11)?,
             })
         })?
         .collect::<std::result::Result<_, _>>()?;
@@ -227,13 +311,25 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
         })
         .collect();
 
-    Ok(json!({
+    let marked: Vec<(&str, &str)> = columns
+        .iter()
+        .filter_map(|(name, _)| {
+            let found = rows.iter().find(|row| &row.name == name)?;
+            Some((name.as_str(), null_marker(found)?))
+        })
+        .collect();
+
+    let mut profile = json!({
         "target": target,
         "relation": relation,
         "row_count": row_count,
         "columns": described,
         "elapsed_ms": started.elapsed().as_millis() as u64,
-    }))
+    });
+    if !marked.is_empty() {
+        profile["hint"] = json!(marker_hint(relation, &marked));
+    }
+    Ok(profile)
 }
 
 struct Statistics {
@@ -246,6 +342,11 @@ struct Statistics {
     median: Option<String>,
     covered_days: Option<i64>,
     span_days: Option<i64>,
+    /// The one non-number a text column holds besides numbers, if just one.
+    marker: Option<String>,
+    marker_rows: Option<i64>,
+    /// Values that read as numbers.
+    numbers: Option<i64>,
 }
 
 fn column_value(
@@ -285,6 +386,13 @@ fn column_value(
         if let Some(ratio) = spread(median, statistics.max_value.as_deref()) {
             object.insert("max_over_median".into(), json!(ratio));
         }
+    }
+    if let Some(marker) = null_marker(statistics) {
+        object.insert("null_marker".into(), json!(marker));
+        object.insert(
+            "null_marker_rows".into(),
+            json!(statistics.marker_rows.unwrap_or(0)),
+        );
     }
     if let (Some(covered), Some(span)) = (statistics.covered_days, statistics.span_days) {
         object.insert("covered_days".into(), json!(covered));

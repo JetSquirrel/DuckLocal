@@ -46,8 +46,10 @@ Options:
   --full             Every relation with its columns, however many
   --stats            Exact per-column statistics of one relation: the only one
                      named, or --table NAME. Type, nulls, distinct, min and
-                     max, plus median and decimals for numbers and day
-                     coverage for dates. A workbook's first sheet is used.
+                     max, plus median and decimals for numbers, day
+                     coverage for dates, and the word (null_marker) a text
+                     column of numbers uses for missing, such as NA. A
+                     workbook's first sheet is used.
 
 Output: {detail, relations: [{name, kind, from, rows, column_count, columns?}],
 without_columns, hint?}. `from` is the SQL that reads the relation. `rows` is
