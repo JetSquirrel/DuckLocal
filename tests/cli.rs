@@ -1574,6 +1574,61 @@ fn schema_stats_profiles_one_relation() {
 }
 
 #[test]
+fn schema_stats_names_a_missing_value_marker() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("combine.csv"),
+        "name,forty,cone,team
+A,4.31,NA,NYG
+B,NA,6.9,NA
+C,4.52,7.1,DAL
+",
+    )
+    .unwrap();
+    let stats = s.object(&["schema", "combine.csv", "--stats"]);
+    let column = |name: &str| {
+        stats["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    // Numbers and one word: the word is named, with its rows.
+    assert_eq!(column("forty")["type"], "VARCHAR");
+    assert_eq!(column("forty")["null_marker"], "NA");
+    assert_eq!(column("forty")["null_marker_rows"], 1);
+    assert_eq!(column("cone")["null_marker"], "NA");
+    // Text that happens to hold the word is text.
+    assert!(column("team").get("null_marker").is_none());
+    assert!(column("name").get("null_marker").is_none());
+    let hint = stats["hint"].as_str().unwrap();
+    assert!(hint.starts_with("forty, cone hold numbers"), "{hint}");
+    assert!(hint.contains("nullstr = 'NA'"), "{hint}");
+    // The fix it names works: the columns come back as numbers.
+    let read = s.object(&[
+        "query",
+        "--sql",
+        "SELECT typeof(forty) AS t, count(forty) AS n FROM read_csv('combine.csv', nullstr = 'NA') GROUP BY ALL",
+    ]);
+    assert_eq!(read["rows"][0], json!(["DOUBLE", 2]));
+    // A clean file gets no hint.
+    std::fs::write(
+        s.0.join("clean.csv"),
+        "a,b
+1,x
+2,y
+",
+    )
+    .unwrap();
+    assert!(s
+        .object(&["schema", "clean.csv", "--stats"])
+        .get("hint")
+        .is_none());
+}
+
+#[test]
 fn check_reports_filters_and_runs_queries_with_nothing_picked() {
     let s = Sandbox::new();
     std::fs::write(
