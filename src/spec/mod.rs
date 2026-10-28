@@ -32,6 +32,7 @@ pub mod comment_card;
 pub mod comments;
 pub mod complete;
 pub mod filter;
+pub mod format;
 pub mod highlight;
 pub mod lsp;
 pub mod model;
@@ -366,6 +367,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
                 model::Note::Column(column) => json!({"column": column}),
             }),
             "tone": p.tone,
+            "format": p.format,
             "text": p.text,
             "title": p.title,
             "width": p.width(),

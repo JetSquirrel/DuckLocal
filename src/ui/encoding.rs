@@ -283,6 +283,7 @@ impl Encoding {
             value: None,
             note: None,
             tone: None,
+            format: None,
             text: None,
             width: None,
             line: 0,

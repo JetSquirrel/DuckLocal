@@ -643,11 +643,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Online base map (OpenStreetMap)",
     ),
     ("workspace.stop.tooltip", "中断正在运行的查询", "Interrupt the running query"),
-    ("workspace.format", "格式化", "Format"),
     ("workspace.format.tooltip", "格式化当前 SQL", "Format current SQL"),
-    ("workspace.explain", "执行计划", "Explain"),
     ("workspace.explain.tooltip", "查看查询计划", "View query plan"),
-    ("workspace.profile", "性能分析", "Profile"),
     (
         "workspace.profile.tooltip",
         "运行查询并查看每个算子的耗时（EXPLAIN ANALYZE）",
@@ -767,6 +764,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("chart.agg.min", "最小值", "Min"),
     ("chart.agg.max", "最大值", "Max"),
     ("chart.copy_dash", "复制为 .dash", "Copy as .dash"),
+    ("chart.pie.center_total", "合计", "Total"),
     (
         "chart.copy_dash.tooltip",
         "复制一个 query 块和一个 plot 块，粘贴进仪表盘即可保留这张图",
@@ -899,7 +897,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "S3 request failed (HTTP {}): {}",
     ),
 
-    ("dashboard.reload", "重新加载", "Reload"),
     (
         "dashboard.not_updated",
         "Dashboard 未更新",
@@ -923,11 +920,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "dashboard.reload.tooltip",
         "重新读取 spec 文件，并重跑它的所有查询",
         "Re-read the spec file and re-run its queries",
-    ),
-    (
-        "dashboard.source.show",
-        "查看源码",
-        "View spec",
     ),
     (
         "dashboard.source.back",
@@ -1027,7 +1019,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.filter.label", "筛选", "Filtered by"),
     ("dashboard.filter.clear", "清除此筛选", "Clear this filter"),
     ("dashboard.filter.clear_all", "全部清除", "Clear all"),
-    ("dashboard.sql.hide", "图表", "Chart"),
     ("dashboard.sql.show_tooltip", "查看这张图的 SQL", "Show this plot's SQL"),
     ("dashboard.sql.hide_tooltip", "回到图表", "Back to the plot"),
     ("dashboard.maximize.tooltip", "放大这张图", "Enlarge this plot"),

@@ -498,6 +498,7 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "value" => "**value**\n\nOptional, for a `card`: the column it shows, from the query's first row. Left out, the first column.",
         "note" => "**note**\n\nOptional, for a `card`: the line under its value. A string is shown as written (`note = \"All riders\"`); a bare identifier names a column, whose value in the card's row is shown (`note = busiest_day`).",
         "tone" => "**tone**\n\nOptional, for a `card`: `\"accent\"`, `\"good\"`, `\"warning\"` or `\"critical\"` — a coloured rule across the card's top and its value in that hue. Let the card's title say what the colour means.",
+        "format" => "**format**\n\nOptional: what the plot's numbers are — `\"num0\"`–`\"num2\"` (places), `\"pct\"` or `\"pct0\"`–`\"pct2\"` (a share: 0.42 reads 42.0%), or money: `\"usd\"`, `\"eur\"`, `\"gbp\"`, `\"cny\"`, with `0` for whole units (`\"usd0\"`), and `\"jpy\"`. Shapes a card's value and a chart's axis, labels and tooltips. Not for a `map` or a `table`.",
         "text" => "**text**\n\nFor a `text` panel: the words under its `title`, as a string or heredoc. A text panel takes no query.",
         "plot" => "**plot**\n\nThe plot a click picks a value on: `plot = plot.some_name`, a `bar` or a `table`.",
         "column" => "**column**\n\nOptional for a bar, required for a table: the column whose value the click picks, and that `$name` compares. Default: the bar's `x`.",

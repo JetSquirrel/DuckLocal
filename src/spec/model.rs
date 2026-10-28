@@ -32,6 +32,7 @@
 
 use std::collections::HashSet;
 
+use super::format::{NumberFormat, FORMATS};
 use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
@@ -123,6 +124,8 @@ pub(crate) struct Plot {
     pub note: Option<Note>,
     /// A `card`'s colour, one of [`TONES`]; `None` is plain ink.
     pub tone: Option<String>,
+    /// How the plot's numbers read, one of [`FORMATS`]; `None` is as before.
+    pub format: Option<String>,
     /// A `text` panel's words under its title.
     pub text: Option<String>,
     /// Grid columns spanned as written; `Plot::width` applies the default.
@@ -741,6 +744,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut value = None;
     let mut note = None;
     let mut tone = None;
+    let mut format = None;
     let mut text = None;
     let mut width = None;
     let mut seen: HashSet<&str> = HashSet::new();
@@ -818,6 +822,18 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 )),
                 None => {}
             },
+            "format" => match string(attr, diagnostics) {
+                Some(name) if NumberFormat::parse(&name).is_some() => format = Some(name),
+                Some(name) => diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    format!(
+                        "Unknown format: {name:?}; one of {}{}",
+                        FORMATS.join(", "),
+                        did_you_mean(&name, FORMATS.iter().copied())
+                    ),
+                )),
+                None => {}
+            },
             // A paragraph reads better as a heredoc; its lines are kept.
             "text" => match &attr.value {
                 Value::Heredoc(words) => text = Some(words.trim().to_string()),
@@ -827,7 +843,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, width, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, and for a text panel text; unknown attribute: {other}{}",
+                    "A plot block holds type, query, x, y, series, title, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, and for a text panel text; unknown attribute: {other}{}",
                     did_you_mean(other, super::complete::PLOT_ATTRS)
                 ),
             )),
@@ -851,6 +867,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         } else if name == "text" && !kind_name.is_empty() {
             Some(format!(
                 "text is for text panels; this plot is a {kind_name} (its label is title)"
+            ))
+        } else if name == "format" && matches!(kind_name.as_str(), "map" | "table") {
+            Some(format!(
+                "format shapes the numbers a chart or a card draws; a {kind_name} takes no format"
             ))
         } else if is_map {
             matches!(name, "x" | "y" | "series")
@@ -937,6 +957,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         value,
         note,
         tone,
+        format,
         text,
         width,
         line: block.line,
@@ -2077,6 +2098,37 @@ T
         assert_eq!(spec.plots[2].note, Some(Note::Text("All riders".into())));
         assert_eq!(spec.plots[2].tone.as_deref(), Some("warning"));
         assert!(spec.plots[3].title.is_none());
+    }
+
+    #[test]
+    fn a_format_is_one_of_the_named_and_only_where_numbers_are_drawn() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1 AS n" }
+plot "a" { type = "card" query = query.q format = "usd" }
+plot "b" { type = "line" query = query.q x = n y = n format = "pct1" }
+"#,
+        );
+        assert_eq!(spec.plots[0].format.as_deref(), Some("usd"));
+        assert_eq!(spec.plots[1].format.as_deref(), Some("pct1"));
+
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1 AS n, 2 AS lat, 3 AS lng" }
+plot "a" { type = "card" query = query.q format = "usdd" }
+plot "b" { type = "map" query = query.q format = "num0" }
+plot "c" { type = "table" query = query.q format = "num0" }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
+        assert!(has("Unknown format: \"usdd\""), "{messages:?}");
+        assert!(
+            has("usd"),
+            "a near miss names the format meant: {messages:?}"
+        );
+        assert!(has("a map takes no format"), "{messages:?}");
+        assert!(has("a table takes no format"), "{messages:?}");
     }
 
     #[test]

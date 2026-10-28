@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 
+use super::format::{short_text, NumberFormat};
 use super::model::{Note, Plot};
 use crate::i18n::trf;
 use crate::query::ColumnKind;
@@ -85,6 +86,8 @@ pub struct PreparedPlot {
     /// order of `points` (ascending), for a linear x axis. `None` for every
     /// other plot, whose x is bands.
     pub x_values: Option<Arc<Vec<f64>>>,
+    /// How the plot's numbers read: `format`, parsed.
+    pub format: Option<NumberFormat>,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
@@ -167,7 +170,7 @@ fn scatter_points(
             present[s] = true;
             Arc::new(PlotPoint {
                 band: SharedString::from(format_value(x)),
-                label: SharedString::from(format_value(y)),
+                label: SharedString::from(short_text(base.format, y)),
                 values,
                 present,
                 ix,
@@ -208,6 +211,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         width: plot.width(),
         time_axis: false,
         x_values: None,
+        format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: None,
         failure,
     };
@@ -263,7 +267,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         };
         // A year is a date, not a quantity: 2024, not 2,024.
         let format = |cell: &str| {
-            if is_year_column(&result.columns[ix].name) {
+            let formatted = plot
+                .format
+                .as_deref()
+                .and_then(NumberFormat::parse)
+                .zip(parse_number(cell));
+            if let Some((format, number)) = formatted {
+                format.full(number)
+            } else if is_year_column(&result.columns[ix].name) {
                 cell.to_string()
             } else {
                 group_thousands(cell)
@@ -550,13 +561,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
 
     // Labels render once, here, rather than on every frame. A band no series
     // has — a day the query skipped — says nothing, not zero.
+    let format = plot.format.as_deref().and_then(NumberFormat::parse);
     for point in points.iter_mut() {
         point.label = point
             .values
             .iter()
             .zip(&point.present)
             .find(|(_, present)| **present)
-            .map(|(value, _)| SharedString::from(format_value(*value)))
+            .map(|(value, _)| SharedString::from(short_text(format, *value)))
             .unwrap_or_default();
     }
 
@@ -587,6 +599,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         width: plot.width(),
         time_axis,
         x_values: None,
+        format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: crate::i18n::join_all(&notices),
         failure: None,
     }
@@ -820,6 +833,7 @@ mod tests {
             value: None,
             note: None,
             tone: None,
+            format: None,
             text: None,
             width: None,
             line: 1,
@@ -1248,6 +1262,44 @@ mod tests {
             prepare(&plot("line", Some("y"), None), Some(&data())).width,
             12
         );
+    }
+
+    #[test]
+    fn a_format_reads_a_cards_value_and_a_plots_labels() {
+        let money = Ok(result(
+            vec![
+                column("x", ColumnKind::Text),
+                column("y", ColumnKind::Numeric),
+            ],
+            vec![vec!["web", "1234.5"], vec!["app", "-25000"]],
+        ));
+        let card = Plot {
+            value: Some("y".into()),
+            format: Some("usd".into()),
+            ..plot("card", None, None)
+        };
+        let shown = prepare(&card, Some(&money));
+        assert_eq!(shown.card.as_deref(), Some("$1,234.50"));
+
+        let bars = Plot {
+            format: Some("usd0".into()),
+            ..plot("bar", Some("y"), None)
+        };
+        let shown = prepare(&bars, Some(&money));
+        assert_eq!(shown.format, NumberFormat::parse("usd0"));
+        let labels: Vec<&str> = shown.points.iter().map(|p| p.label.as_ref()).collect();
+        assert_eq!(labels, ["$1,235", "-$25K"]);
+
+        // A card whose cell is no number shows it as written.
+        let words = Ok(result(
+            vec![column("x", ColumnKind::Text)],
+            vec![vec!["n/a"]],
+        ));
+        let card = Plot {
+            format: Some("pct".into()),
+            ..plot("card", None, None)
+        };
+        assert_eq!(prepare(&card, Some(&words)).card.as_deref(), Some("n/a"));
     }
 
     #[test]

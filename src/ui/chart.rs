@@ -22,6 +22,7 @@ use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
+use crate::spec::format::{full_text, NumberFormat};
 use crate::spec::plot::{GroupedBars, SeriesPlot};
 use crate::spec::prepare::PlotPoint;
 use crate::ui::encoding::{
@@ -71,7 +72,34 @@ impl PieSlice {
     pub(crate) fn value(&self) -> f32 {
         self.value
     }
+
+    pub(crate) fn name(&self) -> &SharedString {
+        &self.name
+    }
+
+    pub(crate) fn amount(&self) -> f64 {
+        self.value as f64
+    }
 }
+
+/// How a pie is drawn beyond its slices. A dashboard knows its panel's size,
+/// so it draws a ring — less solid colour than a disc, with room for the
+/// total in the middle — and lets its key pick one slice out.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PieLook {
+    /// The ring's outer radius in pixels; `None` draws the library's disc.
+    pub outer_radius: Option<f32>,
+    /// The slice the key picked out, by name: it keeps its colour and the
+    /// rest fade.
+    pub isolated: Option<SharedString>,
+}
+
+/// How thick a ring is, as a share of its outer radius.
+const RING_INNER: f32 = 0.62;
+/// The surface gap between two slices of a ring, in pixels.
+const RING_GAP: f32 = 2.;
+/// What a slice the key did not pick keeps of its colour.
+const UNPICKED_SLICE: f32 = 0.2;
 
 /// A chart is at most a couple of thousand pixels wide, so plotting more
 /// points than this cannot show more detail — it only multiplies the
@@ -842,12 +870,67 @@ pub(crate) fn legend_row(legend: Vec<(Hsla, SharedString)>, cx: &App) -> AnyElem
         .into_any_element()
 }
 
+/// A key whose entries can be clicked: `(colour, label, key)` each, the
+/// entry whose key is `picked` in full ink and the rest faded while one is.
+/// A click hands `on_pick` the entry's key; the caller decides what a second
+/// click on the same entry means.
+pub(crate) fn picking_legend_row(
+    id: impl Into<ElementId>,
+    legend: Vec<(Hsla, SharedString, SharedString)>,
+    picked: Option<&SharedString>,
+    on_pick: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let ink = cx.theme().foreground;
+    let hover = cx.theme().muted;
+    let on_pick = Rc::new(on_pick);
+    let id = id.into();
+    h_flex()
+        .id(id.clone())
+        .flex_wrap()
+        .gap_x_1()
+        .gap_y_1()
+        .children(
+            legend
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (color, label, key))| {
+                    let is_picked = picked == Some(&key);
+                    let faded = picked.is_some() && !is_picked;
+                    let on_pick = on_pick.clone();
+                    h_flex()
+                        .id(ix)
+                        .gap_1()
+                        .items_center()
+                        .px_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .when(faded, |this| this.opacity(0.45))
+                        .child(div().size_2().rounded_full().bg(color))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if is_picked { ink } else { muted })
+                                .when(is_picked, |this| this.font_weight(FontWeight::MEDIUM))
+                                .child(label),
+                        )
+                        .on_click(move |_, window, cx| on_pick(key.clone(), window, cx))
+                }),
+        )
+        .into_any_element()
+}
+
 /// A pie over `slices` and its legend (each slice with its share), shared by
 /// the results panel and dashboards so both color and fold slices alike.
-/// Also returns the total the shares are of.
+/// Also returns the total the shares are of. A slice's tooltip reads its
+/// value in `format`; `look` makes it a ring and picks a slice out.
 pub(crate) fn pie_parts(
     slices: &[Arc<PieSlice>],
     series: SharedString,
+    format: Option<NumberFormat>,
+    look: PieLook,
     id: impl Into<ElementId>,
     cx: &App,
 ) -> (AnyElement, Vec<(Hsla, SharedString)>, f64) {
@@ -859,6 +942,13 @@ pub(crate) fn pie_parts(
         Some(slot) if slot < palette.len() => palette[slot],
         Some(slot) => palette[slot % palette.len()].opacity(0.55),
         None => muted.opacity(0.6),
+    };
+    let isolated = look.isolated.clone();
+    // A slice keeps its colour wherever it shows; the key's pick only fades
+    // the others, so nothing is repainted.
+    let fill = move |slice: &PieSlice| match &isolated {
+        Some(name) if *name != slice.name => color(slice).opacity(UNPICKED_SLICE),
+        _ => color(slice),
     };
     let total: f64 = slices.iter().map(|s| s.value as f64).sum();
     let legend = slices
@@ -877,11 +967,22 @@ pub(crate) fn pie_parts(
             )
         })
         .collect();
-    let chart = PieChart::new(slices.to_vec())
+    let mut chart = PieChart::new(slices.to_vec())
         .value(|s: &Arc<PieSlice>| s.value)
-        .color(move |s: &Arc<PieSlice>| color(s))
-        .pad_angle(0.01)
+        .color(move |s: &Arc<PieSlice>| fill(s))
+        .pad_angle(0.01);
+    if let Some(outer) = look.outer_radius.filter(|outer| *outer > 0.) {
+        chart = chart
+            .outer_radius(outer)
+            .inner_radius(outer * RING_INNER)
+            // The same gap at the ring's middle whatever its size.
+            .pad_angle(RING_GAP / (outer * (1. + RING_INNER) / 2.));
+    }
+    let chart = chart
         .tooltip_name(|s: &Arc<PieSlice>| s.name.clone())
+        .tooltip_value(move |_: &Arc<PieSlice>, value: f32, share: f32| {
+            format!("{} ({share:.1}%)", full_text(format, value as f64)).into()
+        })
         .name(series)
         .id(id)
         .into_any_element();
@@ -893,8 +994,14 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
         return empty_chart_state(tr("chart.pie.no_positive"), &[], cx);
     }
     let series = data.series_names[0].clone();
-    let (chart, legend, total) =
-        pie_parts(&data.pie, series.clone().into(), "results-chart-pie", cx);
+    let (chart, legend, total) = pie_parts(
+        &data.pie,
+        series.clone().into(),
+        None,
+        PieLook::default(),
+        "results-chart-pie",
+        cx,
+    );
     let notice = (data.pie_skipped > 0)
         .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
     let notice = match (data.notice.clone(), notice) {
