@@ -766,6 +766,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("chart.agg.avg", "平均", "Average"),
     ("chart.agg.min", "最小值", "Min"),
     ("chart.agg.max", "最大值", "Max"),
+    ("chart.copy_dash", "复制为 .dash", "Copy as .dash"),
+    (
+        "chart.copy_dash.tooltip",
+        "复制一个 query 块和一个 plot 块，粘贴进仪表盘即可保留这张图",
+        "Copy a query block and a plot block; paste them into a dashboard to keep this chart",
+    ),
+    ("notify.chart.dash_copied", "已复制 .dash 块", "Copied the .dash blocks"),
     ("chart.pie.title", "{} 占比（按 {}）", "Share of {} by {}"),
     ("chart.pie.total", "合计 {}", "{} total"),
     (

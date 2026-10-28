@@ -284,15 +284,7 @@ impl ChartData {
         let temporal = encoding.x_is_temporal(columns);
         let ordered = encoding.x_is_ordered(columns);
         let split = encoding.series.is_some();
-        let dash_kind = match kind {
-            ChartKind::Bar => "bar",
-            ChartKind::Line => "line",
-            ChartKind::Area => "area",
-            ChartKind::Scatter => "scatter",
-            ChartKind::Pie if !temporal && !split => "pie",
-            _ if temporal => "area",
-            _ => "bar",
-        };
+        let dash_kind = crate::ui::encoding::dash_kind(kind, temporal, split);
         let at = |name: &str| columns.iter().position(|c| c.name == name);
         let first_count = |name: &str| {
             at(name)

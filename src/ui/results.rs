@@ -716,6 +716,15 @@ impl ResultsPanel {
         if let Some(sql) = &self.rows_sql {
             summary["sql"] = json!(sql);
         }
+        if let Some((encoding, kind, dash)) = self.chart_dash() {
+            summary["chart"] = json!({
+                "type": kind,
+                "x": encoding.x,
+                "y": encoding.value_name(),
+                "split": encoding.series,
+                "dash": dash,
+            });
+        }
         summary
     }
 
@@ -940,6 +949,37 @@ impl ResultsPanel {
             .filter(|sql| crate::query::is_subquery(sql))?;
         let statement = crate::query::single_statement(sql).ok()?;
         Some(overview_relation(statement))
+    }
+
+    /// The chart's column picks, when there are some the current result
+    /// fits: the pick, the `.dash` plot type it draws as, and the `.dash`
+    /// blocks that keep it.
+    fn chart_dash(&self) -> Option<(&Encoding, &'static str, String)> {
+        let ResultView::Rows(result) = &self.view else {
+            return None;
+        };
+        let columns = &result.columns;
+        let encoding = self
+            .chart_encoding
+            .as_ref()
+            .filter(|encoding| encoding.applies_to(columns))?;
+        let sql = self
+            .rows_sql
+            .as_deref()
+            .filter(|sql| crate::query::is_subquery(sql))?;
+        let statement = crate::query::single_statement(sql).ok()?;
+        let kind = crate::ui::encoding::dash_kind(
+            self.chart_kind,
+            encoding.x_is_temporal(columns),
+            encoding.series.is_some(),
+        );
+        let value = encoding.value_name();
+        let title = match &encoding.series {
+            Some(split) => trf("chart.title.split", &[&value, &encoding.x, split]),
+            None => trf("chart.title.by", &[&value, &encoding.x]),
+        };
+        let text = encoding.dash(statement, kind, &title, encoding.x_is_ordered(columns));
+        Some((encoding, kind, text))
     }
 
     /// Map the result's columns onto the chart, or back to Auto.
@@ -1597,6 +1637,26 @@ impl ResultsPanel {
                             encoding.as_ref(),
                             cx,
                         ))
+                    })
+                    .when(pickable && encoding.is_some(), |this| {
+                        this.child(
+                            Button::new("chart-copy-dash")
+                                .ghost()
+                                .compact()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .label(tr("chart.copy_dash"))
+                                .tooltip(tr("chart.copy_dash.tooltip"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some((_, _, text)) = this.chart_dash() {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        window.push_notification(
+                                            Notification::info(tr("notify.chart.dash_copied")),
+                                            cx,
+                                        );
+                                    }
+                                })),
+                        )
                     }),
             )
             .child(div().flex_1().min_h_0().child(body))

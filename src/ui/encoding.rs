@@ -16,7 +16,7 @@
 use crate::i18n::tr;
 use crate::query::{ColumnKind, ColumnMeta};
 use crate::spec::model::Plot;
-use crate::ui::chart::{MAX_BARS, MAX_SERIES};
+use crate::ui::chart::{ChartKind, MAX_BARS, MAX_SERIES};
 
 /// How many categories come back: a bar chart's worth. A pie folds them
 /// further.
@@ -214,6 +214,55 @@ impl Encoding {
         )
     }
 
+    /// This pick as `.dash` blocks to paste into a dashboard: a query that
+    /// groups `statement` — the result's SQL, one statement — and a plot of
+    /// it drawn as `kind`, titled `title`. The query groups plainly, without
+    /// the chart's caps: a dashboard plot applies its own.
+    pub fn dash(&self, statement: &str, kind: &str, title: &str, ordered: bool) -> String {
+        let quote = crate::overview::quote;
+        let x = quote(&self.x);
+        let value = quote(&self.value_name());
+        let measure = match &self.y {
+            Some(y) => format!("{}({})", self.agg.function(), quote(y)),
+            None => "count(*)".to_string(),
+        };
+        let series = self.series.as_deref().map(quote);
+        let split = series
+            .as_deref()
+            .map(|s| format!("{s}, "))
+            .unwrap_or_default();
+        let order = match (&series, ordered) {
+            (None, false) => format!("{value} DESC"),
+            (None, true) => x.clone(),
+            (Some(s), _) => format!("{x}, {s}"),
+        };
+        let sql = format!(
+            "SELECT {x}, {split}{measure} AS {value}\n\
+             FROM (\n{statement}\n)\n\
+             GROUP BY ALL\n\
+             ORDER BY {order}"
+        );
+        // The heredoc's closing indent comes off every line, so the
+        // statement reads back exactly as written.
+        let mut delimiter = "SQL".to_string();
+        while sql.lines().any(|line| line.trim() == delimiter) {
+            delimiter.push('_');
+        }
+        let body: String = sql.lines().map(|line| format!("    {line}\n")).collect();
+        let mut text = format!(
+            "query \"chart\" {{\n  sql = <<{delimiter}\n{body}    {delimiter}\n}}\n\n\
+             plot \"chart\" {{\n  type   = \"{kind}\"\n  query  = query.chart\n  \
+             x      = {x}\n  y      = {y}\n",
+            x = dash_value(&self.x),
+            y = dash_value(&self.value_name()),
+        );
+        if let Some(series) = &self.series {
+            text.push_str(&format!("  series = {}\n", dash_value(series)));
+        }
+        text.push_str(&format!("  title  = {}\n}}\n", dash_string(title)));
+        text
+    }
+
     /// The `.dash` plot block this pick is, drawn as `kind` (a `.dash` plot
     /// type) over the grouped answer.
     pub(crate) fn plot(&self, kind: &str) -> Plot {
@@ -242,6 +291,45 @@ impl Encoding {
             name_span: (0, 0),
         }
     }
+}
+
+/// The `.dash` plot type a pick draws as `kind` (the chart tab's pick): a
+/// pie needs categories and one series, a map needs no pick at all; Auto
+/// draws an area over time and bars otherwise.
+pub(crate) fn dash_kind(kind: ChartKind, temporal: bool, split: bool) -> &'static str {
+    match kind {
+        ChartKind::Bar => "bar",
+        ChartKind::Line => "line",
+        ChartKind::Area => "area",
+        ChartKind::Scatter => "scatter",
+        ChartKind::Pie if !temporal && !split => "pie",
+        _ if temporal => "area",
+        _ => "bar",
+    }
+}
+
+/// A column name as a `.dash` value: bare when it can be, a string when not.
+fn dash_value(name: &str) -> String {
+    let mut chars = name.chars();
+    let bare = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !matches!(name, "true" | "false");
+    if bare {
+        name.to_string()
+    } else {
+        dash_string(name)
+    }
+}
+
+fn dash_string(text: &str) -> String {
+    let escaped = text
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t");
+    format!("\"{escaped}\"")
 }
 
 fn column<'a>(columns: &'a [ColumnMeta], name: &str) -> Option<&'a ColumnMeta> {
@@ -276,6 +364,51 @@ mod tests {
         // No number to measure: count the rows.
         let encoding = Encoding::starting(&columns[..2]).unwrap();
         assert_eq!(encoding.value_name(), "count(*)");
+    }
+
+    /// `encoding.dash` parsed and validated as a `.dash` file, with its query
+    /// run against `statement`: the columns the plot names must come back.
+    fn round_trip(encoding: &Encoding, statement: &str, kind: &str) -> Vec<String> {
+        let text = encoding.dash(statement, kind, "A \"quoted\" title", false);
+        let file = crate::spec::model::parse(&text).unwrap_or_else(|e| panic!("{e:?}\n{text}"));
+        let spec = crate::spec::model::validate(&file).unwrap_or_else(|e| panic!("{e:?}\n{text}"));
+        assert_eq!(spec.plots[0].kind, kind);
+        assert_eq!(spec.plots[0].title.as_deref(), Some("A \"quoted\" title"));
+        assert!(spec.queries[0].sql.contains(statement), "{text}");
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        match crate::query::run_of(&conn, &spec.queries[0].sql).unwrap() {
+            crate::query::QueryOutcome::Rows(result) => {
+                result.columns.into_iter().map(|c| c.name).collect()
+            }
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pick_copies_as_dash_blocks_that_check_and_run() {
+        // A trailing comment, a line that is the heredoc's delimiter, and a
+        // string literal spanning lines: the statement must survive as is.
+        let statement = "SELECT 'north' AS \"Sales region\", 'a' AS sku, 2.5 AS amount, \
+                         '\nSQL\n  x' AS note -- why";
+        let encoding = Encoding {
+            x: "Sales region".into(),
+            y: Some("amount".into()),
+            agg: Aggregate::Max,
+            series: Some("sku".into()),
+        };
+        let columns = round_trip(&encoding, statement, "bar");
+        assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
+
+        let counting = Encoding {
+            y: None,
+            series: None,
+            ..encoding
+        };
+        assert_eq!(
+            round_trip(&counting, statement, "pie"),
+            ["Sales region", "count(*)"]
+        );
     }
 
     #[test]
