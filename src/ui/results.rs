@@ -10,7 +10,7 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::label::Label;
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
@@ -23,8 +23,11 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
-use crate::query::{ColumnKind, ExportFormat, PlanNode, QueryOutcome, QueryProfile, QueryResult};
+use crate::query::{
+    ColumnKind, ColumnMeta, ExportFormat, PlanNode, QueryOutcome, QueryProfile, QueryResult,
+};
 use crate::ui::chart::{parse_number, ChartData, ChartKind, ChartPanel};
+use crate::ui::encoding::{Aggregate, Encoding};
 use crate::ui::RUN_QUERY_KEYSTROKE;
 use gpui_kit::assets::IconName as AssetIconName;
 
@@ -42,6 +45,15 @@ enum OverviewState {
     Idle,
     Loading,
     Ready(Rc<crate::overview::Overview>),
+    Failed(String),
+}
+
+/// The rows a column pick draws, grouped by DuckDB over the whole result.
+enum Grouped {
+    /// Not asked for the current result and pick.
+    Idle,
+    Loading,
+    Ready(Rc<QueryResult>),
     Failed(String),
 }
 
@@ -631,9 +643,16 @@ pub struct ResultsPanel {
     /// a query does not throw the pick away; a kind the new result cannot
     /// draw falls back to `Auto`'s pick without forgetting it.
     chart_kind: ChartKind,
-    /// Bumped by every result, so a whole-result chart that lands after a
-    /// newer result is dropped rather than drawn over it.
+    /// Bumped by every result and every column pick, so a whole-result
+    /// chart that lands after a newer one is dropped rather than drawn over
+    /// it.
     chart_request: u64,
+    /// The columns the user mapped onto the chart; `None` is Auto. Kept
+    /// across result sets like `chart_kind`: a pick the new result does not
+    /// have leaves the chart on Auto without forgetting it.
+    chart_encoding: Option<Encoding>,
+    /// DuckDB's grouping of the whole result for `chart_encoding`.
+    grouped: Grouped,
     /// The statements of the last Run, when it ran more than one; empty for a
     /// single statement, which needs no strip.
     script: Vec<ScriptEntry>,
@@ -727,6 +746,8 @@ impl ResultsPanel {
             chart_data: None,
             chart_kind: ChartKind::default(),
             chart_request: 0,
+            chart_encoding: None,
+            grouped: Grouped::Idle,
             script: Vec::new(),
             script_selected: 0,
             export_input: None,
@@ -818,6 +839,7 @@ impl ResultsPanel {
     fn show(&mut self, shown: &Shown, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.chart_data = None;
         self.chart_request += 1;
+        self.grouped = Grouped::Idle;
         self.overview = OverviewState::Idle;
         self.overview_request += 1;
         match shown {
@@ -909,22 +931,75 @@ impl ResultsPanel {
         .detach();
     }
 
+    /// The current result's query as a relation the chart can wrap, when it
+    /// is one: a single `SELECT`-like statement, parenthesized.
+    fn chart_relation(&self) -> Option<String> {
+        let sql = self
+            .rows_sql
+            .as_deref()
+            .filter(|sql| crate::query::is_subquery(sql))?;
+        let statement = crate::query::single_statement(sql).ok()?;
+        Some(overview_relation(statement))
+    }
+
+    /// Map the result's columns onto the chart, or back to Auto.
+    fn set_encoding(&mut self, encoding: Option<Encoding>, cx: &mut Context<Self>) {
+        if self.chart_encoding == encoding {
+            return;
+        }
+        self.chart_encoding = encoding;
+        self.chart_data = None;
+        self.chart_request += 1;
+        self.grouped = Grouped::Idle;
+        cx.notify();
+    }
+
+    /// Group the whole result for `encoding` in DuckDB, running the query
+    /// again as the overview does.
+    fn load_grouped(
+        &mut self,
+        encoding: &Encoding,
+        columns: &[ColumnMeta],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(relation) = self.chart_relation() else {
+            self.grouped = Grouped::Failed(tr("results.overview.not_query").to_string());
+            return;
+        };
+        let sql = encoding.sql(&relation, encoding.x_is_ordered(columns));
+        let request = self.chart_request;
+        self.grouped = Grouped::Loading;
+        cx.spawn(async move |this, cx| {
+            let result = smol::unblock(move || {
+                crate::db::with_connection(|conn| crate::query::run_of(conn, &sql))
+            })
+            .await;
+            this.update(cx, |this, cx| {
+                if this.chart_request != request {
+                    return;
+                }
+                this.grouped = match result {
+                    Ok(QueryOutcome::Rows(grouped)) => Grouped::Ready(Rc::new(grouped)),
+                    Ok(_) => Grouped::Failed(tr("results.overview.not_query").to_string()),
+                    Err(e) => Grouped::Failed(e.to_string()),
+                };
+                this.chart_data = None;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// A time series the grid holds only the start of: average the whole
     /// result in DuckDB, running the query again as the overview does, and
     /// redraw the chart when that lands. Until then, or if it fails, the
     /// chart draws the loaded rows and says so.
     fn load_full_series(&mut self, data: &ChartData, cx: &mut Context<Self>) {
-        let Some(sql) = self
-            .rows_sql
-            .as_deref()
-            .filter(|sql| crate::query::is_subquery(sql))
-        else {
+        let Some(relation) = self.chart_relation() else {
             return;
         };
-        let Ok(statement) = crate::query::single_statement(sql) else {
-            return;
-        };
-        let Some(full_sql) = data.full_series_sql(&overview_relation(statement)) else {
+        let Some(full_sql) = data.full_series_sql(&relation) else {
             return;
         };
         let request = self.chart_request;
@@ -1419,32 +1494,85 @@ impl ResultsPanel {
     }
 
     fn render_chart_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        match &self.view {
-            ResultView::Rows(result) => {
-                // Derived once per result set: walking every row on each frame
-                // is what made a large result set unusable in the chart tab.
-                let data = match &self.chart_data {
-                    Some(data) => data.clone(),
-                    None => {
-                        let data = Rc::new(ChartData::prepare(result));
-                        self.chart_data = Some(data.clone());
-                        self.load_full_series(&data, cx);
-                        data
+        let result = match &self.view {
+            ResultView::Rows(result) => result.clone(),
+            ResultView::Running => return running_state(cx),
+            _ => {
+                return empty_state(
+                    tr("results.empty_chart.title"),
+                    Some(tr("results.empty.hint_prefix")),
+                    cx,
+                )
+            }
+        };
+        let encoding = self
+            .chart_encoding
+            .clone()
+            .filter(|encoding| encoding.applies_to(&result.columns));
+        // Derived once per result set, and per kind for a pick: walking every
+        // row on each frame is what made a large result set unusable in the
+        // chart tab.
+        let data: Result<Rc<ChartData>, AnyElement> = match (&self.chart_data, &encoding) {
+            (Some(data), _) => Ok(data.clone()),
+            (None, None) => {
+                let data = Rc::new(ChartData::prepare(&result));
+                self.chart_data = Some(data.clone());
+                self.load_full_series(&data, cx);
+                Ok(data)
+            }
+            (None, Some(encoding)) => match &self.grouped {
+                Grouped::Ready(grouped) => {
+                    match ChartData::from_encoded(encoding, grouped, self.chart_kind) {
+                        Ok(data) => {
+                            let data = Rc::new(data);
+                            self.chart_data = Some(data.clone());
+                            Ok(data)
+                        }
+                        Err(message) => Err(chart_error(message)),
                     }
-                };
-                if !data.is_plottable() {
-                    return ChartPanel::new(data, self.chart_kind).into_any_element();
                 }
-                let kinds = data.available_kinds();
-                let selected = kinds
-                    .iter()
-                    .position(|k| *k == self.chart_kind)
-                    .unwrap_or(0);
-                let picker_kinds = kinds.clone();
-                v_flex()
-                    .size_full()
-                    .child(
-                        h_flex().px_4().pt_3().child(
+                Grouped::Failed(message) => Err(chart_error(message.clone())),
+                Grouped::Loading => Err(grouping_state(cx)),
+                Grouped::Idle => {
+                    self.load_grouped(encoding, &result.columns, cx);
+                    Err(grouping_state(cx))
+                }
+            },
+        };
+        // Picks need a query to wrap; a `SHOW` or a `PRAGMA` keeps Auto.
+        let pickable = self.chart_relation().is_some();
+        let plottable = data.as_ref().is_ok_and(|data| data.is_plottable());
+        if !pickable && !plottable {
+            return match data {
+                Ok(data) => ChartPanel::new(data, self.chart_kind).into_any_element(),
+                Err(state) => state,
+            };
+        }
+
+        let kinds = data
+            .as_ref()
+            .ok()
+            .filter(|data| data.is_plottable())
+            .map(|data| data.available_kinds());
+        let body = match data {
+            Ok(data) => ChartPanel::new(data, self.chart_kind).into_any_element(),
+            Err(state) => state,
+        };
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .px_4()
+                    .pt_3()
+                    .gap_2()
+                    .flex_wrap()
+                    .when_some(kinds, |this, kinds| {
+                        let selected = kinds
+                            .iter()
+                            .position(|k| *k == self.chart_kind)
+                            .unwrap_or(0);
+                        let picker_kinds = kinds.clone();
+                        this.child(
                             TabBar::new("chart-kinds")
                                 .segmented()
                                 .with_size(crate::ui::scale::compact_control())
@@ -1452,27 +1580,164 @@ impl ResultsPanel {
                                 .on_click(cx.listener(move |this, ix: &usize, _, cx| {
                                     if let Some(kind) = picker_kinds.get(*ix) {
                                         this.chart_kind = *kind;
+                                        // A pick's chart is prepared per kind,
+                                        // from the grouped rows it keeps.
+                                        if matches!(this.grouped, Grouped::Ready(_)) {
+                                            this.chart_data = None;
+                                        }
                                         cx.notify();
                                     }
                                 }))
                                 .children(kinds.iter().map(|kind| Tab::new().label(kind.label()))),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .child(ChartPanel::new(data, self.chart_kind)),
-                    )
-                    .into_any_element()
-            }
-            ResultView::Running => running_state(cx),
-            _ => empty_state(
-                tr("results.empty_chart.title"),
-                Some(tr("results.empty.hint_prefix")),
-                cx,
-            ),
-        }
+                        )
+                    })
+                    .when(pickable, |this| {
+                        this.children(self.render_chart_picks(
+                            &result.columns,
+                            encoding.as_ref(),
+                            cx,
+                        ))
+                    }),
+            )
+            .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
+    /// The X, Y and Split menus: Auto until one is picked from; then each
+    /// changes one part of the pick.
+    fn render_chart_picks(
+        &self,
+        columns: &[ColumnMeta],
+        encoding: Option<&Encoding>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let Some(base) = encoding.cloned().or_else(|| Encoding::starting(columns)) else {
+            return Vec::new();
+        };
+        let view = cx.entity().downgrade();
+        let item = move |label: String, checked: bool, pick: Option<Encoding>| {
+            let view = view.clone();
+            PopupMenuItem::new(label)
+                .checked(checked)
+                .on_click(move |_, _, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| this.set_encoding(pick.clone(), cx));
+                    }
+                })
+        };
+        let button = |id: &'static str, label: String| {
+            Button::new(id)
+                .ghost()
+                .compact()
+                .xsmall()
+                .label(label)
+                .dropdown_caret(true)
+        };
+        let auto = tr("chart.pick.auto").to_string();
+        let columns: Rc<Vec<ColumnMeta>> = Rc::new(columns.to_vec());
+
+        let x_label = encoding.map_or(auto.clone(), |e| e.x.clone());
+        let x_menu = {
+            let (columns, base, item) = (columns.clone(), base.clone(), item.clone());
+            let picked = encoding.map(|e| e.x.clone());
+            let auto = auto.clone();
+            button("chart-pick-x", trf("chart.pick.x", &[&x_label])).dropdown_menu(
+                move |menu, _, _| {
+                    let mut menu = menu
+                        .scrollable(true)
+                        .max_h(px(360.))
+                        .item(item(auto.clone(), picked.is_none(), None))
+                        .separator();
+                    for column in columns.iter() {
+                        let mut pick = base.clone();
+                        pick.x = column.name.clone();
+                        if pick.series.as_deref() == Some(column.name.as_str()) {
+                            pick.series = None;
+                        }
+                        let checked = picked.as_deref() == Some(column.name.as_str());
+                        menu = menu.item(item(column.name.clone(), checked, Some(pick)));
+                    }
+                    menu
+                },
+            )
+        };
+
+        let y_label =
+            encoding.map_or_else(|| tr("chart.pick.auto_y").to_string(), |e| e.value_name());
+        let y_menu = {
+            let (columns, base, item) = (columns.clone(), base.clone(), item.clone());
+            let picked = encoding.cloned();
+            button("chart-pick-y", trf("chart.pick.y", &[&y_label])).dropdown_menu(
+                move |menu, _, _| {
+                    let measured = picked.as_ref().and_then(|e| e.y.clone());
+                    let counting = picked.as_ref().is_some_and(|e| e.y.is_none());
+                    let mut menu = menu.scrollable(true).max_h(px(360.)).item(item(
+                        tr("chart.pick.count").to_string(),
+                        counting,
+                        Some(Encoding {
+                            y: None,
+                            ..base.clone()
+                        }),
+                    ));
+                    for column in columns.iter().filter(|c| c.kind == ColumnKind::Numeric) {
+                        let checked = measured.as_deref() == Some(column.name.as_str());
+                        let pick = Encoding {
+                            y: Some(column.name.clone()),
+                            ..base.clone()
+                        };
+                        menu = menu.item(item(column.name.clone(), checked, Some(pick)));
+                    }
+                    // How rows combine means something only for a column.
+                    menu = menu.separator();
+                    for agg in Aggregate::ALL {
+                        let checked = measured.is_some() && base.agg == agg;
+                        let pick = Encoding {
+                            agg,
+                            ..base.clone()
+                        };
+                        menu = menu.item(
+                            item(agg.label().to_string(), checked, Some(pick))
+                                .disabled(base.y.is_none()),
+                        );
+                    }
+                    menu
+                },
+            )
+        };
+
+        let split_label = encoding
+            .and_then(|e| e.series.clone())
+            .unwrap_or_else(|| tr("chart.pick.none").to_string());
+        let split_menu = {
+            let (columns, base) = (columns.clone(), base.clone());
+            let picked = encoding.and_then(|e| e.series.clone());
+            button("chart-pick-split", trf("chart.pick.split", &[&split_label])).dropdown_menu(
+                move |menu, _, _| {
+                    let mut menu = menu.scrollable(true).max_h(px(360.)).item(item(
+                        tr("chart.pick.none").to_string(),
+                        picked.is_none(),
+                        Some(Encoding {
+                            series: None,
+                            ..base.clone()
+                        }),
+                    ));
+                    for column in columns.iter().filter(|c| c.name != base.x) {
+                        let checked = picked.as_deref() == Some(column.name.as_str());
+                        let pick = Encoding {
+                            series: Some(column.name.clone()),
+                            ..base.clone()
+                        };
+                        menu = menu.item(item(column.name.clone(), checked, Some(pick)));
+                    }
+                    menu
+                },
+            )
+        };
+        Vec::from([
+            x_menu.into_any_element(),
+            y_menu.into_any_element(),
+            split_menu.into_any_element(),
+        ])
     }
 
     /// Bottom bar of the table page: client-side filter input + match counts.
@@ -1947,6 +2212,36 @@ fn group_digits(n: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+/// The chart tab while DuckDB groups the whole result for a pick.
+fn grouping_state(cx: &mut Context<ResultsPanel>) -> AnyElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .child(
+            Icon::new(IconName::LoaderCircle)
+                .large()
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(tr("chart.pick.grouping")),
+        )
+        .into_any_element()
+}
+
+/// Why a pick cannot be drawn, under the menus that can change it.
+fn chart_error(message: String) -> AnyElement {
+    div()
+        .size_full()
+        .p_3()
+        .child(Alert::error("chart-error", message).title(tr("results.failed.title")))
+        .into_any_element()
 }
 
 fn running_state(cx: &mut Context<ResultsPanel>) -> AnyElement {
