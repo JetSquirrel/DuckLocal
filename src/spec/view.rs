@@ -76,7 +76,7 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
-use crate::spec::prepare::{keep_series_order, prepare, PlotPoint, PreparedPlot};
+use crate::spec::prepare::{keep_series_order, prepare, Mood, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{legend_row, map_notes, picking_legend_row, pie_parts, PieLook};
 use crate::ui::completion::starts_with_ignore_case;
@@ -2281,7 +2281,9 @@ impl Render for Dashboard {
                     let (default, min, max) = if all("text") {
                         (self.text_row_height(row), TEXT_MIN, CARD_MAX)
                     } else if cards {
-                        let noted = row.iter().any(|&ix| self.plots[ix].note.is_some());
+                        let noted = row.iter().any(|&ix| {
+                            self.plots[ix].note.is_some() || self.plots[ix].delta.is_some()
+                        });
                         let default = if noted { CARD_NOTED } else { CARD_DEFAULT };
                         (default, CARD_MIN, CARD_MAX)
                     } else if let Some(height) = self.table_row_height(row) {
@@ -2896,13 +2898,37 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                 .when_some(tone, |this, (_, ink)| this.text_color(ink))
                 .child(value),
         )
-        .when_some(plot.note.clone(), |this, note| {
-            this.child(
+        // The change leads its line, the note after it says against what:
+        // `▲ 12.3%  vs last week`.
+        .when(plot.delta.is_some() || plot.note.is_some(), |this| {
+            let muted = cx.theme().muted_foreground;
+            let delta = plot.delta.clone().map(|delta| {
+                let color = match delta.mood {
+                    Mood::Good => crate::ui::palette::tone("good", cx).map(|(_, ink)| ink),
+                    Mood::Bad => crate::ui::palette::tone("critical", cx).map(|(_, ink)| ink),
+                    Mood::Flat => None,
+                };
                 div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color.unwrap_or(muted))
+                    .child(delta.text)
+            });
+            this.child(
+                h_flex()
+                    .gap_2()
+                    .min_w_0()
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_ellipsis()
-                    .child(note),
+                    .children(delta)
+                    .when_some(plot.note.clone(), |this, note| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .text_color(muted)
+                                .text_ellipsis()
+                                .child(note),
+                        )
+                    }),
             )
         })
         .when_some(plot.notice.clone(), |this, notice| {

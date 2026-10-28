@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 
-use super::format::{short_text, NumberFormat};
+use super::format::{full_text, short_text, NumberFormat};
 use super::model::{Note, Plot};
 use crate::i18n::trf;
 use crate::query::ColumnKind;
@@ -51,6 +51,48 @@ pub struct PlotPoint {
     pub ix: usize,
 }
 
+/// Whether a card's change is the one wanted. A status, so it never shows by
+/// colour alone: the arrow says the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mood {
+    Good,
+    Bad,
+    /// No change: neither.
+    Flat,
+}
+
+/// A card's change, ready to show: `▲ 12.3%`, and whether it is good news.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardDelta {
+    pub text: SharedString,
+    pub mood: Mood,
+}
+
+impl CardDelta {
+    /// `change` as `plot` reads it: in `delta_format`, else the card's own
+    /// `format`; good when it rises, or when it falls and `down_is_good`.
+    fn of(change: f64, plot: &Plot) -> Self {
+        let format = plot
+            .delta_format
+            .as_deref()
+            .or(plot.format.as_deref())
+            .and_then(NumberFormat::parse);
+        let (arrow, mood) = if change == 0. {
+            ("–", Mood::Flat)
+        } else if (change > 0.) != plot.down_is_good {
+            (if change > 0. { "▲" } else { "▼" }, Mood::Good)
+        } else {
+            (if change > 0. { "▲" } else { "▼" }, Mood::Bad)
+        };
+        // The arrow carries the sign, so the number is its size.
+        let text = format!("{arrow} {}", full_text(format, change.abs()));
+        Self {
+            text: SharedString::from(text),
+            mood,
+        }
+    }
+}
+
 /// Everything one plot needs to render, or why it cannot.
 #[derive(Debug)]
 pub struct PreparedPlot {
@@ -70,6 +112,8 @@ pub struct PreparedPlot {
     pub geo: Option<Arc<GeoData>>,
     /// A `card`'s value, ready to show.
     pub card: Option<SharedString>,
+    /// A `card`'s change, when it names a `delta` and its row holds a number.
+    pub delta: Option<CardDelta>,
     /// The line under a `card`'s value: the spec's words, or its column's
     /// value from the card's row.
     pub note: Option<SharedString>,
@@ -205,6 +249,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie: Vec::new(),
         geo: None,
         card: None,
+        delta: None,
         note: None,
         tone: plot.tone.clone(),
         text: None,
@@ -295,10 +340,23 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
                 Some(crate::i18n::tr("dashboard.card.no_rows").to_string()),
             ),
         };
+        let delta = match plot.delta.as_deref() {
+            Some(name) => match column(name) {
+                Some(ix) => result
+                    .rows
+                    .first()
+                    .and_then(|row| row.get(ix))
+                    .and_then(|cell| parse_number(cell))
+                    .map(|change| CardDelta::of(change, plot)),
+                None => return base(Some(missing_column(name, result))),
+            },
+            None => None,
+        };
         return PreparedPlot {
             label_name: result.columns[ix].name.clone(),
             card: Some(SharedString::from(value)),
             note: note.map(SharedString::from),
+            delta,
             notice,
             ..base(None)
         };
@@ -593,6 +651,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie,
         geo: None,
         card: None,
+        delta: None,
         note: None,
         tone: plot.tone.clone(),
         text: None,
@@ -834,6 +893,9 @@ mod tests {
             note: None,
             tone: None,
             format: None,
+            delta: None,
+            delta_format: None,
+            down_is_good: false,
             text: None,
             width: None,
             line: 1,
@@ -1300,6 +1362,55 @@ mod tests {
             ..plot("card", None, None)
         };
         assert_eq!(prepare(&card, Some(&words)).card.as_deref(), Some("n/a"));
+    }
+
+    #[test]
+    fn a_cards_delta_points_and_says_whether_it_is_good() {
+        let row = |change: &str| {
+            Ok(result(
+                vec![
+                    column("revenue", ColumnKind::Numeric),
+                    column("change", ColumnKind::Numeric),
+                ],
+                vec![vec!["1000", change]],
+            ))
+        };
+        let card = |down_is_good: bool| Plot {
+            value: Some("revenue".into()),
+            format: Some("usd0".into()),
+            delta: Some("change".into()),
+            down_is_good,
+            ..plot("card", None, None)
+        };
+        let delta = |plot: &Plot, change: &str| prepare(plot, Some(&row(change))).delta;
+
+        let up = delta(&card(false), "125").unwrap();
+        assert_eq!(
+            up.text, "▲ $125",
+            "the card's format, the arrow for the sign"
+        );
+        assert_eq!(up.mood, Mood::Good);
+        let down = delta(&card(false), "-125").unwrap();
+        assert_eq!(down.text, "▼ $125");
+        assert_eq!(down.mood, Mood::Bad);
+        // Costs: a fall is good news.
+        assert_eq!(delta(&card(true), "-125").unwrap().mood, Mood::Good);
+        assert_eq!(delta(&card(true), "125").unwrap().mood, Mood::Bad);
+        assert_eq!(delta(&card(false), "0").unwrap().mood, Mood::Flat);
+
+        // A growth rate reads in its own format.
+        let rate = Plot {
+            delta_format: Some("pct1".into()),
+            ..card(false)
+        };
+        assert_eq!(delta(&rate, "0.123").unwrap().text, "▲ 12.3%");
+        // No number, no change shown.
+        assert_eq!(delta(&card(false), ""), None);
+        let missing = Plot {
+            delta: Some("nope".into()),
+            ..card(false)
+        };
+        assert!(prepare(&missing, Some(&row("1"))).failure.is_some());
     }
 
     #[test]
