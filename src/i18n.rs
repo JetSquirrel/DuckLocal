@@ -692,6 +692,16 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Downsampled: {} points → {} points (each point is the average of {} samples)",
     ),
     (
+        "chart.notice.truncated",
+        "仅基于表格已加载的前 {} 行绘制，并非完整结果",
+        "Drawn from the first {} rows the grid loaded, not the whole result",
+    ),
+    (
+        "chart.notice.full_series",
+        "由 DuckDB 对全部 {} 行取均值：{} 点，每点约 {} 行",
+        "Averaged by DuckDB over all {} rows: {} points of about {} rows each",
+    ),
+    (
         "chart.notice.bars_capped",
         "仅显示前 {} / {} 行",
         "Showing the first {} of {} rows",

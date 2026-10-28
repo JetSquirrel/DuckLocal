@@ -10,6 +10,7 @@
 //! itself is rebuilt on every frame, and hands the cached rows to the chart as
 //! `Rc`s so a frame costs refcount bumps rather than a copy of the row set.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -81,6 +82,14 @@ pub(crate) const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
 /// cannot be meaningfully merged — so surplus bars are dropped, not averaged.
 pub(crate) const MAX_BARS: usize = 200;
+/// How many points DuckDB averages a whole time series into when the grid
+/// holds only its first rows; the client-side downsampling cap.
+const FULL_SERIES_POINTS: usize = MAX_POINTS;
+/// The columns `full_series_sql` adds, a point's bucket and its row count; a
+/// result column of either name keeps the chart on the loaded rows. Two
+/// names, so neither alias shadows the other in `ORDER BY`.
+const BUCKET_COLUMN: &str = "__ducklocal_bucket";
+const ROWS_COLUMN: &str = "__ducklocal_rows";
 /// How many detected columns the "nothing to plot" message lists before
 /// summarizing the rest.
 const MAX_LISTED_COLUMNS: usize = 5;
@@ -108,6 +117,10 @@ pub struct ChartData {
     /// title. A chart that quietly plots something other than the query result
     /// would be worse than a slow one.
     notice: Option<String>,
+    /// Drawn from the rows the grid kept, which are not the whole result.
+    partial: bool,
+    /// How many numeric columns the result has, before `MAX_SERIES`.
+    series_total: usize,
 }
 
 type RawPlotRow = (usize, SharedString, Vec<f64>);
@@ -168,10 +181,18 @@ impl ChartData {
                     .map(|column| format!("{} ({})", column.name, column.duck_type))
                     .collect(),
                 notice: None,
+                partial: result.truncated,
+                series_total: 0,
             };
         }
 
         let mut notices: Vec<String> = Vec::new();
+        if result.truncated {
+            notices.push(trf(
+                "chart.notice.truncated",
+                &[&result.rows.len().to_string()],
+            ));
+        }
         let series_total = value_ixes.len();
         if series_total > MAX_SERIES {
             value_ixes.truncate(MAX_SERIES);
@@ -237,7 +258,93 @@ impl ChartData {
             geo,
             detected: Vec::new(),
             notice: crate::i18n::join_all(&notices),
+            partial: result.truncated,
+            series_total,
         }
+    }
+
+    /// For a time series the grid holds only the start of: SQL that averages
+    /// the whole result, read from `relation`, into at most
+    /// `FULL_SERIES_POINTS` points of equal row counts in time order — the
+    /// client's downsampling, done by DuckDB over every row. The last column
+    /// counts each point's rows. `None` when the loaded rows are the result,
+    /// or when a repeated column name would leave a reference ambiguous.
+    pub fn full_series_sql(&self, relation: &str) -> Option<String> {
+        if !self.partial || !self.is_time_series {
+            return None;
+        }
+        let mut names: Vec<&str> = Vec::with_capacity(self.series_names.len() + 2);
+        names.push(&self.label_name);
+        names.extend(self.series_names.iter().map(String::as_str));
+        names.extend([BUCKET_COLUMN, ROWS_COLUMN]);
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        if unique.len() != names.len() {
+            return None;
+        }
+        let x = crate::overview::quote(&self.label_name);
+        let series: Vec<String> = self
+            .series_names
+            .iter()
+            .map(|name| crate::overview::quote(name))
+            .collect();
+        let bucket = crate::overview::quote(BUCKET_COLUMN);
+        let rows = crate::overview::quote(ROWS_COLUMN);
+        let averages: Vec<String> = series
+            .iter()
+            .map(|name| format!("avg({name})::DOUBLE AS {name}"))
+            .collect();
+        let present: Vec<String> = std::iter::once(&x)
+            .chain(&series)
+            .map(|name| format!("{name} IS NOT NULL"))
+            .collect();
+        Some(format!(
+            "SELECT min({x}) AS {x}, {averages}, count(*) AS {rows}\n\
+             FROM (\n\
+             SELECT {x}, {series}, ntile({FULL_SERIES_POINTS}) OVER (ORDER BY {x}) AS {bucket}\n\
+             FROM {relation}\n\
+             WHERE {present}\n\
+             )\n\
+             GROUP BY {bucket}\n\
+             ORDER BY {bucket}",
+            averages = averages.join(", "),
+            series = series.join(", "),
+            present = present.join(" AND "),
+        ))
+    }
+
+    /// This chart redrawn from `buckets`, the answer to `full_series_sql`:
+    /// every row of the result, not just the loaded ones.
+    pub fn with_full_series(&self, mut buckets: QueryResult) -> Self {
+        buckets.columns.pop();
+        let total: u64 = buckets
+            .rows
+            .iter_mut()
+            .filter_map(|row| row.pop())
+            .filter_map(|count| count.parse::<u64>().ok())
+            .sum();
+        let mut data = Self::prepare(&buckets);
+        let points = data.rows.len();
+        let mut notices = Vec::new();
+        if self.series_total > self.series_names.len() {
+            notices.push(trf(
+                "chart.notice.series_capped",
+                &[&MAX_SERIES.to_string(), &self.series_total.to_string()],
+            ));
+        }
+        if points > 0 {
+            notices.push(trf(
+                "chart.notice.full_series",
+                &[
+                    &total.to_string(),
+                    &points.to_string(),
+                    &(total as usize).div_ceil(points).to_string(),
+                ],
+            ));
+        }
+        data.notice = crate::i18n::join_all(&notices);
+        data.series_total = self.series_total;
+        data.geo = self.geo.clone();
+        data
     }
 
     /// Whether there is anything to chart at all; the kind picker is hidden
@@ -1045,5 +1152,80 @@ mod tests {
         let total: f32 = data.pie.iter().map(|s| s.value).sum();
         assert_eq!(total, 210.);
         assert_eq!(data.pie_skipped, 1);
+    }
+
+    fn run(conn: &duckdb::Connection, sql: &str) -> QueryResult {
+        match crate::query::run_of(conn, sql).unwrap() {
+            crate::query::QueryOutcome::Rows(result) => result,
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_truncated_time_series_is_redrawn_from_every_row() {
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        // More rows than the grid keeps, and a NULL that is no point.
+        let statement = "SELECT TIMESTAMP '2026-01-01' + to_seconds(i) AS t, \
+                         CASE WHEN i = 5 THEN NULL ELSE i END::DOUBLE AS v \
+                         FROM range(300000) r(i) ORDER BY t";
+        let loaded = run(&conn, statement);
+        assert!(loaded.truncated);
+        let partial = ChartData::prepare(&loaded);
+        assert!(partial
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains(&loaded.rows.len().to_string())));
+
+        let sql = partial
+            .full_series_sql(&format!("(\n{statement}\n)"))
+            .expect("a truncated time series is redrawn");
+        let full = partial.with_full_series(run(&conn, &sql));
+        assert!(full.is_time_series);
+        assert_eq!(full.series_names, ["v"]);
+        assert_eq!(full.rows.len(), super::FULL_SERIES_POINTS);
+        let last = full.rows.last().unwrap();
+        // 299,999 rows in 1,500 buckets: the last 199 average to the middle one.
+        assert_eq!(last.values, [299_900.0]);
+        let notice = full.notice.as_deref().unwrap();
+        assert!(notice.contains("299999"), "{notice}");
+        // Done once: the redrawn chart is the whole result.
+        assert!(full.full_series_sql("(SELECT 1)").is_none());
+    }
+
+    #[test]
+    fn a_whole_result_or_a_bar_chart_is_not_redrawn() {
+        let mut time = result(
+            Vec::from([
+                column("d", ColumnKind::Temporal),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["2026-09-09", "1"])]),
+        );
+        assert!(ChartData::prepare(&time).full_series_sql("t").is_none());
+        time.truncated = true;
+        assert!(ChartData::prepare(&time).full_series_sql("t").is_some());
+
+        let mut bars = result(
+            Vec::from([
+                column("city", ColumnKind::Text),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["a", "1"])]),
+        );
+        bars.truncated = true;
+        assert!(ChartData::prepare(&bars).full_series_sql("t").is_none());
+
+        // `v` twice: which one a name means is not the chart's to guess.
+        let mut twice = result(
+            Vec::from([
+                column("d", ColumnKind::Temporal),
+                column("v", ColumnKind::Numeric),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["2026-09-09", "1", "2"])]),
+        );
+        twice.truncated = true;
+        assert!(ChartData::prepare(&twice).full_series_sql("t").is_none());
     }
 }

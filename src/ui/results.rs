@@ -631,6 +631,9 @@ pub struct ResultsPanel {
     /// a query does not throw the pick away; a kind the new result cannot
     /// draw falls back to `Auto`'s pick without forgetting it.
     chart_kind: ChartKind,
+    /// Bumped by every result, so a whole-result chart that lands after a
+    /// newer result is dropped rather than drawn over it.
+    chart_request: u64,
     /// The statements of the last Run, when it ran more than one; empty for a
     /// single statement, which needs no strip.
     script: Vec<ScriptEntry>,
@@ -723,6 +726,7 @@ impl ResultsPanel {
             rows_sql: None,
             chart_data: None,
             chart_kind: ChartKind::default(),
+            chart_request: 0,
             script: Vec::new(),
             script_selected: 0,
             export_input: None,
@@ -813,6 +817,7 @@ impl ResultsPanel {
 
     fn show(&mut self, shown: &Shown, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.chart_data = None;
+        self.chart_request += 1;
         self.overview = OverviewState::Idle;
         self.overview_request += 1;
         match shown {
@@ -897,6 +902,46 @@ impl ResultsPanel {
                     Ok(overview) => OverviewState::Ready(Rc::new(overview)),
                     Err(e) => OverviewState::Failed(e.to_string()),
                 };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// A time series the grid holds only the start of: average the whole
+    /// result in DuckDB, running the query again as the overview does, and
+    /// redraw the chart when that lands. Until then, or if it fails, the
+    /// chart draws the loaded rows and says so.
+    fn load_full_series(&mut self, data: &ChartData, cx: &mut Context<Self>) {
+        let Some(sql) = self
+            .rows_sql
+            .as_deref()
+            .filter(|sql| crate::query::is_subquery(sql))
+        else {
+            return;
+        };
+        let Ok(statement) = crate::query::single_statement(sql) else {
+            return;
+        };
+        let Some(full_sql) = data.full_series_sql(&overview_relation(statement)) else {
+            return;
+        };
+        let request = self.chart_request;
+        cx.spawn(async move |this, cx| {
+            let result = smol::unblock(move || {
+                crate::db::with_connection(|conn| crate::query::run_of(conn, &full_sql))
+            })
+            .await;
+            this.update(cx, |this, cx| {
+                if this.chart_request != request {
+                    return;
+                }
+                let (Ok(QueryOutcome::Rows(buckets)), Some(partial)) = (result, &this.chart_data)
+                else {
+                    return;
+                };
+                this.chart_data = Some(Rc::new(partial.with_full_series(buckets)));
                 cx.notify();
             })
             .ok();
@@ -1383,6 +1428,7 @@ impl ResultsPanel {
                     None => {
                         let data = Rc::new(ChartData::prepare(result));
                         self.chart_data = Some(data.clone());
+                        self.load_full_series(&data, cx);
                         data
                     }
                 };

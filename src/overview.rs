@@ -174,7 +174,7 @@ fn shape_of(data_type: &str) -> Shape {
     Shape::Text
 }
 
-fn quote(name: &str) -> String {
+pub(crate) fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
