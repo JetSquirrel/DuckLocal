@@ -346,6 +346,10 @@ fn completion_inside_a_plot_offers_its_attributes() {
             "value",
             "note",
             "tone",
+            "format",
+            "delta",
+            "delta_format",
+            "down_is_good",
             "text"
         ],
         "{response}"
