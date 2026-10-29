@@ -549,7 +549,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             }
         })
         .collect();
-    if missing_cells > 0 && series_names.len() > 1 {
+    // A heatmap leaves a missing cell empty; every other plot reads it as 0.
+    if missing_cells > 0 && series_names.len() > 1 && plot.kind != "heatmap" {
         notices.push(trf(
             "dashboard.notice.zero_filled",
             &[&missing_cells.to_string()],
@@ -567,7 +568,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     if plot.kind == "pie" {
         // Every band stays: the slices fold below, and a merged or dropped
         // band would make the shares wrong.
-    } else if plot.kind == "bar" {
+    } else if plot.kind == "bar" || plot.kind == "heatmap" {
+        // A heatmap's columns are cells, not points a line can average.
         if source_points > MAX_BARS {
             points.truncate(MAX_BARS);
             notices.push(trf(
@@ -1087,6 +1089,32 @@ mod tests {
         assert!(!prepared.points[1].present[1]);
         assert!(!prepared.points[2].present[0]);
         assert!(prepared.notice.is_some(), "zero-filled cells are said");
+    }
+
+    #[test]
+    fn a_heatmap_leaves_a_missing_cell_empty_and_caps_its_columns() {
+        let mut rows = vec![vec!["d1", "a", "1"], vec!["d2", "b", "20"]];
+        let bands: Vec<String> = (0..MAX_BARS + 5).map(|i| format!("h{i:03}")).collect();
+        for band in &bands {
+            rows.push(vec![band.as_str(), "a", "3"]);
+        }
+        let data = result(
+            vec![
+                column("x", ColumnKind::Text),
+                column("svc", ColumnKind::Text),
+                column("y", ColumnKind::Numeric),
+            ],
+            rows,
+        );
+        let prepared = prepare(&plot("heatmap", Some("y"), Some("svc")), Some(&Ok(data)));
+        assert_eq!(prepared.series_names, ["a", "b"]);
+        assert_eq!(prepared.points.len(), MAX_BARS, "columns cap as bars do");
+        // d1 has no b: an empty cell, and no word of filling it with 0.
+        assert_eq!(prepared.points[0].present, [true, false]);
+        let notice = prepared.notice.unwrap();
+        let zero_filled = trf("dashboard.notice.zero_filled", &["1"]);
+        assert!(!notice.contains(&zero_filled), "{notice}");
+        assert!(notice.contains(&(MAX_BARS + 7).to_string()), "{notice}");
     }
 
     #[test]

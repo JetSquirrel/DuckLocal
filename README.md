@@ -38,7 +38,7 @@ Your data stays on your machine, and there is no account. The only optional netw
 
 ### Dashboards
 Define `.dash` files with:
-- Charts: line, bar, area, scatter, pie, and map plots
+- Charts: line, bar, area, scatter, pie, heatmap, and map plots
 - Components: tables, metric cards with notes and tones, and text panels
 - Number formats for money, shares and fixed places (`format = "usd"`, `"pct1"`, `"num2"`)
 - Interactive cross-filtering

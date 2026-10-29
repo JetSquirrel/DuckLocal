@@ -33,7 +33,7 @@ use gpui_kit::component::plot::{
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 
-use super::format::{full_text, NumberFormat};
+use super::format::{full_text, short_text, NumberFormat};
 use crate::spec::prepare::{PlotPoint, PreparedPlot};
 use crate::ui::chart::format_ticks;
 
@@ -696,6 +696,308 @@ impl Plot for GroupedBars {
             }
         }
         Some(tooltip.into_any_element())
+    }
+}
+
+/// The surface left between two heatmap cells, so neighbours of one colour
+/// still read as two cells.
+const CELL_GAP: f32 = 2.;
+/// How round a heatmap cell's corners are.
+const CELL_RADIUS: f32 = 2.;
+/// The smallest cell a value is written in, past the label's own width.
+const CELL_LABEL_PAD: f32 = 6.;
+
+/// A `heatmap`: x's bands across, the series down, each cell coloured by its
+/// value on one hue, more darker (lighter on a dark surface). A cell the
+/// query did not return stays empty rather than reading as the least value.
+/// The value is written in a cell wide enough to hold it; the tooltip names
+/// every cell's band, series and value.
+pub(crate) struct Heatmap {
+    id: ElementId,
+    points: Vec<Arc<PlotPoint>>,
+    series: Vec<SharedString>,
+    time_axis: bool,
+    format: Option<NumberFormat>,
+    /// The least and the most value of the cells present.
+    range: (f64, f64),
+}
+
+impl Heatmap {
+    pub(crate) fn new(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
+        let mut this =
+            Self::of(id, plot.points.clone(), &plot.series_names).time_axis(plot.time_axis);
+        this.format = plot.format;
+        this
+    }
+
+    /// A heatmap over `points` directly, for the results panel's chart tab.
+    pub(crate) fn of(
+        id: impl Into<ElementId>,
+        points: Vec<Arc<PlotPoint>>,
+        series_names: &[String],
+    ) -> Self {
+        let range = heat_range(&points);
+        Self {
+            id: id.into(),
+            points,
+            series: series_names.iter().map(SharedString::from).collect(),
+            time_axis: false,
+            format: None,
+            range,
+        }
+    }
+
+    pub(crate) fn time_axis(mut self, time_axis: bool) -> Self {
+        self.time_axis = time_axis;
+        self
+    }
+
+    /// Where `value` sits between the least and the most cell, 0 to 1. One
+    /// value everywhere takes the ramp's middle: nothing is least or most.
+    fn share(&self, value: f64) -> f32 {
+        let (min, max) = self.range;
+        if max > min {
+            ((value - min) / (max - min)) as f32
+        } else {
+            0.5
+        }
+    }
+
+    /// The row labels' column on the left, the column labels' gutter below,
+    /// and one cell's width and height.
+    fn grid(&self, bounds: Bounds<Pixels>) -> (f32, f32, f32, f32) {
+        let width = bounds.size.width.as_f32();
+        let height = bounds.size.height.as_f32();
+        let widest = self
+            .series
+            .iter()
+            .map(|name| label_width(name))
+            .fold(0., f32::max);
+        let gutter = (widest + LABEL_PAD).clamp(MIN_GUTTER, width * MAX_GUTTER_SHARE);
+        let bottom = axis_gap();
+        let columns = self.points.len().max(1) as f32;
+        let rows = self.series.len().max(1) as f32;
+        let cell_width = ((width - gutter) / columns).max(0.);
+        let cell_height = ((height - bottom - TOP_GAP) / rows).max(0.);
+        (gutter, bottom, cell_width, cell_height)
+    }
+
+    /// The (band, series) cell under `position`, relative to the plot.
+    fn cell_at(&self, position: Point<Pixels>, bounds: Bounds<Pixels>) -> Option<(usize, usize)> {
+        let (gutter, _, cell_width, cell_height) = self.grid(bounds);
+        let (x, y) = (position.x.as_f32() - gutter, position.y.as_f32() - TOP_GAP);
+        if x < 0. || y < 0. || cell_width <= 0. || cell_height <= 0. {
+            return None;
+        }
+        let (b, s) = ((x / cell_width) as usize, (y / cell_height) as usize);
+        (b < self.points.len() && s < self.series.len()).then_some((b, s))
+    }
+}
+
+/// The least and the most value a heatmap's present cells hold.
+fn heat_range(points: &[Arc<PlotPoint>]) -> (f64, f64) {
+    points
+        .iter()
+        .flat_map(|d| {
+            d.values
+                .iter()
+                .zip(&d.present)
+                .filter(|(_, present)| **present)
+                .map(|(value, _)| *value)
+        })
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        })
+}
+
+/// A heatmap's key: the colours of its least, middle and most value, each
+/// named by the value it stands for.
+pub(crate) fn heat_key(
+    points: &[Arc<PlotPoint>],
+    format: Option<NumberFormat>,
+    cx: &App,
+) -> Vec<(Hsla, SharedString)> {
+    let (min, max) = heat_range(points);
+    if !(min.is_finite() && max.is_finite()) {
+        return Vec::new();
+    }
+    if max <= min {
+        let (fill, _) = crate::ui::palette::sequential(0.5, cx);
+        return vec![(fill, full_text(format, min).into())];
+    }
+    [0., 0.5, 1.]
+        .into_iter()
+        .map(|t| {
+            let (fill, _) = crate::ui::palette::sequential(t, cx);
+            let value = min + (max - min) * t as f64;
+            (fill, SharedString::from(full_text(format, value)))
+        })
+        .collect()
+}
+
+impl IntoElement for Heatmap {
+    type Element = PlotElement<Self>;
+
+    fn into_element(self) -> Self::Element {
+        PlotElement::new(self)
+    }
+}
+
+impl Plot for Heatmap {
+    fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let (gutter, bottom, cell_width, cell_height) = self.grid(bounds);
+        let height = bounds.size.height.as_f32();
+        let muted = cx.theme().muted_foreground;
+        let origin = bounds.origin;
+
+        // Cells, and a value in each one wide and tall enough for it.
+        let mut values = Vec::new();
+        for (b, d) in self.points.iter().enumerate() {
+            for s in 0..self.series.len() {
+                if !d.present.get(s).copied().unwrap_or(false) {
+                    continue;
+                }
+                let value = d.values[s];
+                let (fill_color, ink) = crate::ui::palette::sequential(self.share(value), cx);
+                let left = gutter + b as f32 * cell_width;
+                let top = TOP_GAP + s as f32 * cell_height;
+                let cell = Bounds::new(
+                    point(origin.x + px(left), origin.y + px(top)),
+                    size(
+                        px((cell_width - CELL_GAP).max(1.)),
+                        px((cell_height - CELL_GAP).max(1.)),
+                    ),
+                );
+                window.paint_quad(fill(cell, fill_color).corner_radii(px(CELL_RADIUS)));
+                let text = short_text(self.format, value);
+                if label_width(&text) + CELL_LABEL_PAD <= cell_width && LABEL_HEIGHT <= cell_height
+                {
+                    values.push(
+                        Text::new(
+                            text,
+                            point(
+                                px(left + (cell_width - CELL_GAP) / 2.),
+                                px(top + (cell_height - CELL_GAP - LABEL_SIZE) / 2.),
+                            ),
+                            ink,
+                        )
+                        .font_size(px(LABEL_SIZE))
+                        .align(TextAlign::Center),
+                    );
+                }
+            }
+        }
+        PlotLabel::new(values).paint(&bounds, window, cx);
+
+        // Series down the left, each beside its row while rows are a line of
+        // text tall; every k-th past that.
+        let every = (LABEL_HEIGHT / cell_height.max(1.)).ceil().max(1.) as usize;
+        let rows = self
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(s, _)| s % every == 0)
+            .map(|(s, name)| {
+                let text = truncate_text_to_width(name, px(LABEL_SIZE), gutter - LABEL_PAD, window);
+                Text::new(
+                    text,
+                    point(
+                        px(gutter - LABEL_PAD / 2.),
+                        px(TOP_GAP
+                            + s as f32 * cell_height
+                            + (cell_height - CELL_GAP - LABEL_SIZE) / 2.),
+                    ),
+                    muted,
+                )
+                .font_size(px(LABEL_SIZE))
+                .align(TextAlign::Right)
+            })
+            .collect();
+        PlotLabel::new(rows).paint(&bounds, window, cx);
+
+        // Bands along the bottom, each under its column while the widest
+        // fits across one; every k-th past that, so the labelled columns stay
+        // evenly spaced. The tooltip names the rest.
+        let shared_year = self.time_axis && one_year(&self.points);
+        let widest = self
+            .points
+            .iter()
+            .map(|d| label_width(&axis_label(&d.band, shared_year)))
+            .fold(0., f32::max);
+        let every = ((widest + LABEL_PAD) / cell_width.max(1.)).ceil().max(1.) as usize;
+        let columns = self
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(b, _)| b % every == 0)
+            .map(|(b, d)| {
+                Text::new(
+                    axis_label(&d.band, shared_year),
+                    point(
+                        px(gutter + b as f32 * cell_width + (cell_width - CELL_GAP) / 2.),
+                        px(height - bottom + TEXT_GAP),
+                    ),
+                    muted,
+                )
+                .font_size(px(LABEL_SIZE))
+                .align(TextAlign::Center)
+            })
+            .collect();
+        PlotLabel::new(columns).paint(&bounds, window, cx);
+    }
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn tooltip_state(
+        &self,
+        position: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        _cx: &App,
+    ) -> Option<TooltipState> {
+        let (b, s) = self.cell_at(position, bounds)?;
+        if !self.points[b].present.get(s).copied().unwrap_or(false) {
+            return None;
+        }
+        let (gutter, _, cell_width, _) = self.grid(bounds);
+        let center = gutter + b as f32 * cell_width + (cell_width - CELL_GAP) / 2.;
+        Some(TooltipState::new(
+            b * self.series.len() + s,
+            point(px(center), position.y),
+            vec![],
+        ))
+    }
+
+    fn tooltip(
+        &self,
+        state: &TooltipState,
+        cursor: Point<Pixels>,
+        bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let n = self.series.len().max(1);
+        let (b, s) = (state.index / n, state.index % n);
+        let d = self.points.get(b)?;
+        let (_, bottom, cell_width, _) = self.grid(bounds);
+        let value = d.values[s];
+        let (fill_color, _) = crate::ui::palette::sequential(self.share(value), cx);
+        let cross_line = CrossLine::new(state.cross_line)
+            .band(px((cell_width - CELL_GAP).max(1.)))
+            .span(TOP_GAP, bounds.size.height.as_f32() - bottom - TOP_GAP);
+        Some(
+            Tooltip::new(cursor, bounds.size)
+                .gap(px(8.))
+                .cross_line(cross_line)
+                .title(d.band.clone())
+                .row(
+                    fill_color,
+                    self.series[s].clone(),
+                    full_text(self.format, value),
+                )
+                .into_any_element(),
+        )
     }
 }
 

@@ -298,7 +298,8 @@ impl Encoding {
 }
 
 /// The `.dash` plot type a pick draws as `kind` (the chart tab's pick): a
-/// pie needs categories and one series, a map needs no pick at all; Auto
+/// pie needs categories and one series, a heatmap a split for its rows, a
+/// map needs no pick at all; Auto
 /// draws an area over time and bars otherwise.
 pub(crate) fn dash_kind(kind: ChartKind, temporal: bool, split: bool) -> &'static str {
     match kind {
@@ -307,6 +308,7 @@ pub(crate) fn dash_kind(kind: ChartKind, temporal: bool, split: bool) -> &'stati
         ChartKind::Area => "area",
         ChartKind::Scatter => "scatter",
         ChartKind::Pie if !temporal && !split => "pie",
+        ChartKind::Heatmap if split => "heatmap",
         _ if temporal => "area",
         _ => "bar",
     }
@@ -402,6 +404,8 @@ mod tests {
             series: Some("sku".into()),
         };
         let columns = round_trip(&encoding, statement, "bar");
+        assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
+        let columns = round_trip(&encoding, statement, "heatmap");
         assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
 
         let counting = Encoding {

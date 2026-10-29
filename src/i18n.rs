@@ -749,6 +749,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("chart.kind.area", "面积图", "Area"),
     ("chart.kind.scatter", "散点图", "Scatter"),
     ("chart.kind.pie", "饼图", "Pie"),
+    ("chart.kind.heatmap", "热力图", "Heatmap"),
     ("chart.kind.map", "地图", "Map"),
     ("chart.title.split", "{}（按 {}，以 {} 拆分）", "{} by {}, split by {}"),
     ("chart.pick.x", "X：{}", "X: {}"),

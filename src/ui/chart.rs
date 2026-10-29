@@ -23,7 +23,7 @@ use gpui_kit::*;
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
 use crate::spec::format::{full_text, NumberFormat};
-use crate::spec::plot::{GroupedBars, SeriesPlot};
+use crate::spec::plot::{heat_key, GroupedBars, Heatmap, SeriesPlot};
 use crate::spec::prepare::PlotPoint;
 use crate::ui::encoding::{
     Encoding, BANDS_COLUMN, BAND_COLUMN, MAX_CATEGORY_BANDS, MAX_ORDERED_BANDS, SERIES_COLUMN,
@@ -41,6 +41,8 @@ pub enum ChartKind {
     Area,
     Scatter,
     Pie,
+    /// x across, the split's values down, each cell's value in colour.
+    Heatmap,
     Map,
 }
 
@@ -53,6 +55,7 @@ impl ChartKind {
             ChartKind::Area => "chart.kind.area",
             ChartKind::Scatter => "chart.kind.scatter",
             ChartKind::Pie => "chart.kind.pie",
+            ChartKind::Heatmap => "chart.kind.heatmap",
             ChartKind::Map => "chart.kind.map",
         })
     }
@@ -324,7 +327,7 @@ impl ChartData {
         // DuckDB sends what any kind can draw; bars draw fewer bands, and
         // trimming them here keeps the count below the whole result's.
         let kept = match (dash_kind, ordered) {
-            ("bar", _) => MAX_BARS,
+            ("bar" | "heatmap", _) => MAX_BARS,
             (_, true) => MAX_ORDERED_BANDS,
             (_, false) => MAX_CATEGORY_BANDS,
         };
@@ -509,6 +512,11 @@ impl ChartData {
         if !self.is_time_series && self.split.is_none() {
             kinds.push(ChartKind::Pie);
         }
+        // Its rows are a split's values; a result's own columns are measures
+        // of different sizes, which one colour scale would set side by side.
+        if self.split.is_some() {
+            kinds.push(ChartKind::Heatmap);
+        }
         if self.geo.is_some() {
             kinds.push(ChartKind::Map);
         }
@@ -688,6 +696,9 @@ impl RenderOnce for ChartPanel {
                 SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
                     .into_any_element()
             }
+            ChartKind::Heatmap => Heatmap::of("results-chart-heatmap", rows, &data.series_names)
+                .time_axis(data.is_time_series)
+                .into_any_element(),
             ChartKind::Area => {
                 // One area series per numeric column; ~10 x labels on dense data.
                 // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
@@ -729,23 +740,31 @@ impl RenderOnce for ChartPanel {
         } else {
             data.series_names.join(", ")
         };
-        // Several series need a key; one series is named in the title.
-        let legend = (data.series_names.len() > 1
-            && matches!(
-                kind,
-                ChartKind::Line | ChartKind::Scatter | ChartKind::Area | ChartKind::Bar
-            ))
-        .then(|| {
-            data.series_names
-                .iter()
-                .enumerate()
-                .map(|(ix, name)| {
-                    (
-                        palette[ix % palette.len()],
-                        SharedString::from(name.clone()),
-                    )
-                })
-                .collect::<Vec<_>>()
+        // Several series need a key; one series is named in the title. A
+        // heatmap's key is its colour scale.
+        let legend = if kind == ChartKind::Heatmap {
+            Some(heat_key(&data.rows, None, cx))
+        } else {
+            None
+        };
+        let legend = legend.or_else(|| {
+            (data.series_names.len() > 1
+                && matches!(
+                    kind,
+                    ChartKind::Line | ChartKind::Scatter | ChartKind::Area | ChartKind::Bar
+                ))
+            .then(|| {
+                data.series_names
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, name)| {
+                        (
+                            palette[ix % palette.len()],
+                            SharedString::from(name.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
         });
         // Split series are values, not measures: the title names the measure.
         let title = match &data.split {
@@ -1522,6 +1541,43 @@ mod tests {
         let data = encoded(statement, &counting, ChartKind::Pie).unwrap();
         assert_eq!(data.series_names, ["count(*)"]);
         assert!(!data.pie.is_empty());
+    }
+
+    #[test]
+    fn a_split_draws_as_a_heatmap_and_copies_as_one() {
+        // Orders by weekday and hour: a cell per pair, one pair never seen.
+        let statement = "SELECT h AS hour, 'day ' || d AS weekday, (d * 10 + h)::DOUBLE AS orders                          FROM range(7) a(d), range(24) b(h) WHERE NOT (d = 0 AND h = 3)";
+        let encoding = Encoding {
+            x: "hour".into(),
+            y: Some("orders".into()),
+            agg: Aggregate::Sum,
+            series: Some("weekday".into()),
+        };
+        let data = encoded(statement, &encoding, ChartKind::Heatmap).unwrap();
+        assert!(data.available_kinds().contains(&ChartKind::Heatmap));
+        assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Heatmap);
+        assert_eq!(data.series_names.len(), 7);
+        assert_eq!(data.rows.len(), 24);
+        let missing = data
+            .rows
+            .iter()
+            .flat_map(|row| row.present.iter())
+            .filter(|present| !**present)
+            .count();
+        assert_eq!(missing, 1, "the unseen pair stays an empty cell");
+        assert_eq!(
+            crate::ui::encoding::dash_kind(ChartKind::Heatmap, false, true),
+            "heatmap"
+        );
+
+        // Without a split there are no rows to lay the cells in.
+        let whole = Encoding {
+            series: None,
+            ..encoding
+        };
+        let data = encoded(statement, &whole, ChartKind::Heatmap).unwrap();
+        assert!(!data.available_kinds().contains(&ChartKind::Heatmap));
+        assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Bar);
     }
 
     #[test]

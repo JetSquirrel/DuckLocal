@@ -36,10 +36,11 @@ use super::format::{NumberFormat, FORMATS};
 use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
-/// x/y for the continuous ones and `pie`, anything tabular for `table`,
-/// coordinates for `map`, words and no query at all for `text`.
+/// x/y for the continuous ones, `pie` and `heatmap` (its rows the series),
+/// anything tabular for `table`, coordinates for `map`, words and no query at
+/// all for `text`.
 pub(crate) const PLOT_TYPES: &[&str] = &[
-    "line", "bar", "area", "scatter", "pie", "map", "table", "card", "text",
+    "line", "bar", "area", "scatter", "pie", "heatmap", "map", "table", "card", "text",
 ];
 
 /// The attributes only a `map` takes.
