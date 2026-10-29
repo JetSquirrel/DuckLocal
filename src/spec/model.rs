@@ -10,6 +10,7 @@
 //!   `series` and `title`; a `table` shows its query's every column and
 //!   needs neither `x` nor `y`;
 //! * a `pie` takes `x` (the slices) and `y` (their sizes), and no `series`;
+//! * a `histogram` takes a numeric `x` alone, and counts the rows per range;
 //! * a `map` takes `lat` and `lng` instead of `x` and `y` — either may be left
 //!   out when a column's name says what it is (`geo_lat`, `longitude`) — and
 //!   optionally `color`, `size` (with `size_scale`, `"sqrt"` or `"log"`) and
@@ -37,10 +38,20 @@ use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
 /// x/y for the continuous ones, `pie` and `heatmap` (its rows the series),
-/// anything tabular for `table`, coordinates for `map`, words and no query at
-/// all for `text`.
+/// a numeric x alone for `histogram`, anything tabular for `table`,
+/// coordinates for `map`, words and no query at all for `text`.
 pub(crate) const PLOT_TYPES: &[&str] = &[
-    "line", "bar", "area", "scatter", "pie", "heatmap", "map", "table", "card", "text",
+    "line",
+    "bar",
+    "area",
+    "scatter",
+    "pie",
+    "heatmap",
+    "histogram",
+    "map",
+    "table",
+    "card",
+    "text",
 ];
 
 /// The attributes only a `map` takes.
@@ -905,6 +916,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             ))
         } else if kind_name == "pie" && name == "series" {
             Some("A pie draws one series; it takes no series".to_string())
+        } else if kind_name == "histogram" && matches!(name, "y" | "series") {
+            Some(format!(
+                "A histogram counts the rows in each range of x; it takes no {name}"
+            ))
         } else {
             None
         };
@@ -954,7 +969,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     // known to need one.
     let kind = kind.unwrap_or_default();
     if !kind.is_empty()
-        && !matches!(kind.as_str(), "table" | "map" | "card" | "text")
+        && !matches!(
+            kind.as_str(),
+            "table" | "map" | "card" | "text" | "histogram"
+        )
         && y.is_none()
     {
         diagnostics.push(Diagnostic::at_block(
@@ -1329,6 +1347,25 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                         message: format!(
                             "card {:?} uses delta = {column:?} ({ty}), which is not numeric",
                             plot.name
+                        ),
+                    });
+                }
+            }
+        }
+        // Ranges of something that is not a number are not ranges.
+        if plot.kind == "histogram" {
+            if let Some((_, ty)) = available
+                .iter()
+                .find(|(column, _)| column.eq_ignore_ascii_case(&plot.x))
+            {
+                if !is_numeric(ty) {
+                    diagnostics.push(Diagnostic {
+                        line: plot.line,
+                        col: plot.col,
+                        span: plot.span,
+                        message: format!(
+                            "histogram {:?} bins x = {:?} ({ty}), which is not numeric",
+                            plot.name, plot.x
                         ),
                     });
                 }
@@ -2079,6 +2116,49 @@ plot "e" { type = "bar" query = query.q x = t y = v size = n }
         assert!(has("lists at least one column"), "{messages:?}");
         assert!(has("tooltip is a list of columns"), "{messages:?}");
         assert!(has("size is for map plots"), "{messages:?}");
+    }
+
+    #[test]
+    fn a_histogram_bins_a_numeric_x_alone() {
+        // No y needed; y and series are mistakes.
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "h" { type = "histogram" query = query.q x = price }
+plot "n" { type = "histogram" query = query.q x = name }
+"#,
+        );
+        let columns = |_: &str| {
+            Ok(vec![
+                ("price".to_string(), "DOUBLE".to_string()),
+                ("name".to_string(), "VARCHAR".to_string()),
+            ])
+        };
+        let messages: Vec<String> = check_columns(&spec, &columns)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert_eq!(
+            messages,
+            ["histogram \"n\" bins x = \"name\" (VARCHAR), which is not numeric"]
+        );
+
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1" }
+plot "h" { type = "histogram" query = query.q x = price y = n series = s }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.contains(&"A histogram counts the rows in each range of x; it takes no y"),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .contains(&"A histogram counts the rows in each range of x; it takes no series"),
+            "{messages:?}"
+        );
     }
 
     #[test]

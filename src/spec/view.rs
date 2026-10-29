@@ -2763,6 +2763,7 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         // drop the labels that do not fit.
         "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
         "heatmap" => Heatmap::new(named_id(), plot).into_any_element(),
+        "histogram" => GroupedBars::new(named_id(), plot).bins().into_any_element(),
         "area" if single => {
             let color = palette[0];
             let chart = AreaChart::new(plot.points.clone())

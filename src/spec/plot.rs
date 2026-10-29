@@ -251,6 +251,10 @@ pub(crate) struct GroupedBars {
     selected: Option<SharedString>,
     /// How the tooltip reads values; the bar labels came formatted.
     format: Option<NumberFormat>,
+    /// A histogram's: the bands are ranges one after another, so the bars
+    /// touch, stand upright and thin their labels, and carry no value —
+    /// the shape is the point, and the tooltip has the counts.
+    bins: bool,
 }
 
 /// How much of its opacity a bar outside the picked band keeps.
@@ -303,11 +307,18 @@ impl GroupedBars {
             time_axis: false,
             selected: None,
             format: None,
+            bins: false,
         }
     }
 
     pub(crate) fn time_axis(mut self, time_axis: bool) -> Self {
         self.time_axis = time_axis;
+        self
+    }
+
+    /// Draw the bands as a histogram's ranges.
+    pub(crate) fn bins(mut self) -> Self {
+        self.bins = true;
         self
     }
 
@@ -317,15 +328,33 @@ impl GroupedBars {
     }
 
     /// One series labels each bar with its value; several would crowd the
-    /// band, and the tooltip lists them.
-    fn values_shown(&self) -> bool {
-        self.series.len() == 1
+    /// band, and the tooltip lists them. A histogram's many narrow bars do
+    /// so only while every count fits across its bar, `width` the plot's.
+    fn values_shown(&self, width: f32) -> bool {
+        if self.series.len() != 1 {
+            return false;
+        }
+        if !self.bins {
+            return true;
+        }
+        let widest = self
+            .points
+            .iter()
+            .map(|d| label_width(&d.label))
+            .fold(0., f32::max);
+        widest + LABEL_PAD <= width / self.points.len().max(1) as f32
+    }
+
+    /// Bands in an order of their own — times, ranges — whose labels may be
+    /// thinned: one skipped can be read off its neighbours.
+    fn ordered(&self) -> bool {
+        self.time_axis || self.bins
     }
 
     /// Upright when every band's label — and its value, when shown — fits
     /// across its band; on its side otherwise. A time axis stays upright.
     fn layout(&self, bounds: Bounds<Pixels>) -> Layout {
-        if self.time_axis || self.points.is_empty() {
+        if self.ordered() || self.points.is_empty() {
             return Layout::Columns;
         }
         let width = bounds.size.width.as_f32();
@@ -336,7 +365,7 @@ impl GroupedBars {
                 .fold(0., f32::max)
         };
         let band = widest(|d| &d.band);
-        let value = if self.values_shown() {
+        let value = if self.values_shown(width) {
             widest(|d| &d.label)
         } else {
             0.
@@ -388,7 +417,7 @@ impl GroupedBars {
         let (band_range, value_range) = match self.layout(bounds) {
             Layout::Columns => {
                 let top = TOP_GAP
-                    + if self.values_shown() {
+                    + if self.values_shown(width) {
                         LABEL_HEIGHT
                     } else {
                         0.
@@ -400,10 +429,17 @@ impl GroupedBars {
         // The paddings are the catalog `BarChart`'s, so a band sits where a
         // single-series chart would put it; the cap keeps each bar of the
         // group at most MAX_BAR_WIDTH, however wide the plot.
+        // A histogram's ranges meet, so its bars nearly do: the gap left is
+        // the surface line between two fills.
+        let (inner, outer, widest) = if self.bins {
+            (0.04, 0.02, f32::INFINITY)
+        } else {
+            (0.4, 0.2, MAX_BAR_WIDTH * self.series.len().max(1) as f32)
+        };
         let band = ScaleBand::new(self.points.iter().map(|d| d.band.clone()), band_range)
-            .padding_inner(0.4)
-            .padding_outer(0.2)
-            .max_band_width(MAX_BAR_WIDTH * self.series.len().max(1) as f32);
+            .padding_inner(inner)
+            .padding_outer(outer)
+            .max_band_width(widest);
         let value = ScaleLinear::new(
             self.points
                 .iter()
@@ -412,6 +448,56 @@ impl GroupedBars {
             value_range,
         );
         (band, value)
+    }
+
+    /// A histogram's axis: the edges between its ranges, each under the
+    /// line two bars meet at — `$0`, `$20K`, `$40K` — rather than a range
+    /// under each bar, which would say every edge twice. Every k-th edge
+    /// once they would touch, so the ones shown stay evenly spaced.
+    fn paint_edges(
+        &self,
+        band_scale: &ScaleBand<SharedString>,
+        baseline: f32,
+        width: f32,
+        bounds: &Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let muted = cx.theme().muted_foreground;
+        // A band reads `lo–hi`; the edges are every lo and the last hi.
+        let mut edges: Vec<(SharedString, f32)> = Vec::with_capacity(self.points.len() + 1);
+        for d in &self.points {
+            let (Some(tick), Some((lo, _))) = (band_scale.tick(&d.band), d.band.split_once('–'))
+            else {
+                continue;
+            };
+            edges.push((lo.to_string().into(), tick));
+        }
+        if let Some(last) = self.points.last() {
+            if let (Some(tick), Some((_, hi))) =
+                (band_scale.tick(&last.band), last.band.split_once('–'))
+            {
+                edges.push((hi.to_string().into(), tick + band_scale.band_width()));
+            }
+        }
+        let widest = edges
+            .iter()
+            .map(|(text, _)| label_width(text))
+            .fold(0., f32::max);
+        let step = width / self.points.len().max(1) as f32;
+        let every = ((widest + LABEL_PAD) / step.max(1.)).ceil().max(1.) as usize;
+        let last = edges.len().saturating_sub(1);
+        let labels = edges
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| i % every == 0)
+            .map(|(i, (text, x))| {
+                Text::new(text, point(px(x), px(baseline + TEXT_GAP)), muted)
+                    .font_size(px(LABEL_SIZE))
+                    .align(point_label_align(i, last + 1))
+            })
+            .collect();
+        PlotLabel::new(labels).paint(bounds, window, cx);
     }
 
     /// Only the cells the query returned: a series a band lacks draws no bar
@@ -471,8 +557,13 @@ impl Plot for GroupedBars {
                     .stroke(cx.theme().border)
                     .x(px(zero))
                     .paint(&bounds, window, cx);
+                if self.bins {
+                    self.paint_edges(&band_scale, baseline, width, &bounds, window, cx);
+                }
                 let shared_year = self.time_axis && one_year(&self.points);
-                let shown = if self.time_axis {
+                let shown = if self.bins {
+                    vec![false; self.points.len()]
+                } else if self.ordered() {
                     let widest = self
                         .points
                         .iter()
@@ -505,7 +596,7 @@ impl Plot for GroupedBars {
 
                 // The grid skips the baseline, which the axis line already draws.
                 let top = TOP_GAP
-                    + if self.values_shown() {
+                    + if self.values_shown(width) {
                         LABEL_HEIGHT
                     } else {
                         0.
@@ -532,7 +623,7 @@ impl Plot for GroupedBars {
                         ..Corners::default()
                     })
                     .fill(fill);
-                if self.values_shown() {
+                if self.values_shown(width) {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
                         vec![Text::new(d.0.label.clone(), at, muted)
                             .font_size(px(LABEL_SIZE))
@@ -601,7 +692,7 @@ impl Plot for GroupedBars {
                         ..Corners::default()
                     })
                     .fill(fill);
-                if self.values_shown() {
+                if self.values_shown(width) {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
                         // A negative bar ends left of zero; its value reads
                         // leftwards from there.

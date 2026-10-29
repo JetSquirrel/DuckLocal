@@ -141,6 +141,13 @@ impl Encoding {
             .is_some_and(|c| matches!(c.kind, ColumnKind::Temporal | ColumnKind::Numeric))
     }
 
+    /// Whether a histogram can draw this pick: x is a number to bin, and
+    /// no split asks for more than one count per range.
+    pub fn binnable(&self, columns: &[ColumnMeta]) -> bool {
+        self.series.is_none()
+            && column(columns, &self.x).is_some_and(|c| c.kind == ColumnKind::Numeric)
+    }
+
     pub fn x_is_temporal(&self, columns: &[ColumnMeta]) -> bool {
         column(columns, &self.x).is_some_and(|c| c.kind == ColumnKind::Temporal)
     }
@@ -221,6 +228,18 @@ impl Encoding {
     pub fn dash(&self, statement: &str, kind: &str, title: &str, ordered: bool) -> String {
         let quote = crate::overview::quote;
         let x = quote(&self.x);
+        // A histogram bins the rows themselves: its query hands them over,
+        // and its plot names x alone.
+        if kind == "histogram" {
+            let sql = format!("SELECT {x}\nFROM (\n{statement}\n)\nWHERE {x} IS NOT NULL");
+            return format!(
+                "{}\n\nplot \"chart\" {{\n  type  = \"histogram\"\n  query = query.chart\n  \
+                 x     = {}\n  title = {}\n}}\n",
+                query_block(&sql),
+                dash_value(&self.x),
+                dash_string(title),
+            );
+        }
         let value = quote(&self.value_name());
         let measure = match &self.y {
             Some(y) => format!("{}({})", self.agg.function(), quote(y)),
@@ -242,17 +261,11 @@ impl Encoding {
              GROUP BY ALL\n\
              ORDER BY {order}"
         );
-        // The heredoc's closing indent comes off every line, so the
-        // statement reads back exactly as written.
-        let mut delimiter = "SQL".to_string();
-        while sql.lines().any(|line| line.trim() == delimiter) {
-            delimiter.push('_');
-        }
-        let body: String = sql.lines().map(|line| format!("    {line}\n")).collect();
         let mut text = format!(
-            "query \"chart\" {{\n  sql = <<{delimiter}\n{body}    {delimiter}\n}}\n\n\
+            "{query}\n\n\
              plot \"chart\" {{\n  type   = \"{kind}\"\n  query  = query.chart\n  \
              x      = {x}\n  y      = {y}\n",
+            query = query_block(&sql),
             x = dash_value(&self.x),
             y = dash_value(&self.value_name()),
         );
@@ -309,9 +322,21 @@ pub(crate) fn dash_kind(kind: ChartKind, temporal: bool, split: bool) -> &'stati
         ChartKind::Scatter => "scatter",
         ChartKind::Pie if !temporal && !split => "pie",
         ChartKind::Heatmap if split => "heatmap",
+        ChartKind::Histogram if !split => "histogram",
         _ if temporal => "area",
         _ => "bar",
     }
+}
+
+/// `sql` as the `.dash` query block `chart`. The heredoc's closing indent
+/// comes off every line, so the statement reads back exactly as written.
+fn query_block(sql: &str) -> String {
+    let mut delimiter = "SQL".to_string();
+    while sql.lines().any(|line| line.trim() == delimiter) {
+        delimiter.push('_');
+    }
+    let body: String = sql.lines().map(|line| format!("    {line}\n")).collect();
+    format!("query \"chart\" {{\n  sql = <<{delimiter}\n{body}    {delimiter}\n}}")
 }
 
 /// A column name as a `.dash` value: bare when it can be, a string when not.
@@ -407,6 +432,14 @@ mod tests {
         assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
         let columns = round_trip(&encoding, statement, "heatmap");
         assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
+
+        // A histogram's query hands over the rows of x, to be binned.
+        let binned = Encoding {
+            x: "amount".into(),
+            series: None,
+            ..encoding.clone()
+        };
+        assert_eq!(round_trip(&binned, statement, "histogram"), ["amount"]);
 
         let counting = Encoding {
             y: None,

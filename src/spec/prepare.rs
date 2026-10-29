@@ -140,6 +140,48 @@ pub struct PreparedPlot {
     pub failure: Option<String>,
 }
 
+/// A histogram of column `x_ix`: a bar per range, its height the rows whose
+/// value falls in it. Rows without a number are left out, and said.
+fn histogram(result: &QueryResult, x_ix: usize, base: PreparedPlot) -> PreparedPlot {
+    let column = &result.columns[x_ix];
+    if column.kind != ColumnKind::Numeric {
+        return PreparedPlot {
+            failure: Some(trf(
+                "chart.histogram.not_numeric",
+                &[&column.name, &column.duck_type],
+            )),
+            ..base
+        };
+    }
+    let values: Vec<f64> = result
+        .rows
+        .iter()
+        .filter_map(|row| parse_number(row.get(x_ix)?))
+        .filter(|v| v.is_finite())
+        .collect();
+    let mut notices = Vec::new();
+    if result.truncated {
+        notices.push(trf(
+            "chart.notice.truncated",
+            &[&result.rows.len().to_string()],
+        ));
+    }
+    let skipped = result.rows.len() - values.len();
+    if skipped > 0 {
+        notices.push(trf("chart.histogram.skipped", &[&skipped.to_string()]));
+    }
+    let points = super::histogram::bin(&values)
+        .map(|(bins, counts)| super::histogram::points(bins, &counts, base.format))
+        .unwrap_or_default();
+    PreparedPlot {
+        label_name: column.name.clone(),
+        series_names: vec![crate::i18n::tr("chart.histogram.rows").to_string()],
+        points,
+        notice: crate::i18n::join_all(&notices),
+        ..base
+    }
+}
+
 /// The most dots a scatter draws. Past it the points are thinned evenly
 /// along x, which keeps the cloud's shape, and the plot says so.
 pub(crate) const MAX_SCATTER_POINTS: usize = 4_000;
@@ -433,6 +475,9 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     let Some(x_ix) = column(&plot.x) else {
         return base(Some(missing_column(&plot.x, result)));
     };
+    if plot.kind == "histogram" {
+        return histogram(result, x_ix, base(None));
+    }
     let Some(y_name) = plot.y.as_deref() else {
         // A non-table plot without y cannot have validated; say so anyway.
         return base(Some(crate::i18n::tr("dashboard.invalid_plot").to_string()));
