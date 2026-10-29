@@ -3,6 +3,7 @@
 pub mod agent_avatar;
 pub mod chart;
 pub mod completion;
+pub mod encoding;
 pub mod geo;
 #[cfg(test)]
 mod language_toggle_tests;

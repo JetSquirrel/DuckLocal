@@ -10,6 +10,7 @@
 //! itself is rebuilt on every frame, and hands the cached rows to the chart as
 //! `Rc`s so a frame costs refcount bumps rather than a copy of the row set.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,8 +22,12 @@ use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
+use crate::spec::format::{full_text, NumberFormat};
 use crate::spec::plot::{GroupedBars, SeriesPlot};
 use crate::spec::prepare::PlotPoint;
+use crate::ui::encoding::{
+    Encoding, BANDS_COLUMN, BAND_COLUMN, MAX_CATEGORY_BANDS, MAX_ORDERED_BANDS, SERIES_COLUMN,
+};
 use crate::ui::geo::{GeoData, GeoPlot, MAX_GEO_POINTS};
 
 /// What the chart tab draws. `Auto` resolves per result set, see
@@ -67,7 +72,34 @@ impl PieSlice {
     pub(crate) fn value(&self) -> f32 {
         self.value
     }
+
+    pub(crate) fn name(&self) -> &SharedString {
+        &self.name
+    }
+
+    pub(crate) fn amount(&self) -> f64 {
+        self.value as f64
+    }
 }
+
+/// How a pie is drawn beyond its slices. A dashboard knows its panel's size,
+/// so it draws a ring — less solid colour than a disc, with room for the
+/// total in the middle — and lets its key pick one slice out.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PieLook {
+    /// The ring's outer radius in pixels; `None` draws the library's disc.
+    pub outer_radius: Option<f32>,
+    /// The slice the key picked out, by name: it keeps its colour and the
+    /// rest fade.
+    pub isolated: Option<SharedString>,
+}
+
+/// How thick a ring is, as a share of its outer radius.
+const RING_INNER: f32 = 0.62;
+/// The surface gap between two slices of a ring, in pixels.
+const RING_GAP: f32 = 2.;
+/// What a slice the key did not pick keeps of its colour.
+const UNPICKED_SLICE: f32 = 0.2;
 
 /// A chart is at most a couple of thousand pixels wide, so plotting more
 /// points than this cannot show more detail — it only multiplies the
@@ -81,6 +113,14 @@ pub(crate) const MAX_SERIES: usize = 12;
 /// Bars are wider than line vertices, and unlike a time axis, adjacent bands
 /// cannot be meaningfully merged — so surplus bars are dropped, not averaged.
 pub(crate) const MAX_BARS: usize = 200;
+/// How many points DuckDB averages a whole time series into when the grid
+/// holds only its first rows; the client-side downsampling cap.
+const FULL_SERIES_POINTS: usize = MAX_POINTS;
+/// The columns `full_series_sql` adds, a point's bucket and its row count; a
+/// result column of either name keeps the chart on the loaded rows. Two
+/// names, so neither alias shadows the other in `ORDER BY`.
+const BUCKET_COLUMN: &str = "__ducklocal_bucket";
+const ROWS_COLUMN: &str = "__ducklocal_rows";
 /// How many detected columns the "nothing to plot" message lists before
 /// summarizing the rest.
 const MAX_LISTED_COLUMNS: usize = 5;
@@ -108,6 +148,14 @@ pub struct ChartData {
     /// title. A chart that quietly plots something other than the query result
     /// would be worse than a slow one.
     notice: Option<String>,
+    /// Drawn from the rows the grid kept, which are not the whole result.
+    partial: bool,
+    /// How many numeric columns the result has, before `MAX_SERIES`.
+    series_total: usize,
+    /// For a chart drawn from column picks that split the measure into
+    /// series: the measure's name and the split column's. Titles the chart,
+    /// and rules a pie out.
+    split: Option<(String, String)>,
 }
 
 type RawPlotRow = (usize, SharedString, Vec<f64>);
@@ -168,10 +216,19 @@ impl ChartData {
                     .map(|column| format!("{} ({})", column.name, column.duck_type))
                     .collect(),
                 notice: None,
+                partial: result.truncated,
+                series_total: 0,
+                split: None,
             };
         }
 
         let mut notices: Vec<String> = Vec::new();
+        if result.truncated {
+            notices.push(trf(
+                "chart.notice.truncated",
+                &[&result.rows.len().to_string()],
+            ));
+        }
         let series_total = value_ixes.len();
         if series_total > MAX_SERIES {
             value_ixes.truncate(MAX_SERIES);
@@ -237,7 +294,201 @@ impl ChartData {
             geo,
             detected: Vec::new(),
             notice: crate::i18n::join_all(&notices),
+            partial: result.truncated,
+            series_total,
+            split: None,
         }
+    }
+
+    /// The chart `encoding` picks, from `grouped` — DuckDB's answer to
+    /// `Encoding::sql` — drawn as `kind` the way a dashboard plot of those
+    /// columns is. `Err` says why it cannot be drawn.
+    pub fn from_encoded(
+        encoding: &Encoding,
+        grouped: &QueryResult,
+        kind: ChartKind,
+    ) -> Result<Self, String> {
+        let columns = &grouped.columns;
+        let temporal = encoding.x_is_temporal(columns);
+        let ordered = encoding.x_is_ordered(columns);
+        let split = encoding.series.is_some();
+        let dash_kind = crate::ui::encoding::dash_kind(kind, temporal, split);
+        let at = |name: &str| columns.iter().position(|c| c.name == name);
+        let first_count = |name: &str| {
+            at(name)
+                .and_then(|ix| grouped.rows.first()?.get(ix)?.parse::<usize>().ok())
+                .unwrap_or(0)
+        };
+        let (bands, series) = (first_count(BANDS_COLUMN), first_count(SERIES_COLUMN));
+
+        // DuckDB sends what any kind can draw; bars draw fewer bands, and
+        // trimming them here keeps the count below the whole result's.
+        let kept = match (dash_kind, ordered) {
+            ("bar", _) => MAX_BARS,
+            (_, true) => MAX_ORDERED_BANDS,
+            (_, false) => MAX_CATEGORY_BANDS,
+        };
+        let trimmed;
+        let grouped = match at(BAND_COLUMN) {
+            Some(ix) if bands > kept => {
+                trimmed = QueryResult {
+                    columns: grouped.columns.clone(),
+                    rows: grouped
+                        .rows
+                        .iter()
+                        .filter(|row| {
+                            row.get(ix)
+                                .and_then(|band| band.parse::<usize>().ok())
+                                .is_some_and(|band| band <= kept)
+                        })
+                        .cloned()
+                        .collect(),
+                    elapsed_ms: grouped.elapsed_ms,
+                    truncated: false,
+                };
+                &trimmed
+            }
+            _ => grouped,
+        };
+        let prepared = crate::spec::prepare::prepare(
+            &encoding.plot(dash_kind),
+            Some(&Ok::<&QueryResult, String>(grouped)),
+        );
+        if let Some(failure) = prepared.failure {
+            return Err(failure);
+        }
+
+        let mut notices = vec![tr("chart.notice.grouped").to_string()];
+        if bands > kept {
+            let key = if ordered {
+                "chart.notice.bands_first"
+            } else {
+                "chart.notice.bands_largest"
+            };
+            notices.push(trf(key, &[&kept.to_string(), &bands.to_string()]));
+        }
+        if series > MAX_SERIES {
+            notices.push(trf(
+                "chart.notice.split_capped",
+                &[&MAX_SERIES.to_string(), &series.to_string()],
+            ));
+        }
+        notices.extend(prepared.notice);
+        Ok(Self {
+            label_name: prepared.label_name,
+            series_total: prepared.series_names.len(),
+            series_names: prepared.series_names,
+            is_time_series: prepared.time_axis,
+            rows: prepared.points,
+            // A pie's skipped rows are in `prepared.notice` already.
+            pie: prepared.pie,
+            pie_skipped: 0,
+            geo: None,
+            detected: Vec::new(),
+            notice: crate::i18n::join_all(&notices),
+            partial: false,
+            split: encoding
+                .series
+                .clone()
+                .map(|series| (encoding.value_name(), series)),
+        })
+    }
+
+    /// For a time series the grid holds only the start of: SQL that averages
+    /// the whole result, read from `relation`, into at most
+    /// `FULL_SERIES_POINTS` points in time order — the client's downsampling,
+    /// done by DuckDB over every row. Rows that share a time are totalled
+    /// first and the times bucketed after, so a time is never split across
+    /// two points: 90 days of 300,000 rows draw 90 daily averages, not 1,500
+    /// slices of them. The last column counts each point's rows. `None` when
+    /// the loaded rows are the result, or when a repeated column name would
+    /// leave a reference ambiguous.
+    pub fn full_series_sql(&self, relation: &str) -> Option<String> {
+        if !self.partial || !self.is_time_series {
+            return None;
+        }
+        let mut names: Vec<&str> = Vec::with_capacity(self.series_names.len() + 2);
+        names.push(&self.label_name);
+        names.extend(self.series_names.iter().map(String::as_str));
+        names.extend([BUCKET_COLUMN, ROWS_COLUMN]);
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        if unique.len() != names.len() {
+            return None;
+        }
+        let x = crate::overview::quote(&self.label_name);
+        let series: Vec<String> = self
+            .series_names
+            .iter()
+            .map(|name| crate::overview::quote(name))
+            .collect();
+        let bucket = crate::overview::quote(BUCKET_COLUMN);
+        let rows = crate::overview::quote(ROWS_COLUMN);
+        // Each series keeps its name: a time's total, then a point's mean.
+        let totals: Vec<String> = series
+            .iter()
+            .map(|name| format!("sum({name})::DOUBLE AS {name}"))
+            .collect();
+        let averages: Vec<String> = series
+            .iter()
+            .map(|name| format!("(sum({name}) / sum({rows}))::DOUBLE AS {name}"))
+            .collect();
+        let present: Vec<String> = std::iter::once(&x)
+            .chain(&series)
+            .map(|name| format!("{name} IS NOT NULL"))
+            .collect();
+        Some(format!(
+            "WITH per_x AS (\n\
+             SELECT {x}, {totals}, count(*) AS {rows}\n\
+             FROM {relation}\n\
+             WHERE {present}\n\
+             GROUP BY {x}\n\
+             ), bucketed AS (\n\
+             SELECT *, ntile({FULL_SERIES_POINTS}) OVER (ORDER BY {x}) AS {bucket}\n\
+             FROM per_x\n\
+             )\n\
+             SELECT min({x}) AS {x}, {averages}, sum({rows}) AS {rows}\n\
+             FROM bucketed\n\
+             GROUP BY {bucket}\n\
+             ORDER BY {bucket}",
+            totals = totals.join(", "),
+            averages = averages.join(", "),
+            present = present.join(" AND "),
+        ))
+    }
+
+    /// This chart redrawn from `buckets`, the answer to `full_series_sql`:
+    /// every row of the result, not just the loaded ones.
+    pub fn with_full_series(&self, mut buckets: QueryResult) -> Self {
+        buckets.columns.pop();
+        let total: u64 = buckets
+            .rows
+            .iter_mut()
+            .filter_map(|row| row.pop())
+            .filter_map(|count| count.parse::<u64>().ok())
+            .sum();
+        let mut data = Self::prepare(&buckets);
+        let points = data.rows.len();
+        let mut notices = Vec::new();
+        if self.series_total > self.series_names.len() {
+            notices.push(trf(
+                "chart.notice.series_capped",
+                &[&MAX_SERIES.to_string(), &self.series_total.to_string()],
+            ));
+        }
+        if points > 0 {
+            notices.push(trf(
+                "chart.notice.full_series",
+                &[
+                    &total.to_string(),
+                    &points.to_string(),
+                    &(total as usize).div_ceil(points).to_string(),
+                ],
+            ));
+        }
+        data.notice = crate::i18n::join_all(&notices);
+        data.series_total = self.series_total;
+        data.geo = self.geo.clone();
+        data
     }
 
     /// Whether there is anything to chart at all; the kind picker is hidden
@@ -255,7 +506,7 @@ impl ChartData {
             ChartKind::Area,
             ChartKind::Scatter,
         ]);
-        if !self.is_time_series {
+        if !self.is_time_series && self.split.is_none() {
             kinds.push(ChartKind::Pie);
         }
         if self.geo.is_some() {
@@ -496,8 +747,13 @@ impl RenderOnce for ChartPanel {
                 })
                 .collect::<Vec<_>>()
         });
+        // Split series are values, not measures: the title names the measure.
+        let title = match &data.split {
+            Some((measure, split)) => trf("chart.title.split", &[measure, &label_name, split]),
+            None => trf("chart.title.by", &[&series_title, &label_name]),
+        };
         chart_frame(
-            trf("chart.title.by", &[&series_title, &label_name]),
+            title,
             trf("chart.title.point_count", &[&row_count.to_string()]),
             notice,
             legend.unwrap_or_default(),
@@ -614,12 +870,67 @@ pub(crate) fn legend_row(legend: Vec<(Hsla, SharedString)>, cx: &App) -> AnyElem
         .into_any_element()
 }
 
+/// A key whose entries can be clicked: `(colour, label, key)` each, the
+/// entry whose key is `picked` in full ink and the rest faded while one is.
+/// A click hands `on_pick` the entry's key; the caller decides what a second
+/// click on the same entry means.
+pub(crate) fn picking_legend_row(
+    id: impl Into<ElementId>,
+    legend: Vec<(Hsla, SharedString, SharedString)>,
+    picked: Option<&SharedString>,
+    on_pick: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let ink = cx.theme().foreground;
+    let hover = cx.theme().muted;
+    let on_pick = Rc::new(on_pick);
+    let id = id.into();
+    h_flex()
+        .id(id.clone())
+        .flex_wrap()
+        .gap_x_1()
+        .gap_y_1()
+        .children(
+            legend
+                .into_iter()
+                .enumerate()
+                .map(|(ix, (color, label, key))| {
+                    let is_picked = picked == Some(&key);
+                    let faded = picked.is_some() && !is_picked;
+                    let on_pick = on_pick.clone();
+                    h_flex()
+                        .id(ix)
+                        .gap_1()
+                        .items_center()
+                        .px_1()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .when(faded, |this| this.opacity(0.45))
+                        .child(div().size_2().rounded_full().bg(color))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if is_picked { ink } else { muted })
+                                .when(is_picked, |this| this.font_weight(FontWeight::MEDIUM))
+                                .child(label),
+                        )
+                        .on_click(move |_, window, cx| on_pick(key.clone(), window, cx))
+                }),
+        )
+        .into_any_element()
+}
+
 /// A pie over `slices` and its legend (each slice with its share), shared by
 /// the results panel and dashboards so both color and fold slices alike.
-/// Also returns the total the shares are of.
+/// Also returns the total the shares are of. A slice's tooltip reads its
+/// value in `format`; `look` makes it a ring and picks a slice out.
 pub(crate) fn pie_parts(
     slices: &[Arc<PieSlice>],
     series: SharedString,
+    format: Option<NumberFormat>,
+    look: PieLook,
     id: impl Into<ElementId>,
     cx: &App,
 ) -> (AnyElement, Vec<(Hsla, SharedString)>, f64) {
@@ -631,6 +942,13 @@ pub(crate) fn pie_parts(
         Some(slot) if slot < palette.len() => palette[slot],
         Some(slot) => palette[slot % palette.len()].opacity(0.55),
         None => muted.opacity(0.6),
+    };
+    let isolated = look.isolated.clone();
+    // A slice keeps its colour wherever it shows; the key's pick only fades
+    // the others, so nothing is repainted.
+    let fill = move |slice: &PieSlice| match &isolated {
+        Some(name) if *name != slice.name => color(slice).opacity(UNPICKED_SLICE),
+        _ => color(slice),
     };
     let total: f64 = slices.iter().map(|s| s.value as f64).sum();
     let legend = slices
@@ -649,11 +967,22 @@ pub(crate) fn pie_parts(
             )
         })
         .collect();
-    let chart = PieChart::new(slices.to_vec())
+    let mut chart = PieChart::new(slices.to_vec())
         .value(|s: &Arc<PieSlice>| s.value)
-        .color(move |s: &Arc<PieSlice>| color(s))
-        .pad_angle(0.01)
+        .color(move |s: &Arc<PieSlice>| fill(s))
+        .pad_angle(0.01);
+    if let Some(outer) = look.outer_radius.filter(|outer| *outer > 0.) {
+        chart = chart
+            .outer_radius(outer)
+            .inner_radius(outer * RING_INNER)
+            // The same gap at the ring's middle whatever its size.
+            .pad_angle(RING_GAP / (outer * (1. + RING_INNER) / 2.));
+    }
+    let chart = chart
         .tooltip_name(|s: &Arc<PieSlice>| s.name.clone())
+        .tooltip_value(move |_: &Arc<PieSlice>, value: f32, share: f32| {
+            format!("{} ({share:.1}%)", full_text(format, value as f64)).into()
+        })
         .name(series)
         .id(id)
         .into_any_element();
@@ -665,8 +994,14 @@ fn render_pie(data: &ChartData, cx: &App) -> AnyElement {
         return empty_chart_state(tr("chart.pie.no_positive"), &[], cx);
     }
     let series = data.series_names[0].clone();
-    let (chart, legend, total) =
-        pie_parts(&data.pie, series.clone().into(), "results-chart-pie", cx);
+    let (chart, legend, total) = pie_parts(
+        &data.pie,
+        series.clone().into(),
+        None,
+        PieLook::default(),
+        "results-chart-pie",
+        cx,
+    );
     let notice = (data.pie_skipped > 0)
         .then(|| trf("chart.pie.notice.skipped", &[&data.pie_skipped.to_string()]));
     let notice = match (data.notice.clone(), notice) {
@@ -755,8 +1090,11 @@ pub(crate) fn format_value(value: f64) -> String {
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
-    use super::{format_ticks, parse_number, ChartData, ChartKind, MAX_SLICES};
+    use super::{
+        format_ticks, parse_number, ChartData, ChartKind, MAX_BARS, MAX_SERIES, MAX_SLICES,
+    };
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+    use crate::ui::encoding::{Aggregate, Encoding};
 
     #[test]
     fn an_axis_speaks_one_unit() {
@@ -1045,5 +1383,172 @@ mod tests {
         let total: f32 = data.pie.iter().map(|s| s.value).sum();
         assert_eq!(total, 210.);
         assert_eq!(data.pie_skipped, 1);
+    }
+
+    fn run(conn: &duckdb::Connection, sql: &str) -> QueryResult {
+        match crate::query::run_of(conn, sql).unwrap() {
+            crate::query::QueryOutcome::Rows(result) => result,
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_truncated_time_series_is_redrawn_from_every_row() {
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        // More rows than the grid keeps, and a NULL that is no point.
+        let statement = "SELECT TIMESTAMP '2026-01-01' + to_seconds(i) AS t, \
+                         CASE WHEN i = 5 THEN NULL ELSE i END::DOUBLE AS v \
+                         FROM range(300000) r(i) ORDER BY t";
+        let loaded = run(&conn, statement);
+        assert!(loaded.truncated);
+        let partial = ChartData::prepare(&loaded);
+        assert!(partial
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains(&loaded.rows.len().to_string())));
+
+        let sql = partial
+            .full_series_sql(&format!("(\n{statement}\n)"))
+            .expect("a truncated time series is redrawn");
+        let full = partial.with_full_series(run(&conn, &sql));
+        assert!(full.is_time_series);
+        assert_eq!(full.series_names, ["v"]);
+        assert_eq!(full.rows.len(), super::FULL_SERIES_POINTS);
+        let last = full.rows.last().unwrap();
+        // 299,999 rows in 1,500 buckets: the last 199 average to the middle one.
+        assert_eq!(last.values, [299_900.0]);
+        let notice = full.notice.as_deref().unwrap();
+        assert!(notice.contains("299999"), "{notice}");
+        // Done once: the redrawn chart is the whole result.
+        assert!(full.full_series_sql("(SELECT 1)").is_none());
+    }
+
+    #[test]
+    fn rows_that_share_a_time_make_one_point() {
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        // 90 days, each with rows reading 0, 1, 2 … in turn: a day's mean
+        // is the same everywhere, and slicing a day would make it zigzag.
+        let statement = "SELECT DATE '2026-01-01' + (i % 90)::INT AS day, \
+                         ((i // 90) % 3)::DOUBLE AS reading FROM range(270000) r(i)";
+        let partial = ChartData::prepare(&run(&conn, statement));
+        let sql = partial
+            .full_series_sql(&format!("(\n{statement}\n)"))
+            .unwrap();
+        let full = partial.with_full_series(run(&conn, &sql));
+        assert_eq!(full.rows.len(), 90);
+        assert_eq!(full.rows[0].band, "2026-01-01");
+        assert_eq!(full.rows[89].band, "2026-03-31");
+        assert!(full.rows.iter().all(|point| point.values == [1.0]));
+        assert!(full.notice.unwrap().contains("3000"));
+    }
+
+    #[test]
+    fn a_whole_result_or_a_bar_chart_is_not_redrawn() {
+        let mut time = result(
+            Vec::from([
+                column("d", ColumnKind::Temporal),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["2026-09-09", "1"])]),
+        );
+        assert!(ChartData::prepare(&time).full_series_sql("t").is_none());
+        time.truncated = true;
+        assert!(ChartData::prepare(&time).full_series_sql("t").is_some());
+
+        let mut bars = result(
+            Vec::from([
+                column("city", ColumnKind::Text),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["a", "1"])]),
+        );
+        bars.truncated = true;
+        assert!(ChartData::prepare(&bars).full_series_sql("t").is_none());
+
+        // `v` twice: which one a name means is not the chart's to guess.
+        let mut twice = result(
+            Vec::from([
+                column("d", ColumnKind::Temporal),
+                column("v", ColumnKind::Numeric),
+                column("v", ColumnKind::Numeric),
+            ]),
+            Vec::from([Vec::from(["2026-09-09", "1", "2"])]),
+        );
+        twice.truncated = true;
+        assert!(ChartData::prepare(&twice).full_series_sql("t").is_none());
+    }
+
+    /// `statement` run, then grouped for `encoding` the way the chart tab
+    /// asks DuckDB to, then drawn as `kind`.
+    fn encoded(statement: &str, encoding: &Encoding, kind: ChartKind) -> Result<ChartData, String> {
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        let loaded = run(&conn, statement);
+        assert!(encoding.applies_to(&loaded.columns));
+        let sql = encoding.sql(
+            &format!("(\n{statement}\n)"),
+            encoding.x_is_ordered(&loaded.columns),
+        );
+        ChartData::from_encoded(encoding, &run(&conn, &sql), kind)
+    }
+
+    #[test]
+    fn categories_are_grouped_over_every_row_largest_first() {
+        // 300 cities, city k with k rows of 1: more rows than the grid
+        // keeps, more cities than a bar chart draws.
+        let statement = "SELECT 'city ' || k AS city, 1 AS amount \
+                         FROM range(1, 301) a(k), range(1, 301) b(n) WHERE n <= k";
+        let encoding = Encoding {
+            x: "city".into(),
+            y: Some("amount".into()),
+            agg: Aggregate::Sum,
+            series: None,
+        };
+        let data = encoded(statement, &encoding, ChartKind::Auto).unwrap();
+        assert_eq!(data.series_names, ["sum(amount)"]);
+        assert_eq!(data.rows.len(), MAX_BARS);
+        assert_eq!(data.rows[0].band, "city 300");
+        assert_eq!(data.rows[0].values, [300.0]);
+        let notice = data.notice.unwrap();
+        assert!(notice.contains("300"), "{notice}");
+
+        // Counting rows needs no number at all.
+        let counting = Encoding {
+            y: None,
+            ..encoding
+        };
+        let data = encoded(statement, &counting, ChartKind::Pie).unwrap();
+        assert_eq!(data.series_names, ["count(*)"]);
+        assert!(!data.pie.is_empty());
+    }
+
+    #[test]
+    fn a_split_over_time_keeps_the_largest_series() {
+        // 20 sensors over three days; sensor k reads k.
+        let statement = "SELECT DATE '2026-01-01' + d::INT AS day, 'sensor ' || k AS sensor, \
+                         k::DOUBLE AS reading FROM range(3) a(d), range(1, 21) b(k)";
+        let encoding = Encoding {
+            x: "day".into(),
+            y: Some("reading".into()),
+            agg: Aggregate::Avg,
+            series: Some("sensor".into()),
+        };
+        // A pie cannot split; the time axis draws its Auto area instead.
+        let data = encoded(statement, &encoding, ChartKind::Pie).unwrap();
+        assert!(data.is_time_series);
+        assert!(!data.available_kinds().contains(&ChartKind::Pie));
+        assert_eq!(data.resolve(ChartKind::Pie), ChartKind::Area);
+        assert_eq!(data.rows.len(), 3);
+        assert_eq!(data.series_names.len(), MAX_SERIES);
+        assert_eq!(data.series_names[0], "sensor 20");
+        assert_eq!(data.rows[0].band, "2026-01-01");
+        assert_eq!(data.rows[0].values[0], 20.0);
+        assert_eq!(
+            data.split,
+            Some(("avg(reading)".to_string(), "sensor".to_string()))
+        );
+        assert!(data.notice.unwrap().contains("20"));
     }
 }

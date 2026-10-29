@@ -32,6 +32,7 @@
 
 use std::collections::HashSet;
 
+use super::format::{NumberFormat, FORMATS};
 use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
@@ -45,7 +46,14 @@ pub(crate) const PLOT_TYPES: &[&str] = &[
 const MAP_ATTRS: &[&str] = &["lat", "lng", "color", "size", "size_scale", "tooltip"];
 
 /// The attributes only a `card` takes.
-const CARD_ATTRS: &[&str] = &["value", "note", "tone"];
+const CARD_ATTRS: &[&str] = &[
+    "value",
+    "note",
+    "tone",
+    "delta",
+    "delta_format",
+    "down_is_good",
+];
 
 /// What a `card`'s `tone` may say: the series accent, or a status.
 pub(crate) const TONES: &[&str] = &["accent", "good", "warning", "critical"];
@@ -123,6 +131,15 @@ pub(crate) struct Plot {
     pub note: Option<Note>,
     /// A `card`'s colour, one of [`TONES`]; `None` is plain ink.
     pub tone: Option<String>,
+    /// How the plot's numbers read, one of [`FORMATS`]; `None` is as before.
+    pub format: Option<String>,
+    /// The column in a `card`'s row that holds its change: drawn under the
+    /// value with an arrow, green when the change is good.
+    pub delta: Option<String>,
+    /// How the change reads, one of [`FORMATS`]; `None` takes `format`.
+    pub delta_format: Option<String>,
+    /// A fall is the good direction: costs, latency, churn.
+    pub down_is_good: bool,
     /// A `text` panel's words under its title.
     pub text: Option<String>,
     /// Grid columns spanned as written; `Plot::width` applies the default.
@@ -741,6 +758,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut value = None;
     let mut note = None;
     let mut tone = None;
+    let mut format = None;
+    let mut delta = None;
+    let mut delta_format = None;
+    let mut down_is_good = false;
     let mut text = None;
     let mut width = None;
     let mut seen: HashSet<&str> = HashSet::new();
@@ -818,6 +839,16 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 )),
                 None => {}
             },
+            "format" => format = format_name(attr, diagnostics),
+            "delta" => delta = column(attr, diagnostics),
+            "delta_format" => delta_format = format_name(attr, diagnostics),
+            "down_is_good" => match attr.value {
+                Value::Bool(flag) => down_is_good = flag,
+                _ => diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    "down_is_good is true or false",
+                )),
+            },
             // A paragraph reads better as a heredoc; its lines are kept.
             "text" => match &attr.value {
                 Value::Heredoc(words) => text = Some(words.trim().to_string()),
@@ -827,7 +858,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, width, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, and for a text panel text; unknown attribute: {other}{}",
+                    "A plot block holds type, query, x, y, series, title, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, delta, delta_format, down_is_good, and for a text panel text; unknown attribute: {other}{}",
                     did_you_mean(other, super::complete::PLOT_ATTRS)
                 ),
             )),
@@ -851,6 +882,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         } else if name == "text" && !kind_name.is_empty() {
             Some(format!(
                 "text is for text panels; this plot is a {kind_name} (its label is title)"
+            ))
+        } else if name == "format" && matches!(kind_name.as_str(), "map" | "table") {
+            Some(format!(
+                "format shapes the numbers a chart or a card draws; a {kind_name} takes no format"
             ))
         } else if is_map {
             matches!(name, "x" | "y" | "series")
@@ -879,6 +914,12 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             diagnostics.push(Diagnostic::at_attr(
                 attr,
                 "size_scale says how size scales the points; set size to a numeric column too",
+            ));
+        }
+        if matches!(name, "delta_format" | "down_is_good") && delta.is_none() && is_card {
+            diagnostics.push(Diagnostic::at_attr(
+                attr,
+                format!("{name} shapes a card's change; set delta to the column holding it"),
             ));
         }
     }
@@ -937,6 +978,10 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         value,
         note,
         tone,
+        format,
+        delta,
+        delta_format,
+        down_is_good,
         text,
         width,
         line: block.line,
@@ -1046,6 +1091,24 @@ fn did_you_mean<'a>(text: &str, known: impl IntoIterator<Item = &'a str>) -> Str
     closest(text, known)
         .map(|meant| format!("; did you mean {meant:?}?"))
         .unwrap_or_default()
+}
+
+/// A number format's name, one of [`FORMATS`].
+fn format_name(attr: &Attr, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
+    let name = string(attr, diagnostics)?;
+    if NumberFormat::parse(&name).is_some() {
+        return Some(name);
+    }
+    diagnostics.push(Diagnostic::at_attr(
+        attr,
+        format!(
+            "Unknown {}: {name:?}; one of {}{}",
+            attr.name,
+            FORMATS.join(", "),
+            did_you_mean(&name, FORMATS.iter().copied())
+        ),
+    ));
+    None
 }
 
 /// A column name, written as a bare identifier or — for the names SQL quoting
@@ -1193,6 +1256,7 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
             ("color", plot.color.as_deref()),
             ("size", plot.size.as_deref()),
             ("value", plot.value.as_deref()),
+            ("delta", plot.delta.as_deref()),
             (
                 "note",
                 match &plot.note {
@@ -1244,6 +1308,25 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                         span: plot.span,
                         message: format!(
                             "map plot {:?} uses {name} = {column:?} ({ty}), which is not numeric",
+                            plot.name
+                        ),
+                    });
+                }
+            }
+        }
+        // A change that is not a number points neither up nor down.
+        if let Some(column) = &plot.delta {
+            if let Some((_, ty)) = available
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(column))
+            {
+                if !is_numeric(ty) {
+                    diagnostics.push(Diagnostic {
+                        line: plot.line,
+                        col: plot.col,
+                        span: plot.span,
+                        message: format!(
+                            "card {:?} uses delta = {column:?} ({ty}), which is not numeric",
                             plot.name
                         ),
                     });
@@ -2077,6 +2160,68 @@ T
         assert_eq!(spec.plots[2].note, Some(Note::Text("All riders".into())));
         assert_eq!(spec.plots[2].tone.as_deref(), Some("warning"));
         assert!(spec.plots[3].title.is_none());
+    }
+
+    #[test]
+    fn a_format_is_one_of_the_named_and_only_where_numbers_are_drawn() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1 AS n" }
+plot "a" { type = "card" query = query.q format = "usd" }
+plot "b" { type = "line" query = query.q x = n y = n format = "pct1" }
+"#,
+        );
+        assert_eq!(spec.plots[0].format.as_deref(), Some("usd"));
+        assert_eq!(spec.plots[1].format.as_deref(), Some("pct1"));
+
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1 AS n, 2 AS lat, 3 AS lng" }
+plot "a" { type = "card" query = query.q format = "usdd" }
+plot "b" { type = "map" query = query.q format = "num0" }
+plot "c" { type = "table" query = query.q format = "num0" }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
+        assert!(has("Unknown format: \"usdd\""), "{messages:?}");
+        assert!(
+            has("usd"),
+            "a near miss names the format meant: {messages:?}"
+        );
+        assert!(has("a map takes no format"), "{messages:?}");
+        assert!(has("a table takes no format"), "{messages:?}");
+    }
+
+    #[test]
+    fn a_card_takes_a_delta_and_its_mistakes_are_said() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "SELECT 1 AS n, 0.1 AS growth" }
+plot "a" { type = "card" query = query.q value = n delta = growth delta_format = "pct1" down_is_good = true }
+"#,
+        );
+        assert_eq!(spec.plots[0].delta.as_deref(), Some("growth"));
+        assert_eq!(spec.plots[0].delta_format.as_deref(), Some("pct1"));
+        assert!(spec.plots[0].down_is_good);
+
+        let diagnostics = validate_err(
+            r#"
+query "q" { sql = "SELECT 1 AS n" }
+plot "a" { type = "card" query = query.q delta = n delta_format = "pctt" }
+plot "b" { type = "card" query = query.q down_is_good = "yes" }
+plot "c" { type = "line" query = query.q x = n y = n delta = n }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |needle: &str| messages.iter().any(|m| m.contains(needle));
+        assert!(has("Unknown delta_format: \"pctt\""), "{messages:?}");
+        assert!(has("down_is_good is true or false"), "{messages:?}");
+        assert!(
+            has("down_is_good shapes a card's change; set delta"),
+            "{messages:?}"
+        );
+        assert!(has("delta is for card plots"), "{messages:?}");
     }
 
     #[test]

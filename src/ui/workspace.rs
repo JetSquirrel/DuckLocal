@@ -17,7 +17,6 @@ use gpui_kit::component::input::{
     Editor, EditorState, Input, InputEvent, InputState, RangeDecoration, RangeDecorationCollection,
     RangeDecorationStyle, TabSize, TextDecoration, TextDecorationCollection,
 };
-use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable};
@@ -35,10 +34,7 @@ use crate::spec::view::{Dashboard, DashboardEvent};
 use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
-use crate::ui::{
-    pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, RUN_QUERY_KEYSTROKE,
-    WORKSPACE_KEY_CONTEXT,
-};
+use crate::ui::{pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, WORKSPACE_KEY_CONTEXT};
 use gpui_kit::assets::IconName as AssetIcon;
 
 const RESULTS_PANEL_DEFAULT: f32 = 320.;
@@ -1647,8 +1643,6 @@ impl Workspace {
     }
 
     fn render_query_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let run_keystroke = Keystroke::parse(RUN_QUERY_KEYSTROKE).ok();
-
         h_flex()
             .w_full()
             .px_3()
@@ -1667,10 +1661,13 @@ impl Workspace {
                             .icon(IconName::Play)
                             .label(tr("workspace.run"))
                             .loading(self.running)
-                            .tooltip(tr("workspace.run.tooltip"))
-                            .when_some(run_keystroke, |this, keystroke| {
-                                this.child(Kbd::new(keystroke))
-                            })
+                            // The shortcut lives in the tooltip, where the
+                            // other buttons keep theirs.
+                            .tooltip_with_action(
+                                tr("workspace.run.tooltip"),
+                                &RunQuery,
+                                Some(WORKSPACE_KEY_CONTEXT),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.run_active(window, cx);
                             })),
@@ -1695,7 +1692,6 @@ impl Workspace {
                     .ghost()
                     .small()
                     .icon(AssetIcon::WandSparkles)
-                    .label(tr("workspace.format"))
                     .tooltip(tr("workspace.format.tooltip"))
                     .on_click(cx.listener(Self::format_active)),
             )
@@ -1704,7 +1700,6 @@ impl Workspace {
                     .ghost()
                     .small()
                     .icon(AssetIcon::ListTree)
-                    .label(tr("workspace.explain"))
                     .loading(self.explaining)
                     .tooltip(tr("workspace.explain.tooltip"))
                     .on_click(cx.listener(Self::explain_active)),
@@ -1714,7 +1709,6 @@ impl Workspace {
                     .ghost()
                     .small()
                     .icon(AssetIcon::Gauge)
-                    .label(tr("workspace.profile"))
                     .loading(self.profiling)
                     .tooltip(tr("workspace.profile.tooltip"))
                     .on_click(cx.listener(Self::profile_active)),
@@ -1763,7 +1757,6 @@ impl Workspace {
                     .outline()
                     .small()
                     .icon(AssetIcon::Save)
-                    .label(tr("dashboard.save"))
                     .tooltip_with_action(
                         tr("dashboard.save.tooltip"),
                         &SaveSpec,
@@ -1790,12 +1783,13 @@ impl Workspace {
                     } else {
                         AssetIcon::Code
                     })
-                    .label(if showing_source {
+                    // The icon is the button's only word: the tooltip says
+                    // which way it goes.
+                    .tooltip(if showing_source {
                         tr("dashboard.source.back")
                     } else {
-                        tr("dashboard.source.show")
+                        tr("dashboard.source.tooltip")
                     })
-                    .tooltip(tr("dashboard.source.tooltip"))
                     .when_some(host.clone(), |this, host| {
                         this.on_click(cx.listener(move |_, _, _, cx| {
                             host.update(cx, |dashboard, cx| dashboard.toggle_source(cx));
@@ -1807,7 +1801,6 @@ impl Workspace {
                     .outline()
                     .small()
                     .icon(IconName::RotateCw)
-                    .label(tr("dashboard.reload"))
                     .loading(running)
                     .tooltip(tr("dashboard.reload.tooltip"))
                     .when_some(host, |this, host| {

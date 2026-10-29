@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 
+use super::format::{full_text, short_text, NumberFormat};
 use super::model::{Note, Plot};
 use crate::i18n::trf;
 use crate::query::ColumnKind;
@@ -50,6 +51,48 @@ pub struct PlotPoint {
     pub ix: usize,
 }
 
+/// Whether a card's change is the one wanted. A status, so it never shows by
+/// colour alone: the arrow says the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mood {
+    Good,
+    Bad,
+    /// No change: neither.
+    Flat,
+}
+
+/// A card's change, ready to show: `▲ 12.3%`, and whether it is good news.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardDelta {
+    pub text: SharedString,
+    pub mood: Mood,
+}
+
+impl CardDelta {
+    /// `change` as `plot` reads it: in `delta_format`, else the card's own
+    /// `format`; good when it rises, or when it falls and `down_is_good`.
+    fn of(change: f64, plot: &Plot) -> Self {
+        let format = plot
+            .delta_format
+            .as_deref()
+            .or(plot.format.as_deref())
+            .and_then(NumberFormat::parse);
+        let (arrow, mood) = if change == 0. {
+            ("–", Mood::Flat)
+        } else if (change > 0.) != plot.down_is_good {
+            (if change > 0. { "▲" } else { "▼" }, Mood::Good)
+        } else {
+            (if change > 0. { "▲" } else { "▼" }, Mood::Bad)
+        };
+        // The arrow carries the sign, so the number is its size.
+        let text = format!("{arrow} {}", full_text(format, change.abs()));
+        Self {
+            text: SharedString::from(text),
+            mood,
+        }
+    }
+}
+
 /// Everything one plot needs to render, or why it cannot.
 #[derive(Debug)]
 pub struct PreparedPlot {
@@ -69,6 +112,8 @@ pub struct PreparedPlot {
     pub geo: Option<Arc<GeoData>>,
     /// A `card`'s value, ready to show.
     pub card: Option<SharedString>,
+    /// A `card`'s change, when it names a `delta` and its row holds a number.
+    pub delta: Option<CardDelta>,
     /// The line under a `card`'s value: the spec's words, or its column's
     /// value from the card's row.
     pub note: Option<SharedString>,
@@ -85,6 +130,8 @@ pub struct PreparedPlot {
     /// order of `points` (ascending), for a linear x axis. `None` for every
     /// other plot, whose x is bands.
     pub x_values: Option<Arc<Vec<f64>>>,
+    /// How the plot's numbers read: `format`, parsed.
+    pub format: Option<NumberFormat>,
     /// What was dropped or merged to keep the plot drawable.
     pub notice: Option<String>,
     /// Why there is nothing to draw: the query failed, or a column the plot
@@ -167,7 +214,7 @@ fn scatter_points(
             present[s] = true;
             Arc::new(PlotPoint {
                 band: SharedString::from(format_value(x)),
-                label: SharedString::from(format_value(y)),
+                label: SharedString::from(short_text(base.format, y)),
                 values,
                 present,
                 ix,
@@ -202,12 +249,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie: Vec::new(),
         geo: None,
         card: None,
+        delta: None,
         note: None,
         tone: plot.tone.clone(),
         text: None,
         width: plot.width(),
         time_axis: false,
         x_values: None,
+        format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: None,
         failure,
     };
@@ -263,7 +312,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         };
         // A year is a date, not a quantity: 2024, not 2,024.
         let format = |cell: &str| {
-            if is_year_column(&result.columns[ix].name) {
+            let formatted = plot
+                .format
+                .as_deref()
+                .and_then(NumberFormat::parse)
+                .zip(parse_number(cell));
+            if let Some((format, number)) = formatted {
+                format.full(number)
+            } else if is_year_column(&result.columns[ix].name) {
                 cell.to_string()
             } else {
                 group_thousands(cell)
@@ -284,10 +340,23 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
                 Some(crate::i18n::tr("dashboard.card.no_rows").to_string()),
             ),
         };
+        let delta = match plot.delta.as_deref() {
+            Some(name) => match column(name) {
+                Some(ix) => result
+                    .rows
+                    .first()
+                    .and_then(|row| row.get(ix))
+                    .and_then(|cell| parse_number(cell))
+                    .map(|change| CardDelta::of(change, plot)),
+                None => return base(Some(missing_column(name, result))),
+            },
+            None => None,
+        };
         return PreparedPlot {
             label_name: result.columns[ix].name.clone(),
             card: Some(SharedString::from(value)),
             note: note.map(SharedString::from),
+            delta,
             notice,
             ..base(None)
         };
@@ -550,13 +619,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
 
     // Labels render once, here, rather than on every frame. A band no series
     // has — a day the query skipped — says nothing, not zero.
+    let format = plot.format.as_deref().and_then(NumberFormat::parse);
     for point in points.iter_mut() {
         point.label = point
             .values
             .iter()
             .zip(&point.present)
             .find(|(_, present)| **present)
-            .map(|(value, _)| SharedString::from(format_value(*value)))
+            .map(|(value, _)| SharedString::from(short_text(format, *value)))
             .unwrap_or_default();
     }
 
@@ -581,12 +651,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         pie,
         geo: None,
         card: None,
+        delta: None,
         note: None,
         tone: plot.tone.clone(),
         text: None,
         width: plot.width(),
         time_axis,
         x_values: None,
+        format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: crate::i18n::join_all(&notices),
         failure: None,
     }
@@ -820,6 +892,10 @@ mod tests {
             value: None,
             note: None,
             tone: None,
+            format: None,
+            delta: None,
+            delta_format: None,
+            down_is_good: false,
             text: None,
             width: None,
             line: 1,
@@ -1248,6 +1324,93 @@ mod tests {
             prepare(&plot("line", Some("y"), None), Some(&data())).width,
             12
         );
+    }
+
+    #[test]
+    fn a_format_reads_a_cards_value_and_a_plots_labels() {
+        let money = Ok(result(
+            vec![
+                column("x", ColumnKind::Text),
+                column("y", ColumnKind::Numeric),
+            ],
+            vec![vec!["web", "1234.5"], vec!["app", "-25000"]],
+        ));
+        let card = Plot {
+            value: Some("y".into()),
+            format: Some("usd".into()),
+            ..plot("card", None, None)
+        };
+        let shown = prepare(&card, Some(&money));
+        assert_eq!(shown.card.as_deref(), Some("$1,234.50"));
+
+        let bars = Plot {
+            format: Some("usd0".into()),
+            ..plot("bar", Some("y"), None)
+        };
+        let shown = prepare(&bars, Some(&money));
+        assert_eq!(shown.format, NumberFormat::parse("usd0"));
+        let labels: Vec<&str> = shown.points.iter().map(|p| p.label.as_ref()).collect();
+        assert_eq!(labels, ["$1,235", "-$25K"]);
+
+        // A card whose cell is no number shows it as written.
+        let words = Ok(result(
+            vec![column("x", ColumnKind::Text)],
+            vec![vec!["n/a"]],
+        ));
+        let card = Plot {
+            format: Some("pct".into()),
+            ..plot("card", None, None)
+        };
+        assert_eq!(prepare(&card, Some(&words)).card.as_deref(), Some("n/a"));
+    }
+
+    #[test]
+    fn a_cards_delta_points_and_says_whether_it_is_good() {
+        let row = |change: &str| {
+            Ok(result(
+                vec![
+                    column("revenue", ColumnKind::Numeric),
+                    column("change", ColumnKind::Numeric),
+                ],
+                vec![vec!["1000", change]],
+            ))
+        };
+        let card = |down_is_good: bool| Plot {
+            value: Some("revenue".into()),
+            format: Some("usd0".into()),
+            delta: Some("change".into()),
+            down_is_good,
+            ..plot("card", None, None)
+        };
+        let delta = |plot: &Plot, change: &str| prepare(plot, Some(&row(change))).delta;
+
+        let up = delta(&card(false), "125").unwrap();
+        assert_eq!(
+            up.text, "▲ $125",
+            "the card's format, the arrow for the sign"
+        );
+        assert_eq!(up.mood, Mood::Good);
+        let down = delta(&card(false), "-125").unwrap();
+        assert_eq!(down.text, "▼ $125");
+        assert_eq!(down.mood, Mood::Bad);
+        // Costs: a fall is good news.
+        assert_eq!(delta(&card(true), "-125").unwrap().mood, Mood::Good);
+        assert_eq!(delta(&card(true), "125").unwrap().mood, Mood::Bad);
+        assert_eq!(delta(&card(false), "0").unwrap().mood, Mood::Flat);
+
+        // A growth rate reads in its own format.
+        let rate = Plot {
+            delta_format: Some("pct1".into()),
+            ..card(false)
+        };
+        assert_eq!(delta(&rate, "0.123").unwrap().text, "▲ 12.3%");
+        // No number, no change shown.
+        assert_eq!(delta(&card(false), ""), None);
+        let missing = Plot {
+            delta: Some("nope".into()),
+            ..card(false)
+        };
+        assert!(prepare(&missing, Some(&row("1"))).failure.is_some());
     }
 
     #[test]

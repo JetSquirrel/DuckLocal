@@ -14,7 +14,7 @@ use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
 /// them: the common ones first, a map's, a card's and a text panel's own after.
-pub(crate) const PLOT_ATTRS: [&str; 17] = [
+pub(crate) const PLOT_ATTRS: [&str; 21] = [
     "type",
     "query",
     "x",
@@ -31,6 +31,10 @@ pub(crate) const PLOT_ATTRS: [&str; 17] = [
     "value",
     "note",
     "tone",
+    "format",
+    "delta",
+    "delta_format",
+    "down_is_good",
     "text",
 ];
 
@@ -115,6 +119,8 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
         ("type", model::PLOT_TYPES, "plot type"),
         ("size_scale", model::SIZE_SCALES, "size scale"),
         ("tone", model::TONES, "card tone"),
+        ("format", super::format::FORMATS, "number format"),
+        ("delta_format", super::format::FORMATS, "number format"),
     ];
     if let Some((quoted, values, detail)) = choices.iter().find_map(|(attr, values, detail)| {
         after_attr_equals(&before, attr).map(|quoted| (quoted, *values, *detail))

@@ -67,6 +67,7 @@ use lsp_types::{
     TextEdit,
 };
 
+use super::format::{full_text, short_text, NumberFormat};
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryOutcome, QueryResult};
 use crate::spec::comment_card::CommentCard;
@@ -75,9 +76,9 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
-use crate::spec::prepare::{keep_series_order, prepare, PlotPoint, PreparedPlot};
+use crate::spec::prepare::{keep_series_order, prepare, Mood, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
-use crate::ui::chart::{format_value, legend_row, map_notes, pie_parts};
+use crate::ui::chart::{legend_row, map_notes, picking_legend_row, pie_parts, PieLook};
 use crate::ui::completion::starts_with_ignore_case;
 use crate::ui::geo::GeoPlot;
 use crate::ui::results::{fit_column_width, sorted_rows};
@@ -85,6 +86,9 @@ use crate::ui::results::{fit_column_width, sorted_rows};
 /// The plot panels' default and drag bounds, in the spirit of the workspace's
 /// own results split.
 const PLOT_DEFAULT: f32 = 300.;
+/// A pie ring's outer radius, as a share of its box's shorter side: room
+/// left for the slice that lifts on hover.
+const PIE_RADIUS: f32 = 0.44;
 const PLOT_MIN: f32 = 160.;
 const PLOT_MAX: f32 = 800.;
 /// A row of nothing but cards holds one number each: it starts short.
@@ -178,6 +182,9 @@ pub struct Dashboard {
     /// Where each pickable plot was last laid out, by plot name, for a click
     /// to find its bar.
     plot_bounds: HashMap<String, Rc<Cell<Option<Bounds<Pixels>>>>>,
+    /// The slice each pie's key has picked out, by plot name. A view of the
+    /// pie, not a filter: no query runs again.
+    pie_picked: HashMap<String, SharedString>,
     /// Row-selection subscriptions of the pickable tables, by table entity;
     /// dropped with them.
     table_subscriptions: Vec<(EntityId, Subscription)>,
@@ -260,6 +267,7 @@ impl Dashboard {
             outcomes: HashMap::new(),
             refilter_pending: false,
             plot_bounds: HashMap::new(),
+            pie_picked: HashMap::new(),
             table_subscriptions: Vec::new(),
             sql_shown: HashSet::new(),
             maximized: None,
@@ -973,10 +981,12 @@ impl Dashboard {
         let toggle = Button::new(("dashboard-sql", ix))
             .xsmall()
             .ghost()
-            .label(if shown {
-                tr("dashboard.sql.hide")
+            // The glyph a query tab wears: this plot's query. Back is the
+            // chart's own glyph, as the spec view's button has it.
+            .icon(if shown {
+                AssetIcon::ChartNoAxesColumn
             } else {
-                "SQL"
+                AssetIcon::SquareTerminal
             })
             .tooltip(if shown {
                 tr("dashboard.sql.hide_tooltip")
@@ -1368,7 +1378,15 @@ impl Dashboard {
                     plot.label_name.clone()
                 }
                 "pie" => {
-                    legend = pie_parts(&plot.pie, series.clone().into(), "dashboard-pie-key", cx).1;
+                    legend = pie_parts(
+                        &plot.pie,
+                        series.clone().into(),
+                        plot.format,
+                        PieLook::default(),
+                        "dashboard-pie-key",
+                        cx,
+                    )
+                    .1;
                     trf("chart.pie.title", &[&series, &plot.label_name])
                 }
                 _ => {
@@ -1454,6 +1472,8 @@ impl Dashboard {
                         ),
                 )
                 .into_any_element()
+        } else if self.plots[ix].kind == "pie" {
+            self.render_pie(ix, cx)
         } else {
             div()
                 .size_full()
@@ -1492,10 +1512,125 @@ impl Dashboard {
                         )
                     })
                     .when(!legend.is_empty(), |this| {
-                        this.child(legend_row(legend, cx))
+                        let plot = &self.plots[ix];
+                        if plot.kind != "pie" {
+                            return this.child(legend_row(legend, cx));
+                        }
+                        // A pie's key picks a slice out; the same entry again
+                        // puts the whole back.
+                        let name = plot.name.clone();
+                        let keyed = legend
+                            .into_iter()
+                            .zip(&plot.pie)
+                            .map(|((color, label), slice)| (color, label, slice.name().clone()))
+                            .collect();
+                        let view = cx.entity().downgrade();
+                        this.child(picking_legend_row(
+                            ("dashboard-pie-key", ix),
+                            keyed,
+                            self.pie_picked.get(&name),
+                            move |key, _, cx| {
+                                let name = name.clone();
+                                view.update(cx, |this, cx| {
+                                    if this.pie_picked.get(&name) == Some(&key) {
+                                        this.pie_picked.remove(&name);
+                                    } else {
+                                        this.pie_picked.insert(name, key);
+                                    }
+                                    cx.notify();
+                                })
+                                .ok();
+                            },
+                            cx,
+                        ))
                     }),
             )
             .child(div().flex_1().min_h_0().child(body))
+            .into_any_element()
+    }
+
+    /// A pie as a ring sized to its panel, with the total — or the slice its
+    /// key picked out — in the middle. The panel's size is known only once it
+    /// is laid out, so the ring takes the last frame's, and a frame that finds
+    /// it changed asks for one more.
+    fn render_pie(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let plot = &self.plots[ix];
+        let bounds = self
+            .plot_bounds
+            .entry(plot.name.clone())
+            .or_default()
+            .clone();
+        let picked = self.pie_picked.get(&plot.name).cloned();
+        let outer = bounds
+            .get()
+            .map(|b| b.size.width.min(b.size.height).as_f32() * PIE_RADIUS);
+        let series = plot.series_names.join(", ");
+        let (chart, _, total) = pie_parts(
+            &plot.pie,
+            series.into(),
+            plot.format,
+            PieLook {
+                outer_radius: outer,
+                isolated: picked.clone(),
+            },
+            (ElementId::from("dashboard-chart"), plot.name.clone()),
+            cx,
+        );
+        let slice = picked.and_then(|name| plot.pie.iter().find(|s| *s.name() == name));
+        let (value, caption) = match slice {
+            Some(slice) => (
+                short_text(plot.format, slice.amount()),
+                format!("{} · {:.1}%", slice.name(), slice.amount() / total * 100.),
+            ),
+            None => (
+                short_text(plot.format, total),
+                tr("chart.pie.center_total").to_string(),
+            ),
+        };
+        let muted = cx.theme().muted_foreground;
+        div()
+            .size_full()
+            .px_2()
+            .pb_2()
+            .child(
+                div()
+                    .size_full()
+                    .relative()
+                    .child(chart)
+                    .when(outer.is_some(), |this| {
+                        this.child(
+                            v_flex()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(value),
+                                )
+                                .child(div().text_xs().text_color(muted).child(caption)),
+                        )
+                    })
+                    .child(
+                        canvas(
+                            move |b, window, _| {
+                                if bounds.get() != Some(b) {
+                                    bounds.set(Some(b));
+                                    window.refresh();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -2146,7 +2281,9 @@ impl Render for Dashboard {
                     let (default, min, max) = if all("text") {
                         (self.text_row_height(row), TEXT_MIN, CARD_MAX)
                     } else if cards {
-                        let noted = row.iter().any(|&ix| self.plots[ix].note.is_some());
+                        let noted = row.iter().any(|&ix| {
+                            self.plots[ix].note.is_some() || self.plots[ix].delta.is_some()
+                        });
                         let default = if noted { CARD_NOTED } else { CARD_DEFAULT };
                         (default, CARD_MIN, CARD_MAX)
                     } else if let Some(height) = self.table_row_height(row) {
@@ -2569,10 +2706,23 @@ fn picks_for(
         .collect()
 }
 
+/// An area chart's value axis in the plot's `format`, each tick on its own;
+/// unformatted, the chart's own labels.
+fn with_value_axis<T: 'static>(
+    chart: AreaChart<T, SharedString, f64>,
+    format: Option<NumberFormat>,
+) -> AreaChart<T, SharedString, f64> {
+    match format {
+        Some(format) => chart.y_tick_format(move |v| format.ticks(&[v]).remove(0)),
+        None => chart,
+    }
+}
+
 /// One plot's chart element, built from the prepared data on each frame;
 /// cloning the `Arc`s is a refcount bump, not a copy of the row set.
 fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
     let palette = crate::ui::palette::series(cx);
+    let format = plot.format;
     let id = ("dashboard-chart", plot_ix);
     // The hand-built plots key their hover state and path caches on the
     // plot's name — unique after validation — which survives reordering the
@@ -2589,7 +2739,17 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         .unwrap_or_else(|| plot.title.clone());
 
     match plot.kind.as_str() {
-        "pie" => pie_parts(&plot.pie, name.into(), named_id(), cx).0,
+        "pie" => {
+            pie_parts(
+                &plot.pie,
+                name.into(),
+                plot.format,
+                PieLook::default(),
+                named_id(),
+                cx,
+            )
+            .0
+        }
         "map" => match &plot.geo {
             Some(geo) => GeoPlot::new(named_id(), geo.clone()).into_any_element(),
             None => empty_chart(cx),
@@ -2600,7 +2760,7 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
         "area" if single => {
             let color = palette[0];
-            AreaChart::new(plot.points.clone())
+            let chart = AreaChart::new(plot.points.clone())
                 .x(|d: &Arc<PlotPoint>| d.band.clone())
                 .id(id)
                 .y(|d: &Arc<PlotPoint>| d.values[0])
@@ -2613,8 +2773,10 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
                 .linear()
                 .name(name)
                 .x_tick_count(x_labels)
-                .tooltip_value(|_: &Arc<PlotPoint>, _: usize, v: f64| format_value(v).into())
-                .into_any_element()
+                .tooltip_value(move |_: &Arc<PlotPoint>, _: usize, v: f64| {
+                    full_text(format, v).into()
+                });
+            with_value_axis(chart, format).into_any_element()
         }
         // A scatter's points are not connected, and its x is the band axis
         // `prepare` built — the hand-built plot draws it that way, one series
@@ -2628,7 +2790,10 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
                 .linear()
                 .id(id)
                 .x_tick_count(x_labels)
-                .tooltip_value(|_: &Arc<PlotPoint>, _: usize, v: f64| format_value(v).into());
+                .tooltip_value(move |_: &Arc<PlotPoint>, _: usize, v: f64| {
+                    full_text(format, v).into()
+                });
+            chart = with_value_axis(chart, format);
             for (s, series_name) in plot.series_names.iter().enumerate() {
                 let color = palette[s % palette.len()];
                 chart = chart
@@ -2733,13 +2898,37 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                 .when_some(tone, |this, (_, ink)| this.text_color(ink))
                 .child(value),
         )
-        .when_some(plot.note.clone(), |this, note| {
-            this.child(
+        // The change leads its line, the note after it says against what:
+        // `▲ 12.3%  vs last week`.
+        .when(plot.delta.is_some() || plot.note.is_some(), |this| {
+            let muted = cx.theme().muted_foreground;
+            let delta = plot.delta.clone().map(|delta| {
+                let color = match delta.mood {
+                    Mood::Good => crate::ui::palette::tone("good", cx).map(|(_, ink)| ink),
+                    Mood::Bad => crate::ui::palette::tone("critical", cx).map(|(_, ink)| ink),
+                    Mood::Flat => None,
+                };
                 div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color.unwrap_or(muted))
+                    .child(delta.text)
+            });
+            this.child(
+                h_flex()
+                    .gap_2()
+                    .min_w_0()
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_ellipsis()
-                    .child(note),
+                    .children(delta)
+                    .when_some(plot.note.clone(), |this, note| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .text_color(muted)
+                                .text_ellipsis()
+                                .child(note),
+                        )
+                    }),
             )
         })
         .when_some(plot.notice.clone(), |this, notice| {

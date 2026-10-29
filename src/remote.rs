@@ -56,8 +56,9 @@ be reached.
 
 With --state, nothing opens and no window starts: the output is what the
 running window shows — {database, attached, active_tab, tabs}: each query
-tab's SQL and result (columns, row count, the first 20 rows, or the error),
-and each dashboard's plots and the values its filters have picked. Exit 1
+tab's SQL and result (columns, row count, the first 20 rows, or the error,
+and the chart's column picks as .dash blocks when some are made), and each
+dashboard's plots and the values its filters have picked. Exit 1
 with kind not_running when no window is up, timeout when it does not answer
 within 5s. --no-launch is accepted and changes nothing.
 

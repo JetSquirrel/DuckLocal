@@ -33,8 +33,9 @@ use gpui_kit::component::plot::{
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 
+use super::format::{full_text, NumberFormat};
 use crate::spec::prepare::{PlotPoint, PreparedPlot};
-use crate::ui::chart::{format_ticks, format_value};
+use crate::ui::chart::format_ticks;
 
 /// The headroom kept above the tallest bar or point, as the catalog charts
 /// keep above theirs.
@@ -248,6 +249,8 @@ pub(crate) struct GroupedBars {
     /// The band a filter has picked: it keeps its colour and the rest fade,
     /// so the plot says what the dashboard is narrowed to.
     selected: Option<SharedString>,
+    /// How the tooltip reads values; the bar labels came formatted.
+    format: Option<NumberFormat>,
 }
 
 /// How much of its opacity a bar outside the picked band keeps.
@@ -280,7 +283,10 @@ fn label_width(text: &str) -> f32 {
 
 impl GroupedBars {
     pub(crate) fn new(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::of(id, plot.points.clone(), &plot.series_names).time_axis(plot.time_axis)
+        let mut this =
+            Self::of(id, plot.points.clone(), &plot.series_names).time_axis(plot.time_axis);
+        this.format = plot.format;
+        this
     }
 
     /// Bars over `points` directly, for a caller that holds no `PreparedPlot`
@@ -296,6 +302,7 @@ impl GroupedBars {
             series: series_names.iter().map(SharedString::from).collect(),
             time_axis: false,
             selected: None,
+            format: None,
         }
     }
 
@@ -684,7 +691,7 @@ impl Plot for GroupedBars {
                 tooltip = tooltip.row(
                     palette[s % palette.len()],
                     name.clone(),
-                    format_value(d.values[s]),
+                    full_text(self.format, d.values[s]),
                 );
             }
         }
@@ -713,6 +720,8 @@ pub(crate) struct SeriesPlot {
     /// Each point's x as a number, for a scatter over a numeric column: the x
     /// axis is then linear, its labels round numbers.
     xs: Option<Arc<Vec<f64>>>,
+    /// How the value axis and the tooltip read values.
+    format: Option<NumberFormat>,
 }
 
 /// Where a series plot puts its points along x: evenly spaced bands, or a
@@ -776,16 +785,20 @@ impl SeriesPlot {
             points,
             series: series_names.iter().map(SharedString::from).collect(),
             xs: None,
+            format: None,
         }
     }
 
     pub(crate) fn lines(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
-        Self::lines_of(id, plot.points.clone(), &plot.series_names)
+        let mut this = Self::lines_of(id, plot.points.clone(), &plot.series_names);
+        this.format = plot.format;
+        this
     }
 
     pub(crate) fn scatter(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
         let mut this = Self::scatter_of(id, plot.points.clone(), &plot.series_names);
         this.xs = plot.x_values.clone();
+        this.format = plot.format;
         this
     }
 
@@ -835,7 +848,10 @@ impl SeriesPlot {
                 .fold((0f64, 0f64), |(lo, hi), v| (lo.min(v), hi.max(v)));
             nice_ticks(min, max, TICK_COUNT - 1)
         };
-        let labels = format_ticks(&ticks);
+        let labels = match self.format {
+            Some(format) => format.ticks(&ticks),
+            None => format_ticks(&ticks),
+        };
         let widest = labels
             .iter()
             .map(|label| label_width(label))
@@ -1144,7 +1160,7 @@ impl Plot for SeriesPlot {
             tooltip = tooltip.row(
                 palette[s % palette.len()],
                 name.clone(),
-                format_value(d.values[s]),
+                full_text(self.format, d.values[s]),
             );
         }
         Some(tooltip.into_any_element())
