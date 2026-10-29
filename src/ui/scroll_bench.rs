@@ -171,7 +171,7 @@ fn show_scenario(state: &Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
 
 fn step(state: Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
     let mut s = state.borrow_mut();
-    if std::env::var_os("SCROLL_BENCH_TRACE").is_some() && s.frame % 50 == 0 {
+    if std::env::var_os("SCROLL_BENCH_TRACE").is_some() && s.frame.is_multiple_of(50) {
         eprintln!("   scenario {} frame {}", s.ix, s.frame);
     }
     if s.frame == 1 {
@@ -202,7 +202,7 @@ fn step(state: Rc<RefCell<Run>>, window: &mut Window, cx: &mut App) {
         // trackpad reports it.
         let started = Instant::now();
         window.dispatch_event(
-            PlatformInput::ScrollWheel(ScrollWheelEvent {
+            PlatformInput::Scroll(ScrollEvent {
                 position: point(px(POINTER.0), px(POINTER.1)),
                 delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
                 ..Default::default()

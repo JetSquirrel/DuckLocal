@@ -505,7 +505,7 @@ impl Sidebar {
                             return;
                         };
                         let shift = event.modifiers.shift;
-                        let toggle = event.modifiers.secondary();
+                        let toggle = event.modifiers.secondary(cx);
                         sidebar.update(cx, |this, cx| match file_id {
                             Some(id) => this.click_file(id, shift, toggle, cx),
                             None => this.clear_file_selection(cx),

@@ -26,7 +26,9 @@ pub mod workspace;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::WindowExt;
-use gpui_kit::{Action, App, Entity, KeyBinding, PathPromptOptions, Window};
+use gpui_kit::{
+    Action, App, Entity, KeyBinding, KeyBindingContextPredicate, PathPromptOptions, Window,
+};
 use serde::Deserialize;
 
 use crate::i18n::{tr, trf};
@@ -75,33 +77,56 @@ pub const RUN_QUERY_KEYSTROKE: &str = "secondary-enter";
 pub const SAVE_SPEC_KEYSTROKE: &str = "secondary-s";
 pub const TOGGLE_SIDEBAR_KEYSTROKE: &str = "secondary-b";
 
+/// A binding whose `secondary-` resolves for this host. Only `KeyBinding::load`
+/// knows the host; `KeyBinding::new` takes explicit modifiers and panics on
+/// `secondary-`.
+fn bind(keystrokes: &str, action: impl Action, context: Option<&str>, cx: &App) -> KeyBinding {
+    let context = context.map(|context| KeyBindingContextPredicate::parse(context).unwrap().into());
+    KeyBinding::load(keystrokes, Box::new(action), context, false, None, cx)
+        .unwrap_or_else(|err| panic!("{keystrokes}: {err}"))
+}
+
 pub fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new(RUN_QUERY_KEYSTROKE, RunQuery, Some(WORKSPACE_KEY_CONTEXT)),
-        KeyBinding::new(SAVE_SPEC_KEYSTROKE, SaveSpec, Some(WORKSPACE_KEY_CONTEXT)),
+    let bindings = [
+        bind(
+            RUN_QUERY_KEYSTROKE,
+            RunQuery,
+            Some(WORKSPACE_KEY_CONTEXT),
+            cx,
+        ),
+        bind(
+            SAVE_SPEC_KEYSTROKE,
+            SaveSpec,
+            Some(WORKSPACE_KEY_CONTEXT),
+            cx,
+        ),
         // Interface size, with the keys every Mac app uses for it. Bound with
         // no context so they work wherever focus is, the editor included;
         // `secondary-+` is what a keyboard without a separate plus key sends
         // as shift-equals.
-        KeyBinding::new("secondary-=", ZoomIn, None),
-        KeyBinding::new("secondary-+", ZoomIn, None),
-        KeyBinding::new("secondary--", ZoomOut, None),
-        KeyBinding::new("secondary-0", ZoomReset, None),
+        bind("secondary-=", ZoomIn, None, cx),
+        bind("secondary-+", ZoomIn, None, cx),
+        bind("secondary--", ZoomOut, None, cx),
+        bind("secondary-0", ZoomReset, None, cx),
         // Handled by the root view, which owns the layout, the tabs and the
         // title bar these commands act on.
-        KeyBinding::new(TOGGLE_SIDEBAR_KEYSTROKE, ToggleSidebar, None),
-        KeyBinding::new("secondary-t", NewQuery, None),
-        KeyBinding::new("secondary-w", CloseTab, None),
-        KeyBinding::new("ctrl-tab", NextTab, None),
-        KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-        KeyBinding::new("secondary-o", OpenData, None),
-        KeyBinding::new("secondary-.", StopQuery, None),
-        KeyBinding::new("secondary-q", Quit, None),
-    ]);
-    cx.bind_keys((1..=9).map(|n| {
-        let index = if n == 9 { usize::MAX } else { n - 1 };
-        KeyBinding::new(&format!("secondary-{n}"), ActivateTab { index }, None)
-    }));
+        bind(TOGGLE_SIDEBAR_KEYSTROKE, ToggleSidebar, None, cx),
+        bind("secondary-t", NewQuery, None, cx),
+        bind("secondary-w", CloseTab, None, cx),
+        bind("ctrl-tab", NextTab, None, cx),
+        bind("ctrl-shift-tab", PreviousTab, None, cx),
+        bind("secondary-o", OpenData, None, cx),
+        bind("secondary-.", StopQuery, None, cx),
+        bind("secondary-q", Quit, None, cx),
+    ];
+    cx.bind_keys(bindings);
+    let tabs: Vec<_> = (1..=9)
+        .map(|n| {
+            let index = if n == 9 { usize::MAX } else { n - 1 };
+            bind(&format!("secondary-{n}"), ActivateTab { index }, None, cx)
+        })
+        .collect();
+    cx.bind_keys(tabs);
     cx.on_action(|_: &ZoomIn, cx| scale::set(scale::current().larger(), cx));
     cx.on_action(|_: &ZoomOut, cx| scale::set(scale::current().smaller(), cx));
     cx.on_action(|_: &ZoomReset, cx| scale::set(scale::UiSize::Default, cx));
