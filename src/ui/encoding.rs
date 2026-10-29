@@ -321,6 +321,7 @@ pub(crate) fn dash_kind(kind: ChartKind, temporal: bool, split: bool) -> &'stati
         ChartKind::Area => "area",
         ChartKind::Scatter => "scatter",
         ChartKind::Pie if !temporal && !split => "pie",
+        ChartKind::Stacked if split => "stacked_bar",
         ChartKind::Heatmap if split => "heatmap",
         ChartKind::Histogram if !split => "histogram",
         _ if temporal => "area",
@@ -431,6 +432,8 @@ mod tests {
         let columns = round_trip(&encoding, statement, "bar");
         assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
         let columns = round_trip(&encoding, statement, "heatmap");
+        assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
+        let columns = round_trip(&encoding, statement, "stacked_bar");
         assert_eq!(columns, ["Sales region", "sku", "max(amount)"]);
 
         // A histogram's query hands over the rows of x, to be binned.

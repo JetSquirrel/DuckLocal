@@ -41,6 +41,8 @@ pub enum ChartKind {
     Area,
     Scatter,
     Pie,
+    /// A split's parts stacked into one bar per band.
+    Stacked,
     /// x across, the split's values down, each cell's value in colour.
     Heatmap,
     /// The rows per range of a numeric x.
@@ -57,6 +59,7 @@ impl ChartKind {
             ChartKind::Area => "chart.kind.area",
             ChartKind::Scatter => "chart.kind.scatter",
             ChartKind::Pie => "chart.kind.pie",
+            ChartKind::Stacked => "chart.kind.stacked",
             ChartKind::Heatmap => "chart.kind.heatmap",
             ChartKind::Histogram => "chart.kind.histogram",
             ChartKind::Map => "chart.kind.map",
@@ -360,7 +363,7 @@ impl ChartData {
         // DuckDB sends what any kind can draw; bars draw fewer bands, and
         // trimming them here keeps the count below the whole result's.
         let kept = match (dash_kind, ordered) {
-            ("bar" | "heatmap", _) => MAX_BARS,
+            ("bar" | "stacked_bar" | "heatmap", _) => MAX_BARS,
             (_, true) => MAX_ORDERED_BANDS,
             (_, false) => MAX_CATEGORY_BANDS,
         };
@@ -549,6 +552,7 @@ impl ChartData {
         // Its rows are a split's values; a result's own columns are measures
         // of different sizes, which one colour scale would set side by side.
         if self.split.is_some() {
+            kinds.push(ChartKind::Stacked);
             kinds.push(ChartKind::Heatmap);
         }
         if self.binnable {
@@ -733,6 +737,12 @@ impl RenderOnce for ChartPanel {
                 SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
                     .into_any_element()
             }
+            ChartKind::Stacked => {
+                GroupedBars::of("results-chart-stacked", rows, &data.series_names)
+                    .time_axis(data.is_time_series)
+                    .stacked()
+                    .into_any_element()
+            }
             ChartKind::Histogram => {
                 GroupedBars::of("results-chart-histogram", rows, &data.series_names)
                     .bins()
@@ -793,7 +803,11 @@ impl RenderOnce for ChartPanel {
             (data.series_names.len() > 1
                 && matches!(
                     kind,
-                    ChartKind::Line | ChartKind::Scatter | ChartKind::Area | ChartKind::Bar
+                    ChartKind::Line
+                        | ChartKind::Scatter
+                        | ChartKind::Area
+                        | ChartKind::Bar
+                        | ChartKind::Stacked
                 ))
             .then(|| {
                 data.series_names
@@ -1598,6 +1612,11 @@ mod tests {
         let data = encoded(statement, &encoding, ChartKind::Heatmap).unwrap();
         assert!(data.available_kinds().contains(&ChartKind::Heatmap));
         assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Heatmap);
+        assert!(data.available_kinds().contains(&ChartKind::Stacked));
+        assert_eq!(
+            crate::ui::encoding::dash_kind(ChartKind::Stacked, false, true),
+            "stacked_bar"
+        );
         assert_eq!(data.series_names.len(), 7);
         assert_eq!(data.rows.len(), 24);
         let missing = data
@@ -1620,6 +1639,7 @@ mod tests {
         let data = encoded(statement, &whole, ChartKind::Heatmap).unwrap();
         assert!(!data.available_kinds().contains(&ChartKind::Heatmap));
         assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Bar);
+        assert!(!data.available_kinds().contains(&ChartKind::Stacked));
     }
 
     #[test]

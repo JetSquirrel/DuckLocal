@@ -1436,7 +1436,9 @@ impl Dashboard {
             self.render_table(ix, window, cx)
         } else if is_empty {
             empty_chart(cx)
-        } else if self.plots[ix].kind == "bar" && self.is_pickable(&self.plots[ix].name) {
+        } else if matches!(self.plots[ix].kind.as_str(), "bar" | "stacked_bar")
+            && self.is_pickable(&self.plots[ix].name)
+        {
             let picked = self.picked_band(&self.plots[ix]);
             let chart = GroupedBars::new(
                 (
@@ -2761,9 +2763,10 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         // Every bar draws on the hand-built chart, one series or several: it
         // colours by series, and lays a category axis on its side rather than
         // drop the labels that do not fit.
-        "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
+        "bar" | "stacked_bar" | "histogram" => {
+            GroupedBars::new(named_id(), plot).into_any_element()
+        }
         "heatmap" => Heatmap::new(named_id(), plot).into_any_element(),
-        "histogram" => GroupedBars::new(named_id(), plot).bins().into_any_element(),
         "area" if single => {
             let color = palette[0];
             let chart = AreaChart::new(plot.points.clone())

@@ -603,7 +603,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     }
 
     let time_axis = result.columns[x_ix].kind == ColumnKind::Temporal;
-    if plot.kind == "bar" && time_axis {
+    if matches!(plot.kind.as_str(), "bar" | "stacked_bar") && time_axis {
         if let Some(filled) = fill_missing_days(&points, series_names.len()) {
             points = filled;
         }
@@ -613,7 +613,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     if plot.kind == "pie" {
         // Every band stays: the slices fold below, and a merged or dropped
         // band would make the shares wrong.
-    } else if plot.kind == "bar" || plot.kind == "heatmap" {
+    } else if matches!(plot.kind.as_str(), "bar" | "stacked_bar" | "heatmap") {
         // A heatmap's columns are cells, not points a line can average.
         if source_points > MAX_BARS {
             points.truncate(MAX_BARS);

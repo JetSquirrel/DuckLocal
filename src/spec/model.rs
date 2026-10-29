@@ -37,12 +37,14 @@ use super::format::{NumberFormat, FORMATS};
 use super::syntax::{self, Attr, Block, File, RefSite, Value};
 
 /// The plot types the format knows. Each is a promise the renderer can keep:
-/// x/y for the continuous ones, `pie` and `heatmap` (its rows the series),
+/// x/y for the continuous ones, `stacked_bar` (its parts the series), `pie`
+/// and `heatmap` (its rows the series),
 /// a numeric x alone for `histogram`, anything tabular for `table`,
 /// coordinates for `map`, words and no query at all for `text`.
 pub(crate) const PLOT_TYPES: &[&str] = &[
     "line",
     "bar",
+    "stacked_bar",
     "area",
     "scatter",
     "pie",
@@ -76,9 +78,9 @@ pub(crate) const GRID_COLUMNS: u8 = 12;
 /// How a map's `size` may scale its points.
 pub(crate) const SIZE_SCALES: &[&str] = &["sqrt", "log"];
 
-/// The plot types a filter can pick a value on: a bar by its band, a table
-/// by its row.
-pub(crate) const FILTER_PLOTS: &[&str] = &["bar", "table"];
+/// The plot types a filter can pick a value on: a bar, stacked or not, by
+/// its band, a table by its row.
+pub(crate) const FILTER_PLOTS: &[&str] = &["bar", "stacked_bar", "table"];
 
 #[derive(Debug, Clone)]
 pub(crate) struct Spec {
@@ -504,7 +506,7 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
             continue;
         }
         if filter.column.is_empty() {
-            if plot.kind == "bar" {
+            if matches!(plot.kind.as_str(), "bar" | "stacked_bar") {
                 filter.column = plot.x.clone();
             } else if plot.kind == "table" {
                 diagnostics.push(Diagnostic::at_block(
@@ -2116,6 +2118,13 @@ plot "e" { type = "bar" query = query.q x = t y = v size = n }
         assert!(has("lists at least one column"), "{messages:?}");
         assert!(has("tooltip is a list of columns"), "{messages:?}");
         assert!(has("size is for map plots"), "{messages:?}");
+    }
+
+    #[test]
+    fn a_stacked_bar_picks_its_band_like_a_bar() {
+        let spec = validate_ok(&FILTERED.replace("type = \"bar\"", "type = \"stacked_bar\""));
+        let filter = spec.filters.iter().find(|f| f.name == "channel").unwrap();
+        assert_eq!(filter.column, "channel", "x, as a bar's");
     }
 
     #[test]

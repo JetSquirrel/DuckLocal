@@ -255,6 +255,27 @@ pub(crate) struct GroupedBars {
     /// touch, stand upright and thin their labels, and carry no value —
     /// the shape is the point, and the tooltip has the counts.
     bins: bool,
+    /// A `stacked_bar`'s: a band's series stack into one bar, each from
+    /// where the one before it ended, and the bar is labelled by its total.
+    stacked: bool,
+}
+
+/// One bar the plot paints: series `s` of band `d`, from `lo` to `hi` on
+/// the value scale. A grouped bar runs from zero to its value; a stacked
+/// segment from the running total before it to the one after.
+#[derive(Clone)]
+struct Mark {
+    d: Arc<PlotPoint>,
+    s: usize,
+    lo: f64,
+    hi: f64,
+    /// Whether it sits on another segment, which a gap of surface keeps it
+    /// apart from.
+    on_another: bool,
+    /// Whether it ends the bar on its side of zero, where the corners round.
+    outer: bool,
+    /// What is written past its end, when values are shown.
+    label: Option<SharedString>,
 }
 
 /// How much of its opacity a bar outside the picked band keeps.
@@ -290,6 +311,10 @@ impl GroupedBars {
         let mut this =
             Self::of(id, plot.points.clone(), &plot.series_names).time_axis(plot.time_axis);
         this.format = plot.format;
+        // The plot's type says how its bars lie, so the drawing and a click's
+        // hit test, each built from the plot, agree.
+        this.stacked = plot.kind == "stacked_bar";
+        this.bins = plot.kind == "histogram";
         this
     }
 
@@ -308,6 +333,7 @@ impl GroupedBars {
             selected: None,
             format: None,
             bins: false,
+            stacked: false,
         }
     }
 
@@ -322,6 +348,31 @@ impl GroupedBars {
         self
     }
 
+    /// Stack a band's series into one bar.
+    pub(crate) fn stacked(mut self) -> Self {
+        self.stacked = true;
+        self
+    }
+
+    /// A band's total, the sum of the series it has.
+    fn total(d: &PlotPoint) -> f64 {
+        d.values
+            .iter()
+            .zip(&d.present)
+            .filter(|(_, present)| **present)
+            .map(|(value, _)| value)
+            .sum()
+    }
+
+    /// The value written past band `d`'s bar: its total when stacked.
+    fn value_label(&self, d: &PlotPoint) -> SharedString {
+        if self.stacked {
+            short_text(self.format, Self::total(d)).into()
+        } else {
+            d.label.clone()
+        }
+    }
+
     pub(crate) fn selected(mut self, band: Option<SharedString>) -> Self {
         self.selected = band;
         self
@@ -330,17 +381,18 @@ impl GroupedBars {
     /// One series labels each bar with its value; several would crowd the
     /// band, and the tooltip lists them. A histogram's many narrow bars do
     /// so only while every count fits across its bar, `width` the plot's.
+    /// A stack shows its total, one label a band, while every total fits.
     fn values_shown(&self, width: f32) -> bool {
-        if self.series.len() != 1 {
+        if self.series.len() != 1 && !self.stacked {
             return false;
         }
-        if !self.bins {
+        if !self.bins && !self.stacked {
             return true;
         }
         let widest = self
             .points
             .iter()
-            .map(|d| label_width(&d.label))
+            .map(|d| label_width(&self.value_label(d)))
             .fold(0., f32::max);
         widest + LABEL_PAD <= width / self.points.len().max(1) as f32
     }
@@ -366,7 +418,10 @@ impl GroupedBars {
         };
         let band = widest(|d| &d.band);
         let value = if self.values_shown(width) {
-            widest(|d| &d.label)
+            self.points
+                .iter()
+                .map(|d| label_width(&self.value_label(d)))
+                .fold(0., f32::max)
         } else {
             0.
         };
@@ -433,6 +488,8 @@ impl GroupedBars {
         // the surface line between two fills.
         let (inner, outer, widest) = if self.bins {
             (0.04, 0.02, f32::INFINITY)
+        } else if self.stacked {
+            (0.4, 0.2, MAX_BAR_WIDTH)
         } else {
             (0.4, 0.2, MAX_BAR_WIDTH * self.series.len().max(1) as f32)
         };
@@ -440,13 +497,16 @@ impl GroupedBars {
             .padding_inner(inner)
             .padding_outer(outer)
             .max_band_width(widest);
-        let value = ScaleLinear::new(
+        // A stack reaches as far as its parts on one side of zero add up to.
+        let ends: Vec<f64> = if self.stacked {
+            self.marks().iter().map(|m| m.hi).collect()
+        } else {
             self.points
                 .iter()
                 .flat_map(|d| d.values.iter().copied())
-                .chain(Some(0.)),
-            value_range,
-        );
+                .collect()
+        };
+        let value = ScaleLinear::new(ends.into_iter().chain(Some(0.)), value_range);
         (band, value)
     }
 
@@ -500,18 +560,153 @@ impl GroupedBars {
         PlotLabel::new(labels).paint(bounds, window, cx);
     }
 
+    /// The bars themselves, in either layout: each series its colour, faded
+    /// outside a picked band; the corners round only where a bar ends, and a
+    /// stacked segment keeps a line of surface from the one under it.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_bars(
+        &self,
+        layout: Layout,
+        band_scale: ScaleBand<SharedString>,
+        value_scale: ScaleLinear<f64>,
+        zero: f32,
+        bounds: &Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let band_width = band_scale.band_width();
+        let n = self.series.len();
+        let stacked = self.stacked;
+        let bar_width = if stacked {
+            band_width
+        } else {
+            group_slot(band_width, n, 0).0
+        };
+        let upright = layout == Layout::Columns;
+        let shown = self.values_shown(bounds.size.width.as_f32());
+        let palette = palette(cx);
+        let muted = cx.theme().muted_foreground;
+        let (ends, middles): (Vec<Mark>, Vec<Mark>) =
+            self.marks().into_iter().partition(|m| m.outer);
+        for (marks, round) in [(middles, false), (ends, true)] {
+            let (band_scale, value_scale) = (band_scale.clone(), value_scale.clone());
+            let base_scale = value_scale.clone();
+            let selected = self.selected.clone();
+            let corners = match (round, upright) {
+                (false, _) => Corners::default(),
+                (true, true) => Corners {
+                    top_left: px(BAR_RADIUS),
+                    top_right: px(BAR_RADIUS),
+                    ..Corners::default()
+                },
+                (true, false) => Corners {
+                    top_right: px(BAR_RADIUS),
+                    bottom_right: px(BAR_RADIUS),
+                    ..Corners::default()
+                },
+            };
+            let mut bar = Bar::new()
+                .data(marks)
+                .band_width(bar_width)
+                .cross(move |m: &Mark| {
+                    let tick = band_scale.tick(&m.d.band)?;
+                    Some(if stacked {
+                        tick
+                    } else {
+                        tick + group_slot(band_width, n, m.s).1
+                    })
+                })
+                .base(move |m: &Mark| {
+                    let base = base_scale.tick(&m.lo).unwrap_or(zero);
+                    let end = base_scale.tick(&m.hi).unwrap_or(base);
+                    if m.on_another {
+                        base + (end - base).signum() * GROUP_GAP.min((end - base).abs() / 2.)
+                    } else {
+                        base
+                    }
+                })
+                .value(move |m: &Mark| value_scale.tick(&m.hi))
+                .corner_radii(corners)
+                .fill(move |m: &Mark, _: Bounds<f32>, _: BarAlignment| {
+                    let color = palette[m.s % palette.len()];
+                    match &selected {
+                        Some(band) if *band != m.d.band => color.opacity(UNPICKED_OPACITY),
+                        _ => color,
+                    }
+                });
+            if !upright {
+                bar = bar.alignment(BarAlignment::Left);
+            }
+            if shown {
+                bar = bar.label(move |m: &Mark, at| {
+                    let Some(text) = m.label.clone() else {
+                        return Vec::new();
+                    };
+                    // A negative bar ends left of zero; its value reads
+                    // leftwards from there.
+                    let align = match (upright, m.hi < 0.) {
+                        (true, _) => TextAlign::Center,
+                        (false, true) => TextAlign::Right,
+                        (false, false) => TextAlign::Left,
+                    };
+                    vec![Text::new(text, at, muted)
+                        .font_size(px(LABEL_SIZE))
+                        .align(align)]
+                });
+            }
+            bar.paint(bounds, window, cx);
+        }
+    }
+
     /// Only the cells the query returned: a series a band lacks draws no bar
-    /// there, rather than a zero the data never stated.
-    fn bars(&self) -> Vec<(Arc<PlotPoint>, usize)> {
-        let mut bars = Vec::new();
+    /// there, rather than a zero the data never stated. A stack keeps its
+    /// positive parts above zero and its negative ones below, each side
+    /// adding up from zero in series order.
+    fn marks(&self) -> Vec<Mark> {
+        let mut marks = Vec::new();
         for d in &self.points {
+            let first = marks.len();
+            let (mut up, mut down) = (0f64, 0f64);
             for s in 0..self.series.len() {
-                if d.present.get(s).copied().unwrap_or(false) {
-                    bars.push((d.clone(), s));
+                if !d.present.get(s).copied().unwrap_or(false) {
+                    continue;
+                }
+                let value = d.values[s];
+                let (lo, hi) = if !self.stacked {
+                    (0., value)
+                } else if value >= 0. {
+                    up += value;
+                    (up - value, up)
+                } else {
+                    down += value;
+                    (down - value, down)
+                };
+                marks.push(Mark {
+                    d: d.clone(),
+                    s,
+                    lo,
+                    hi,
+                    on_another: lo != 0.,
+                    outer: !self.stacked,
+                    label: (!self.stacked).then(|| d.label.clone()),
+                });
+            }
+            if self.stacked {
+                // The last part on each side ends the bar there; the total
+                // goes past the end the bar reaches furthest on, above zero
+                // unless nothing is.
+                let band = &mut marks[first..];
+                let last_up = band.iter().rposition(|m| m.hi > 0.);
+                let last_down = band.iter().rposition(|m| m.hi < 0.);
+                for ix in last_up.iter().chain(&last_down) {
+                    band[*ix].outer = true;
+                }
+                if let Some(ix) = last_up.or(last_down) {
+                    band[ix].label = Some(self.value_label(d));
                 }
             }
         }
-        bars
+        marks
     }
 }
 
@@ -535,18 +730,7 @@ impl Plot for GroupedBars {
             Layout::Rows { gutter, .. } => gutter,
         };
         let zero = value_scale.tick(&0.).unwrap_or(zero_default);
-        let palette = palette(cx);
         let muted = cx.theme().muted_foreground;
-        let n = self.series.len();
-        let selected = self.selected.clone();
-        let fill = move |d: &(Arc<PlotPoint>, usize), _: Bounds<f32>, _: BarAlignment| {
-            let color = palette[d.1 % palette.len()];
-            match &selected {
-                Some(band) if *band != d.0.band => color.opacity(UNPICKED_OPACITY),
-                _ => color,
-            }
-        };
-        let (bar_width, _) = group_slot(band_width, n, 0);
         match layout {
             Layout::Columns => {
                 let baseline = height - axis_gap();
@@ -607,30 +791,7 @@ impl Plot for GroupedBars {
                     .stroke(cx.theme().chart_grid)
                     .paint(&bounds, window);
 
-                let mut bar = Bar::new()
-                    .data(self.bars())
-                    .band_width(bar_width)
-                    .cross(move |d: &(Arc<PlotPoint>, usize)| {
-                        band_scale
-                            .tick(&d.0.band)
-                            .map(|tick| tick + group_slot(band_width, n, d.1).1)
-                    })
-                    .base(move |_| zero)
-                    .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-                    .corner_radii(Corners {
-                        top_left: px(BAR_RADIUS),
-                        top_right: px(BAR_RADIUS),
-                        ..Corners::default()
-                    })
-                    .fill(fill);
-                if self.values_shown(width) {
-                    bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
-                        vec![Text::new(d.0.label.clone(), at, muted)
-                            .font_size(px(LABEL_SIZE))
-                            .align(TextAlign::Center)]
-                    });
-                }
-                bar.paint(&bounds, window, cx);
+                self.paint_bars(layout, band_scale, value_scale, zero, &bounds, window, cx);
             }
             Layout::Rows { gutter, room } => {
                 PlotAxis::new()
@@ -675,38 +836,7 @@ impl Plot for GroupedBars {
                     .stroke(cx.theme().chart_grid)
                     .paint(&bounds, window);
 
-                let mut bar = Bar::new()
-                    .data(self.bars())
-                    .alignment(BarAlignment::Left)
-                    .band_width(bar_width)
-                    .cross(move |d: &(Arc<PlotPoint>, usize)| {
-                        band_scale
-                            .tick(&d.0.band)
-                            .map(|tick| tick + group_slot(band_width, n, d.1).1)
-                    })
-                    .base(move |_| zero)
-                    .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-                    .corner_radii(Corners {
-                        top_right: px(BAR_RADIUS),
-                        bottom_right: px(BAR_RADIUS),
-                        ..Corners::default()
-                    })
-                    .fill(fill);
-                if self.values_shown(width) {
-                    bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
-                        // A negative bar ends left of zero; its value reads
-                        // leftwards from there.
-                        let align = if d.0.values[d.1] < 0. {
-                            TextAlign::Right
-                        } else {
-                            TextAlign::Left
-                        };
-                        vec![Text::new(d.0.label.clone(), at, muted)
-                            .font_size(px(LABEL_SIZE))
-                            .align(align)]
-                    });
-                }
-                bar.paint(&bounds, window, cx);
+                self.paint_bars(layout, band_scale, value_scale, zero, &bounds, window, cx);
             }
         }
     }
@@ -785,6 +915,12 @@ impl Plot for GroupedBars {
                     full_text(self.format, d.values[s]),
                 );
             }
+        }
+        if self.stacked {
+            tooltip = tooltip.plain_row(
+                crate::i18n::tr("chart.total"),
+                full_text(self.format, Self::total(d)),
+            );
         }
         Some(tooltip.into_any_element())
     }
@@ -1595,6 +1731,43 @@ mod tests {
         assert_eq!(at(290., 100.).as_deref(), Some("c"));
         // The axis labels under the baseline are not a bar.
         assert_eq!(at(150., 199.), None);
+    }
+
+    #[test]
+    fn a_stack_adds_up_each_side_of_zero_and_says_its_total() {
+        // Three series in one band: 3 and 5 stack up, -2 hangs below zero;
+        // a second band has only the middle series.
+        let point = |band: &str, ix, values: Vec<f64>, present: Vec<bool>| {
+            Arc::new(PlotPoint {
+                band: SharedString::from(band),
+                label: SharedString::new(""),
+                values,
+                present,
+                ix,
+            })
+        };
+        let points = vec![
+            point("a", 0, vec![3., -2., 5.], vec![true; 3]),
+            point("b", 1, vec![0., 4., 0.], vec![false, true, false]),
+        ];
+        let series = ["x".to_string(), "y".to_string(), "z".to_string()];
+        let marks = GroupedBars::of("t", points, &series).stacked().marks();
+        let spans: Vec<(usize, f64, f64, bool, bool)> = marks
+            .iter()
+            .map(|m| (m.s, m.lo, m.hi, m.on_another, m.outer))
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                (0, 0., 3., false, false),
+                (1, 0., -2., false, true),
+                (2, 3., 8., true, true),
+                (1, 0., 4., false, true),
+            ]
+        );
+        // The total, net of the part below zero, goes past the top.
+        let labels: Vec<Option<&str>> = marks.iter().map(|m| m.label.as_deref()).collect();
+        assert_eq!(labels, [None, None, Some("6"), Some("4")]);
     }
 
     fn bars(bands: &[&str]) -> GroupedBars {

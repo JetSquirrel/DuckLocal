@@ -754,6 +754,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("chart.kind.area", "面积图", "Area"),
     ("chart.kind.scatter", "散点图", "Scatter"),
     ("chart.kind.pie", "饼图", "Pie"),
+    ("chart.kind.stacked", "堆叠柱状图", "Stacked"),
     ("chart.kind.heatmap", "热力图", "Heatmap"),
     ("chart.kind.histogram", "直方图", "Histogram"),
     ("chart.kind.map", "地图", "Map"),
@@ -786,6 +787,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "A pie needs positive values; the first numeric column has none.",
     ),
     ("chart.histogram.rows", "行数", "Rows"),
+    ("chart.total", "合计", "Total"),
     (
         "chart.histogram.skipped",
         "{} 行没有数值，未计入",
