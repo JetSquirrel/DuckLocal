@@ -70,6 +70,13 @@ pub fn load_catalog_of(conn: &Connection) -> Result<Vec<DatabaseInfo>> {
         })?
         .collect::<std::result::Result<_, _>>()?;
 
+    // A quack attach caches the server's catalog when it attaches, so a
+    // table created there afterwards stays invisible, in the sidebar and to
+    // `FROM remote.table` alike, until that cache is dropped.
+    if databases.iter().any(|d| d.kind == "quack") {
+        conn.execute_batch("FROM quack_clear_cache()")?;
+    }
+
     let mut stmt = conn.prepare(
         "SELECT database_name, schema_name, table_name, estimated_size
          FROM duckdb_tables()
