@@ -33,7 +33,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{point, Bounds, Pixels, ScrollHandle, ScrollWheelEvent, TouchPhase, Window};
+use gpui_kit::{point, Bounds, Pixels, ScrollEvent, ScrollHandle, TouchPhase, Window};
 
 /// Events closer together than this belong to one gesture. Momentum arrives
 /// every frame; a wheel's separate clicks a person means as one move come
@@ -85,7 +85,7 @@ impl WheelLatch {
     /// Whether `event` begins a gesture: it is the `Started` itself, or the
     /// first event to move after one. An event that does not move only notes
     /// a `Started`, for the move that follows.
-    fn begins(&self, event: &ScrollWheelEvent, moved: bool) -> bool {
+    fn begins(&self, event: &ScrollEvent, moved: bool) -> bool {
         let started = event.touch_phase == TouchPhase::Started;
         if !moved {
             if started {
@@ -103,7 +103,7 @@ impl WheelLatch {
 
     /// The stack's own handler: it only sees events no table kept, so any
     /// event reaching it that moves is the stack's.
-    pub fn stack_scrolled(&self, event: &ScrollWheelEvent, window: &Window) {
+    pub fn stack_scrolled(&self, event: &ScrollEvent, window: &Window) {
         let delta = event.delta.pixel_delta(window.line_height());
         let moved = delta.x != Pixels::ZERO || delta.y != Pixels::ZERO;
         self.begins(event, moved);
@@ -121,7 +121,7 @@ impl WheelLatch {
         ix: usize,
         handle: &ScrollHandle,
         table: Option<Bounds<Pixels>>,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &Window,
     ) -> bool {
         let now = Instant::now();
@@ -225,11 +225,11 @@ const REVEAL_SLACK: f32 = 2.0;
 #[cfg(test)]
 mod tests {
     use super::{decide, keeps, reveals, Target, WheelLatch, GESTURE_GAP};
-    use gpui_kit::{ScrollWheelEvent, TouchPhase};
+    use gpui_kit::{ScrollEvent, TouchPhase};
     use std::time::{Duration, Instant};
 
-    fn phase(touch_phase: TouchPhase) -> ScrollWheelEvent {
-        ScrollWheelEvent {
+    fn phase(touch_phase: TouchPhase) -> ScrollEvent {
+        ScrollEvent {
             touch_phase,
             ..Default::default()
         }

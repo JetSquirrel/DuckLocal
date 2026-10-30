@@ -1721,7 +1721,7 @@ impl Dashboard {
                     .relative()
                     // Runs after the table's own scrolling and before the
                     // stack's, so it decides whether the stack moves too.
-                    .on_scroll_wheel(move |event, window, cx| {
+                    .on_scroll(move |event, window, cx| {
                         if wheel.table_scrolled(ix, &rows, bounds.get(), event, window) {
                             cx.stop_propagation();
                         }
@@ -2363,9 +2363,7 @@ impl Render for Dashboard {
                     div()
                         .id(format!("dashboard-scroll-{}", self.id))
                         .size_full()
-                        .on_scroll_wheel(move |event, window, _| {
-                            wheel.stack_scrolled(event, window)
-                        })
+                        .on_scroll(move |event, window, _| wheel.stack_scrolled(event, window))
                         .overflow_y_scrollbar()
                         .child(
                             v_flex()

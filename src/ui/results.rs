@@ -2353,7 +2353,7 @@ fn empty_state(title: &str, subtitle: Option<&str>, cx: &mut Context<ResultsPane
                             .child(subtitle.to_string()),
                     )
                     .children(
-                        Keystroke::parse(RUN_QUERY_KEYSTROKE)
+                        Keystroke::parse_with_os(RUN_QUERY_KEYSTROKE, cx.platform_info().os)
                             .ok()
                             .map(|k| Kbd::new(k).into_any_element()),
                     )

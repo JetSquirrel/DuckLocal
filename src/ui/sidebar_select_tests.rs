@@ -134,11 +134,12 @@ fn shift_click_picks_the_files_between(cx: &mut TestAppContext) {
 fn cmd_click_adds_and_drops_one_file(cx: &mut TestAppContext) {
     let (window, sidebar, _guard) = open_sidebar(cx);
     cx.update_window(window, |_, window, cx| {
+        let secondary = Modifiers::secondary_key(cx);
         click_file(window, 1, Modifiers::default(), cx);
-        click_file(window, 3, Modifiers::secondary_key(), cx);
+        click_file(window, 3, secondary, cx);
         assert_eq!(sidebar.read(cx).picked_files(cx), (vec![1, 3], Some(3)));
 
-        click_file(window, 3, Modifiers::secondary_key(), cx);
+        click_file(window, 3, secondary, cx);
         assert_eq!(
             sidebar.read(cx).picked_files(cx),
             (vec![1], None),
