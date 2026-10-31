@@ -62,9 +62,6 @@ const TICK_COUNT: usize = 5;
 /// Room kept between a numeric x axis's ends and its first and last dots, so
 /// an extreme point is not cut in half by the plot's edge.
 const X_INSET: f32 = DOT_SIZE;
-/// How round a bar's tip is: enough to soften it, not enough to make a thin
-/// bar a pill.
-const BAR_RADIUS: f32 = 4.;
 
 /// The gutter a plot reserves under itself for its x-axis labels, as the
 /// catalog computes it for the labels' font size.
@@ -272,8 +269,6 @@ struct Mark {
     /// Whether it sits on another segment, which a gap of surface keeps it
     /// apart from.
     on_another: bool,
-    /// Whether it ends the bar on its side of zero, where the corners round.
-    outer: bool,
     /// What is written past its end, when values are shown.
     label: Option<SharedString>,
 }
@@ -586,25 +581,13 @@ impl GroupedBars {
         let shown = self.values_shown(bounds.size.width.as_f32());
         let palette = palette(cx);
         let muted = cx.theme().muted_foreground;
-        let (ends, middles): (Vec<Mark>, Vec<Mark>) =
-            self.marks().into_iter().partition(|m| m.outer);
-        for (marks, round) in [(middles, false), (ends, true)] {
+        // Square ends, as a tool's bars are: a rounded tip on a short bar
+        // drew a blob, not a bar.
+        {
+            let marks = self.marks();
             let (band_scale, value_scale) = (band_scale.clone(), value_scale.clone());
             let base_scale = value_scale.clone();
             let selected = self.selected.clone();
-            let corners = match (round, upright) {
-                (false, _) => Corners::default(),
-                (true, true) => Corners {
-                    top_left: px(BAR_RADIUS),
-                    top_right: px(BAR_RADIUS),
-                    ..Corners::default()
-                },
-                (true, false) => Corners {
-                    top_right: px(BAR_RADIUS),
-                    bottom_right: px(BAR_RADIUS),
-                    ..Corners::default()
-                },
-            };
             let mut bar = Bar::new()
                 .data(marks)
                 .band_width(bar_width)
@@ -626,7 +609,6 @@ impl GroupedBars {
                     }
                 })
                 .value(move |m: &Mark| value_scale.tick(&m.hi))
-                .corner_radii(corners)
                 .fill(move |m: &Mark, _: Bounds<f32>, _: BarAlignment| {
                     let color = palette[m.s % palette.len()];
                     match &selected {
@@ -687,20 +669,15 @@ impl GroupedBars {
                     lo,
                     hi,
                     on_another: lo != 0.,
-                    outer: !self.stacked,
                     label: (!self.stacked).then(|| d.label.clone()),
                 });
             }
             if self.stacked {
-                // The last part on each side ends the bar there; the total
-                // goes past the end the bar reaches furthest on, above zero
-                // unless nothing is.
+                // The total goes past the end the bar reaches furthest on,
+                // above zero unless nothing is.
                 let band = &mut marks[first..];
                 let last_up = band.iter().rposition(|m| m.hi > 0.);
                 let last_down = band.iter().rposition(|m| m.hi < 0.);
-                for ix in last_up.iter().chain(&last_down) {
-                    band[*ix].outer = true;
-                }
                 if let Some(ix) = last_up.or(last_down) {
                     band[ix].label = Some(self.value_label(d));
                 }
@@ -1757,17 +1734,17 @@ mod tests {
         ];
         let series = ["x".to_string(), "y".to_string(), "z".to_string()];
         let marks = GroupedBars::of("t", points, &series).stacked().marks();
-        let spans: Vec<(usize, f64, f64, bool, bool)> = marks
+        let spans: Vec<(usize, f64, f64, bool)> = marks
             .iter()
-            .map(|m| (m.s, m.lo, m.hi, m.on_another, m.outer))
+            .map(|m| (m.s, m.lo, m.hi, m.on_another))
             .collect();
         assert_eq!(
             spans,
             [
-                (0, 0., 3., false, false),
-                (1, 0., -2., false, true),
-                (2, 3., 8., true, true),
-                (1, 0., 4., false, true),
+                (0, 0., 3., false),
+                (1, 0., -2., false),
+                (2, 3., 8., true),
+                (1, 0., 4., false),
             ]
         );
         // The total, net of the part below zero, goes past the top.

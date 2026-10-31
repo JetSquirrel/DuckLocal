@@ -295,6 +295,7 @@ impl Encoding {
             tooltip: None,
             value: None,
             note: None,
+            description: None,
             tone: None,
             format: None,
             delta: None,

@@ -374,6 +374,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             "down_is_good": p.down_is_good,
             "text": p.text,
             "title": p.title,
+            "description": p.description,
             "width": p.width(),
             "line": p.line,
         })).collect::<Vec<_>>(),

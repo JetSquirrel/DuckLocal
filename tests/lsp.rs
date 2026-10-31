@@ -336,6 +336,7 @@ fn completion_inside_a_plot_offers_its_attributes() {
             "y",
             "series",
             "title",
+            "description",
             "width",
             "lat",
             "lng",

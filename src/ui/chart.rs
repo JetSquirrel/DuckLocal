@@ -756,6 +756,9 @@ impl RenderOnce for ChartPanel {
                 // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
                 let tick_margin = (row_count / 10).max(1);
                 let mut chart = AreaChart::new(rows)
+                    // A tool's chart shows its data at once: the kit's draw-in replays
+                    // on every maximize, restore and tab switch, and only delays it.
+                    .appear(false)
                     .x(|d: &Arc<PlotPoint>| d.band.clone())
                     .id("results-chart");
                 for (series_ix, series_name) in data.series_names.iter().enumerate() {

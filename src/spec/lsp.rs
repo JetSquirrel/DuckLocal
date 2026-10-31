@@ -494,6 +494,7 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "size_scale" => "**size_scale**\n\nOptional, with `size`: `\"sqrt\"` (the default, area follows value) or `\"log\"`, for values spanning orders of magnitude.",
         "tooltip" => "**tooltip**\n\nOptional, for a `map`: the columns its tooltip lists, in order — `tooltip = [place, requests, ips]`. Left out, it lists the size column and the other numbers, then the coordinates.",
         "title" => "**title**\n\nOptional: the plot's title; a `card`'s label; a `text` panel's heading.",
+        "description" => "**description**\n\nOptional: what the plot shows and how to read it — where the numbers come from, what counts. Shown on hovering the ⓘ beside the title, so it takes no room on the card. A string, or a heredoc for a paragraph.",
         "width" => "**width**\n\nOptional: how many of the dashboard's 12 columns the plot spans, 1 to 12. Plots fill a row left to right and wrap. Default 12, or 3 for a `card`.",
         "value" => "**value**\n\nOptional, for a `card`: the column it shows, from the query's first row. Left out, the first column.",
         "note" => "**note**\n\nOptional, for a `card`: the line under its value. A string is shown as written (`note = \"All riders\"`); a bare identifier names a column, whose value in the card's row is shown (`note = busiest_day`).",

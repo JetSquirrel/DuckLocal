@@ -128,6 +128,9 @@ pub(crate) struct Plot {
     pub y: Option<String>,
     pub series: Option<String>,
     pub title: Option<String>,
+    /// What the plot shows and how to read it: behind an info mark beside
+    /// the title, shown on hover, as a Grafana panel's description is.
+    pub description: Option<String>,
     /// A `map`'s coordinate columns; `None` finds them by name.
     pub lat: Option<String>,
     pub lng: Option<String>,
@@ -763,6 +766,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut y = None;
     let mut series = None;
     let mut title = None;
+    let mut description = None;
     let mut lat = None;
     let mut lng = None;
     let mut color = None;
@@ -869,10 +873,14 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 _ => text = string(attr, diagnostics),
             },
             "width" => width = grid_width(attr, diagnostics),
+            "description" => match &attr.value {
+                Value::Heredoc(words) => description = Some(words.trim().to_string()),
+                _ => description = string(attr, diagnostics),
+            },
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, delta, delta_format, down_is_good, and for a text panel text; unknown attribute: {other}{}",
+                    "A plot block holds type, query, x, y, series, title, description, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, delta, delta_format, down_is_good, and for a text panel text; unknown attribute: {other}{}",
                     did_you_mean(other, super::complete::PLOT_ATTRS)
                 ),
             )),
@@ -990,6 +998,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         y,
         series,
         title,
+        description,
         lat,
         lng,
         color,
@@ -2281,6 +2290,31 @@ plot "c" { type = "table" query = query.q format = "num0" }
         );
         assert!(has("a map takes no format"), "{messages:?}");
         assert!(has("a table takes no format"), "{messages:?}");
+    }
+
+    #[test]
+    fn description_is_a_string_or_heredoc() {
+        let spec = validate_ok(
+            r#"
+query "q" { sql = "select 1 as n" }
+plot "a" { type = "card" query = query.q description = "Rows the export kept" }
+plot "b" {
+  type = "card"
+  query = query.q
+  description = <<EOT
+    Every call, failed or not.
+  EOT
+}
+"#,
+        );
+        assert_eq!(
+            spec.plots[0].description.as_deref(),
+            Some("Rows the export kept")
+        );
+        assert_eq!(
+            spec.plots[1].description.as_deref(),
+            Some("Every call, failed or not.")
+        );
     }
 
     #[test]
