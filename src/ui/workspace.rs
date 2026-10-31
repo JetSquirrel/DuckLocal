@@ -313,6 +313,9 @@ struct ActiveQuery {
     results: Entity<ResultsPanel>,
 }
 
+/// How long a run goes before Stop is offered.
+const STOP_AFTER: std::time::Duration = std::time::Duration::from_millis(400);
+
 pub struct Workspace {
     state: Entity<AppState>,
     tabs: Vec<WorkspaceTab>,
@@ -337,6 +340,10 @@ pub struct Workspace {
     dashboards_restored: bool,
     /// The pending write of the open query tabs; replacing it debounces.
     _remember_query_tabs: Option<Task<()>>,
+    /// Whether a run has gone on long enough to offer Stop, and the wait
+    /// until it has; each run replaces the last one's.
+    stop_offered: bool,
+    _offer_stop: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -356,6 +363,8 @@ impl Workspace {
             query_tabs_restored: false,
             dashboards_restored: false,
             _remember_query_tabs: None,
+            stop_offered: false,
+            _offer_stop: None,
             _subscriptions: vec![
                 cx.subscribe(&state, |this, _, _: &ConnectionChanged, cx| {
                     // A dashboard queries the window's connection, so a switch
@@ -547,6 +556,21 @@ impl Workspace {
                 return;
             };
             smol::unblock(move || crate::query_tabs::remember(&tabs)).await;
+        }));
+    }
+
+    /// Offer Stop once the run just started has gone on for `STOP_AFTER`. Most
+    /// queries end well before, and a button that appears and vanishes in a
+    /// blink reads as something having gone wrong.
+    fn offer_stop_later(&mut self, cx: &mut Context<Self>) {
+        self.stop_offered = false;
+        self._offer_stop = Some(cx.spawn(async move |this, cx| {
+            smol::Timer::after(STOP_AFTER).await;
+            this.update(cx, |this, cx| {
+                this.stop_offered = true;
+                cx.notify();
+            })
+            .ok();
         }));
     }
 
@@ -1186,6 +1210,7 @@ impl Workspace {
         // editor the results belong to instead of running behind it.
         self.editor_shown = true;
         self.running = true;
+        self.offer_stop_later(cx);
         // The previous run's mark names a range in SQL that is about to be
         // judged again; stale red is worse than none.
         query.squiggles.clear(cx);
@@ -1415,6 +1440,7 @@ impl Workspace {
             return;
         };
         self.profiling = true;
+        self.offer_stop_later(cx);
         query.squiggles.clear(cx);
         query.fill.clear(cx);
         query
@@ -1676,17 +1702,20 @@ impl Workspace {
             )
             // An accidental cross join can run for minutes; this ends it
             // rather than leaving the only way out to quit the app.
-            .when(self.running || self.profiling, |this| {
-                this.child(
-                    Button::new("stop-query")
-                        .outline()
-                        .small()
-                        .icon(AssetIcon::CircleStop)
-                        .label(tr("workspace.stop"))
-                        .tooltip_with_action(tr("workspace.stop.tooltip"), &StopQuery, None)
-                        .on_click(|_, _, _| crate::db::interrupt()),
-                )
-            })
+            .when(
+                (self.running || self.profiling) && self.stop_offered,
+                |this| {
+                    this.child(
+                        Button::new("stop-query")
+                            .outline()
+                            .small()
+                            .icon(AssetIcon::CircleStop)
+                            .label(tr("workspace.stop"))
+                            .tooltip_with_action(tr("workspace.stop.tooltip"), &StopQuery, None)
+                            .on_click(|_, _, _| crate::db::interrupt()),
+                    )
+                },
+            )
             .child(
                 Button::new("format-sql")
                     .ghost()
