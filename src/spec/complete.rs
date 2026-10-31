@@ -14,13 +14,14 @@ use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
 /// them: the common ones first, a map's, a card's and a text panel's own after.
-pub(crate) const PLOT_ATTRS: [&str; 21] = [
+pub(crate) const PLOT_ATTRS: [&str; 22] = [
     "type",
     "query",
     "x",
     "y",
     "series",
     "title",
+    "description",
     "width",
     "lat",
     "lng",

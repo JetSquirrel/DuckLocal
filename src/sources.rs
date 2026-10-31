@@ -98,11 +98,15 @@ fn resolve_one(raw: &str, sources: &mut Sources, seen: &mut BTreeSet<String>) {
 /// so `day2.csv` comes before `day10.csv`, and letters without regard to
 /// case. The plain order breaks what that leaves tied, so the order is total.
 fn natural_cmp(a: &Path, b: &Path) -> std::cmp::Ordering {
-    let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+    natural_str_cmp(&a.to_string_lossy(), &b.to_string_lossy())
+}
+
+/// [`natural_cmp`] for any text: a dashboard's series names, too.
+pub(crate) fn natural_str_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
     loop {
         match (x.peek().copied(), y.peek().copied()) {
-            (None, None) => return a.cmp(&b),
+            (None, None) => return a.cmp(b),
             (None, Some(_)) => return std::cmp::Ordering::Less,
             (Some(_), None) => return std::cmp::Ordering::Greater,
             (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {

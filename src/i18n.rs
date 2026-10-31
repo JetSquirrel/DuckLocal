@@ -987,11 +987,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "This spec declares no plot blocks.",
     ),
     (
-        "dashboard.notice.zero_filled",
-        "{} 个（系列 × x）组合没有数据，按 0 补齐",
-        "{} (series, x) cells had no data and were filled with 0",
-    ),
-    (
         "dashboard.restore.gone",
         "无法恢复上次打开的仪表盘 {}（{}）：文件已不存在",
         "Could not restore dashboard {} ({}) from last session: the file is gone",
@@ -1048,11 +1043,6 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.comments.shortcut", "Ctrl/⌘ + Enter 发送", "Ctrl/⌘ + Enter to send"),
     ("dashboard.comments.you", "你", "You"),
     ("dashboard.comments.agent", "Agent", "Agent"),
-    (
-        "dashboard.filter.hint",
-        "点击可筛选其他图表",
-        "Click to filter the other plots",
-    ),
     (
         "dashboard.conflict.hint",
         "你的修改尚未保存；保存会覆盖磁盘上的改动。",

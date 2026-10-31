@@ -100,6 +100,8 @@ pub struct PreparedPlot {
     pub name: String,
     /// `title` when written, the plot's name otherwise.
     pub title: String,
+    /// What the plot shows, behind an info mark beside its title.
+    pub description: Option<SharedString>,
     pub kind: String,
     /// The query block this plot draws; the view keys tables by it.
     pub query: String,
@@ -241,6 +243,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     let base = |failure: Option<String>| PreparedPlot {
         name: plot.name.clone(),
         title: plot.title.clone().unwrap_or_else(|| plot.name.clone()),
+        description: plot.description.clone().map(SharedString::from),
         kind: plot.kind.clone(),
         query: plot.query.clone(),
         label_name: plot.x.clone(),
@@ -520,7 +523,6 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             &[&MAX_SERIES.to_string(), &series_total.to_string()],
         ));
     }
-    let mut missing_cells = 0usize;
     let mut points: Vec<PlotPoint> = bands
         .iter()
         .enumerate()
@@ -536,7 +538,6 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
                     _ => {
                         values.push(0.0);
                         present.push(false);
-                        missing_cells += 1;
                     }
                 }
             }
@@ -549,12 +550,6 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             }
         })
         .collect();
-    if missing_cells > 0 && series_names.len() > 1 {
-        notices.push(trf(
-            "dashboard.notice.zero_filled",
-            &[&missing_cells.to_string()],
-        ));
-    }
 
     let time_axis = result.columns[x_ix].kind == ColumnKind::Temporal;
     if plot.kind == "bar" && time_axis {
@@ -643,6 +638,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     PreparedPlot {
         name: plot.name.clone(),
         title: plot.title.clone().unwrap_or_else(|| plot.name.clone()),
+        description: plot.description.clone().map(SharedString::from),
         kind: plot.kind.clone(),
         query: plot.query.clone(),
         label_name: result.columns[x_ix].name.clone(),
@@ -841,6 +837,17 @@ fn missing_column(name: &str, result: &QueryResult) -> String {
     trf("dashboard.missing_column_named", &[name, &available])
 }
 
+/// A dashboard plot's series in name order — digits by value, letters
+/// without regard to case — when a `series` column splits it. First
+/// appearance is the database's choice wherever the query orders by x alone,
+/// so the colors and the key traded places from one opening to the next.
+/// The results chart keeps its own order: its SQL puts the largest first.
+pub(crate) fn sort_series_by_name(plot: &mut PreparedPlot) {
+    let mut names = plot.series_names.clone();
+    names.sort_by(|a, b| crate::sources::natural_str_cmp(a, b));
+    keep_series_order(plot, &names);
+}
+
 /// `plot`'s series put back in the order `before` had them, the ones new to
 /// it after: a series keeps its color when a pick re-runs the query. The
 /// order is first appearance, and a query ordered by x alone leaves which
@@ -891,6 +898,7 @@ mod tests {
             tooltip: None,
             value: None,
             note: None,
+            description: None,
             tone: None,
             format: None,
             delta: None,
@@ -1086,7 +1094,8 @@ mod tests {
         assert_eq!(prepared.points[1].values[0], 2.0);
         assert!(!prepared.points[1].present[1]);
         assert!(!prepared.points[2].present[0]);
-        assert!(prepared.notice.is_some(), "zero-filled cells are said");
+        // A missing bar says so itself: no line under the title for it.
+        assert!(prepared.notice.is_none());
     }
 
     #[test]
@@ -1118,6 +1127,26 @@ mod tests {
         let mut grown = prepare(&spec, Some(&Ok(rows("c", "a"))));
         keep_series_order(&mut grown, &["a".to_string()]);
         assert_eq!(grown.series_names, ["a", "c"]);
+    }
+
+    #[test]
+    fn a_dashboard_split_reads_in_name_order() {
+        let rows = result(
+            vec![
+                column("x", ColumnKind::Temporal),
+                column("svc", ColumnKind::Text),
+                column("y", ColumnKind::Numeric),
+            ],
+            vec![
+                vec!["d1", "web 10", "1"],
+                vec!["d1", "Chat", "2"],
+                vec!["d1", "web 9", "3"],
+            ],
+        );
+        let mut prepared = prepare(&plot("line", Some("y"), Some("svc")), Some(&Ok(rows)));
+        sort_series_by_name(&mut prepared);
+        assert_eq!(prepared.series_names, ["Chat", "web 9", "web 10"]);
+        assert_eq!(prepared.points[0].values, [2.0, 3.0, 1.0]);
     }
 
     #[test]

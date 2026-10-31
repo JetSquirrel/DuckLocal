@@ -62,9 +62,6 @@ const TICK_COUNT: usize = 5;
 /// Room kept between a numeric x axis's ends and its first and last dots, so
 /// an extreme point is not cut in half by the plot's edge.
 const X_INSET: f32 = DOT_SIZE;
-/// How round a bar's tip is: enough to soften it, not enough to make a thin
-/// bar a pill.
-const BAR_RADIUS: f32 = 4.;
 
 /// The gutter a plot reserves under itself for its x-axis labels, as the
 /// catalog computes it for the labels' font size.
@@ -526,11 +523,6 @@ impl Plot for GroupedBars {
                     })
                     .base(move |_| zero)
                     .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-                    .corner_radii(Corners {
-                        top_left: px(BAR_RADIUS),
-                        top_right: px(BAR_RADIUS),
-                        ..Corners::default()
-                    })
                     .fill(fill);
                 if self.values_shown() {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {
@@ -595,11 +587,6 @@ impl Plot for GroupedBars {
                     })
                     .base(move |_| zero)
                     .value(move |d: &(Arc<PlotPoint>, usize)| value_scale.tick(&d.0.values[d.1]))
-                    .corner_radii(Corners {
-                        top_right: px(BAR_RADIUS),
-                        bottom_right: px(BAR_RADIUS),
-                        ..Corners::default()
-                    })
                     .fill(fill);
                 if self.values_shown() {
                     bar = bar.label(move |d: &(Arc<PlotPoint>, usize), at| {

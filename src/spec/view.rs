@@ -76,7 +76,9 @@ use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
-use crate::spec::prepare::{keep_series_order, prepare, Mood, PlotPoint, PreparedPlot};
+use crate::spec::prepare::{
+    keep_series_order, prepare, sort_series_by_name, Mood, PlotPoint, PreparedPlot,
+};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{legend_row, map_notes, picking_legend_row, pie_parts, PieLook};
 use crate::ui::completion::starts_with_ignore_case;
@@ -111,9 +113,9 @@ const TEXT_ROOM_GUESS: f32 = 900.;
 const TEXT_MIN: f32 = 40.;
 /// The space between two plots' cards, and between the cards and the tab's
 /// edges.
-const PAGE_GAP: f32 = 8.;
-/// A plot card's corner radius.
-const PANEL_RADIUS: f32 = 8.;
+const PAGE_GAP: f32 = 4.;
+/// A plot card's corner radius: a tool's panel, not a page's tile.
+const PANEL_RADIUS: f32 = 4.;
 
 /// What a sortable header's arrow takes beside the column name.
 const SORT_ICON_WIDTH: f32 = 20.;
@@ -1354,15 +1356,8 @@ impl Dashboard {
         // x column — for a pie, what the shares are of; for a map, which
         // columns place the points. Tables and failures have nothing to say.
         let drawn = !is_table && failure.is_none() && !is_empty;
-        if failure.is_none() && self.is_pickable(&self.plots[ix].name) {
-            let hint = tr("dashboard.filter.hint").to_string();
-            notice = Some(match notice.take() {
-                Some(notice) => crate::i18n::join(&notice, &hint),
-                None => hint,
-            });
-        }
         let mut legend = Vec::new();
-        let axes = drawn.then(|| {
+        if drawn {
             let plot = &self.plots[ix];
             let series = plot.series_names.join(", ");
             match plot.kind.as_str() {
@@ -1375,7 +1370,6 @@ impl Dashboard {
                         };
                         legend = key;
                     }
-                    plot.label_name.clone()
                 }
                 "pie" => {
                     legend = pie_parts(
@@ -1387,7 +1381,6 @@ impl Dashboard {
                         cx,
                     )
                     .1;
-                    trf("chart.pie.title", &[&series, &plot.label_name])
                 }
                 _ => {
                     // Several series need a key; one is named in the title.
@@ -1404,18 +1397,14 @@ impl Dashboard {
                             })
                             .collect();
                     }
-                    trf("chart.title.by", &[&series, &plot.label_name])
                 }
             }
-        });
-        // One muted line under the title: what is plotted, then what a click
-        // does. A key that already names the series says the first half
-        // better, so a keyed line or bar plot leaves it out.
-        let keyed_xy = !legend.is_empty() && !matches!(self.plots[ix].kind.as_str(), "pie" | "map");
-        let subtitle = match (axes.filter(|_| !keyed_xy), notice) {
-            (Some(axes), Some(notice)) => Some(crate::i18n::join(&axes, &notice)),
-            (axes, notice) => axes.or(notice),
-        };
+        }
+        // The muted line under the title is kept for what the data itself
+        // warns of — rows cut off, points thinned. Which columns are plotted
+        // the axes already show, and that a bar picks is the title's to say
+        // (or the description's): a line restating either is noise on a tool.
+        let subtitle = notice;
 
         let body = if let Some(message) = failure {
             div()
@@ -1494,13 +1483,20 @@ impl Dashboard {
                     .pb_2()
                     .gap_1()
                     .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_ellipsis()
+                        h_flex()
+                            .gap_1p5()
+                            .min_w_0()
                             // Clear of the SQL and comment buttons.
                             .pr_16()
-                            .child(title),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_base()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_ellipsis()
+                                    .child(title),
+                            )
+                            .children(info_mark(&self.plots[ix], cx)),
                     )
                     .when_some(subtitle, |this, subtitle| {
                         this.child(
@@ -2160,6 +2156,10 @@ impl Dashboard {
     }
 
     fn render_loading(&self, cx: &App) -> AnyElement {
+        // Most runs land within a few frames: a spinner shown for those is
+        // only a flash. It stays hidden for the first moments of a run and
+        // fades in only for one that is actually slow.
+        let delay = LOADING_DELAY.as_secs_f32() / LOADING_FADE.as_secs_f32();
         v_flex()
             .size_full()
             .items_center()
@@ -2171,6 +2171,12 @@ impl Dashboard {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(tr("results.running")),
+            )
+            .with_animation(
+                SharedString::from(format!("dashboard-loading-{}", self.id)),
+                Animation::new(LOADING_FADE)
+                    .with_easing(move |t| ((t - delay) / (1. - delay)).clamp(0., 1.)),
+                |this, opacity| this.opacity(opacity),
             )
             .into_any_element()
     }
@@ -2484,6 +2490,11 @@ const PRESENCE_TAG_RISE: f32 = 8.;
 /// changed plots' time in view counted.
 const PRESENCE_TICK: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long a run goes before the loading spinner starts to show, and when
+/// it is fully shown.
+const LOADING_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+const LOADING_FADE: std::time::Duration = std::time::Duration::from_millis(600);
+
 /// The height of the place held for a plot an agent is about to add.
 const ADDING_HEIGHT: f32 = 56.;
 
@@ -2651,7 +2662,13 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let plots = spec
         .plots
         .iter()
-        .map(|plot| prepare(plot, outcomes.get(&plot.query).map(|(_, outcome)| outcome)))
+        .map(|plot| {
+            let mut prepared = prepare(plot, outcomes.get(&plot.query).map(|(_, outcome)| outcome));
+            if plot.series.is_some() {
+                sort_series_by_name(&mut prepared);
+            }
+            prepared
+        })
         .collect();
 
     let results = outcomes
@@ -2759,6 +2776,9 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         "area" if single => {
             let color = palette[0];
             let chart = AreaChart::new(plot.points.clone())
+                // A tool's chart shows its data at once: the kit's draw-in replays
+                // on every maximize, restore and tab switch, and only delays it.
+                .appear(false)
                 .x(|d: &Arc<PlotPoint>| d.band.clone())
                 .id(id)
                 .y(|d: &Arc<PlotPoint>| d.values[0])
@@ -2784,6 +2804,9 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         // asks for.
         "area" => {
             let mut chart = AreaChart::new(plot.points.clone())
+                // A tool's chart shows its data at once: the kit's draw-in replays
+                // on every maximize, restore and tab switch, and only delays it.
+                .appear(false)
                 .x(|d: &Arc<PlotPoint>| d.band.clone())
                 .linear()
                 .id(id)
@@ -2832,7 +2855,7 @@ fn grid_rows(widths: impl IntoIterator<Item = u8>) -> Vec<Vec<usize>> {
 /// A card: its title over its one value, large. What was dropped to get to
 /// one value — the rows past the first — is said under it, small.
 /// A card's inset from its border, each side.
-const CARD_INSET: f32 = 20.;
+const CARD_INSET: f32 = 14.;
 /// What a card's share of the width loses before its value: the inset and
 /// border on both sides, and the page gap around the card.
 const CARD_PADDING: f32 = 2. * (CARD_INSET + 1.) + PAGE_GAP;
@@ -2876,11 +2899,18 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
                 .rounded_t(px(PANEL_RADIUS - 1.))
         })
         .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .text_ellipsis()
-                .child(plot.title.clone()),
+            h_flex()
+                .gap_1p5()
+                .min_w_0()
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .text_ellipsis()
+                        .child(plot.title.clone()),
+                )
+                .children(info_mark(plot, cx)),
         )
         .child(
             // A number is never ellipsized while a smaller size fits it:
@@ -2939,6 +2969,37 @@ fn render_card(plot: &PreparedPlot, size: f32, cx: &App) -> AnyElement {
             )
         })
         .into_any_element()
+}
+
+/// The mark beside a plot's title that holds its `description`, shown on
+/// hover the way a Grafana panel's is: the words take no room on the card
+/// until asked for.
+/// How wide a description's tooltip grows before it wraps.
+const INFO_WIDTH: f32 = 320.;
+
+fn info_mark(plot: &PreparedPlot, cx: &App) -> Option<AnyElement> {
+    let description = plot.description.clone()?;
+    Some(
+        div()
+            .id(SharedString::from(format!("plot-info-{}", plot.name)))
+            .flex_none()
+            .text_color(cx.theme().muted_foreground)
+            .hover(|style| style.text_color(cx.theme().foreground))
+            .child(Icon::new(IconName::Info).xsmall())
+            .tooltip(move |window, cx| {
+                let description = description.clone();
+                // A paragraph wraps at a reading width rather than running
+                // the tooltip across the window.
+                gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                    div()
+                        .max_w(px(INFO_WIDTH))
+                        .whitespace_normal()
+                        .child(description.clone())
+                })
+                .build(window, cx)
+            })
+            .into_any_element(),
+    )
 }
 
 /// A `text` panel: a heading and the words under it, left-aligned like the
