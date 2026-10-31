@@ -1576,29 +1576,34 @@ impl Plot for SeriesPlot {
             }
             SeriesConnect::Scatter => {
                 // Dots and nothing else: the quads `Line` would paint, without
-                // the path that would claim the points are connected.
-                for (i, d) in self.points.iter().enumerate() {
-                    let Some(x_tick) = x.tick_at(i) else { continue };
-                    for s in 0..self.series.len() {
-                        if !d.present.get(s).copied().unwrap_or(false) {
-                            continue;
+                // the path that would claim the points are connected. One
+                // layer for all of them, so the scene orders them as a group
+                // in paint order rather than placing each of up to 18,000 in
+                // its bounds tree.
+                window.paint_layer(bounds, |window| {
+                    for (i, d) in self.points.iter().enumerate() {
+                        let Some(x_tick) = x.tick_at(i) else { continue };
+                        for s in 0..self.series.len() {
+                            if !d.present.get(s).copied().unwrap_or(false) {
+                                continue;
+                            }
+                            let Some(y_tick) = y.tick(&d.values[s]) else {
+                                continue;
+                            };
+                            let color = palette[s % palette.len()];
+                            let origin = bounds.origin
+                                + point(px(x_tick - DOT_SIZE / 2.), px(y_tick - DOT_SIZE / 2.));
+                            window.paint_quad(quad(
+                                Bounds::new(origin, size(px(DOT_SIZE), px(DOT_SIZE))),
+                                px(DOT_SIZE / 2.),
+                                Background::from(color),
+                                px(1.),
+                                color,
+                                BorderStyle::default(),
+                            ));
                         }
-                        let Some(y_tick) = y.tick(&d.values[s]) else {
-                            continue;
-                        };
-                        let color = palette[s % palette.len()];
-                        let origin = bounds.origin
-                            + point(px(x_tick - DOT_SIZE / 2.), px(y_tick - DOT_SIZE / 2.));
-                        window.paint_quad(quad(
-                            Bounds::new(origin, size(px(DOT_SIZE), px(DOT_SIZE))),
-                            px(DOT_SIZE / 2.),
-                            Background::from(color),
-                            px(1.),
-                            color,
-                            BorderStyle::default(),
-                        ));
                     }
-                }
+                });
             }
         }
     }
