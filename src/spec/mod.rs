@@ -34,6 +34,7 @@ pub mod complete;
 pub mod filter;
 pub mod format;
 pub mod highlight;
+pub mod histogram;
 pub mod lsp;
 pub mod model;
 pub mod plot;

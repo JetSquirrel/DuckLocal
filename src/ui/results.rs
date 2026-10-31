@@ -973,7 +973,11 @@ impl ResultsPanel {
             encoding.x_is_temporal(columns),
             encoding.series.is_some(),
         );
-        let value = encoding.value_name();
+        let value = if kind == "histogram" {
+            tr("chart.histogram.rows").to_string()
+        } else {
+            encoding.value_name()
+        };
         let title = match &encoding.series {
             Some(split) => trf("chart.title.split", &[&value, &encoding.x, split]),
             None => trf("chart.title.by", &[&value, &encoding.x]),
@@ -1006,7 +1010,12 @@ impl ResultsPanel {
             self.grouped = Grouped::Failed(tr("results.overview.not_query").to_string());
             return;
         };
-        let sql = encoding.sql(&relation, encoding.x_is_ordered(columns));
+        // A histogram bins x where the other kinds group it.
+        let sql = if self.chart_kind == ChartKind::Histogram && encoding.binnable(columns) {
+            crate::spec::histogram::sql(&encoding.x, &relation)
+        } else {
+            encoding.sql(&relation, encoding.x_is_ordered(columns))
+        };
         let request = self.chart_request;
         self.grouped = Grouped::Loading;
         cx.spawn(async move |this, cx| {
@@ -1619,10 +1628,19 @@ impl ResultsPanel {
                                 .selected_index(selected)
                                 .on_click(cx.listener(move |this, ix: &usize, _, cx| {
                                     if let Some(kind) = picker_kinds.get(*ix) {
+                                        let binned = |k: ChartKind| k == ChartKind::Histogram;
+                                        let regroup = binned(this.chart_kind) != binned(*kind);
                                         this.chart_kind = *kind;
-                                        // A pick's chart is prepared per kind,
-                                        // from the grouped rows it keeps.
-                                        if matches!(this.grouped, Grouped::Ready(_)) {
+                                        if regroup {
+                                            // Bins and groups are two
+                                            // questions: ask DuckDB the other.
+                                            this.chart_data = None;
+                                            this.chart_request += 1;
+                                            this.grouped = Grouped::Idle;
+                                        } else if matches!(this.grouped, Grouped::Ready(_)) {
+                                            // A pick's chart is prepared per
+                                            // kind, from the grouped rows it
+                                            // keeps.
                                             this.chart_data = None;
                                         }
                                         cx.notify();

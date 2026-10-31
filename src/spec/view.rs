@@ -75,7 +75,7 @@ use crate::spec::comments::{self, Author, Comments};
 use crate::spec::complete::{self, CompletionKind};
 use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
-use crate::spec::plot::{x_label_count, GroupedBars, SeriesPlot};
+use crate::spec::plot::{heat_key, x_label_count, GroupedBars, Heatmap, SeriesPlot};
 use crate::spec::prepare::{keep_series_order, prepare, Mood, PlotPoint, PreparedPlot};
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{legend_row, map_notes, picking_legend_row, pie_parts, PieLook};
@@ -1389,6 +1389,11 @@ impl Dashboard {
                     .1;
                     trf("chart.pie.title", &[&series, &plot.label_name])
                 }
+                // The key is the colour scale; the rows name the series.
+                "heatmap" => {
+                    legend = heat_key(&plot.points, plot.format, cx);
+                    trf("chart.title.by", &[&series, &plot.label_name])
+                }
                 _ => {
                     // Several series need a key; one is named in the title.
                     if plot.series_names.len() > 1 {
@@ -1411,7 +1416,8 @@ impl Dashboard {
         // One muted line under the title: what is plotted, then what a click
         // does. A key that already names the series says the first half
         // better, so a keyed line or bar plot leaves it out.
-        let keyed_xy = !legend.is_empty() && !matches!(self.plots[ix].kind.as_str(), "pie" | "map");
+        let keyed_xy = !legend.is_empty()
+            && !matches!(self.plots[ix].kind.as_str(), "pie" | "map" | "heatmap");
         let subtitle = match (axes.filter(|_| !keyed_xy), notice) {
             (Some(axes), Some(notice)) => Some(crate::i18n::join(&axes, &notice)),
             (axes, notice) => axes.or(notice),
@@ -1430,7 +1436,9 @@ impl Dashboard {
             self.render_table(ix, window, cx)
         } else if is_empty {
             empty_chart(cx)
-        } else if self.plots[ix].kind == "bar" && self.is_pickable(&self.plots[ix].name) {
+        } else if matches!(self.plots[ix].kind.as_str(), "bar" | "stacked_bar")
+            && self.is_pickable(&self.plots[ix].name)
+        {
             let picked = self.picked_band(&self.plots[ix]);
             let chart = GroupedBars::new(
                 (
@@ -2755,7 +2763,10 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         // Every bar draws on the hand-built chart, one series or several: it
         // colours by series, and lays a category axis on its side rather than
         // drop the labels that do not fit.
-        "bar" => GroupedBars::new(named_id(), plot).into_any_element(),
+        "bar" | "stacked_bar" | "histogram" => {
+            GroupedBars::new(named_id(), plot).into_any_element()
+        }
+        "heatmap" => Heatmap::new(named_id(), plot).into_any_element(),
         "area" if single => {
             let color = palette[0];
             let chart = AreaChart::new(plot.points.clone())

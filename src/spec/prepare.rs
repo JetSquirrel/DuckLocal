@@ -140,6 +140,48 @@ pub struct PreparedPlot {
     pub failure: Option<String>,
 }
 
+/// A histogram of column `x_ix`: a bar per range, its height the rows whose
+/// value falls in it. Rows without a number are left out, and said.
+fn histogram(result: &QueryResult, x_ix: usize, base: PreparedPlot) -> PreparedPlot {
+    let column = &result.columns[x_ix];
+    if column.kind != ColumnKind::Numeric {
+        return PreparedPlot {
+            failure: Some(trf(
+                "chart.histogram.not_numeric",
+                &[&column.name, &column.duck_type],
+            )),
+            ..base
+        };
+    }
+    let values: Vec<f64> = result
+        .rows
+        .iter()
+        .filter_map(|row| parse_number(row.get(x_ix)?))
+        .filter(|v| v.is_finite())
+        .collect();
+    let mut notices = Vec::new();
+    if result.truncated {
+        notices.push(trf(
+            "chart.notice.truncated",
+            &[&result.rows.len().to_string()],
+        ));
+    }
+    let skipped = result.rows.len() - values.len();
+    if skipped > 0 {
+        notices.push(trf("chart.histogram.skipped", &[&skipped.to_string()]));
+    }
+    let points = super::histogram::bin(&values)
+        .map(|(bins, counts)| super::histogram::points(bins, &counts, base.format))
+        .unwrap_or_default();
+    PreparedPlot {
+        label_name: column.name.clone(),
+        series_names: vec![crate::i18n::tr("chart.histogram.rows").to_string()],
+        points,
+        notice: crate::i18n::join_all(&notices),
+        ..base
+    }
+}
+
 /// The most dots a scatter draws. Past it the points are thinned evenly
 /// along x, which keeps the cloud's shape, and the plot says so.
 pub(crate) const MAX_SCATTER_POINTS: usize = 4_000;
@@ -433,6 +475,9 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     let Some(x_ix) = column(&plot.x) else {
         return base(Some(missing_column(&plot.x, result)));
     };
+    if plot.kind == "histogram" {
+        return histogram(result, x_ix, base(None));
+    }
     let Some(y_name) = plot.y.as_deref() else {
         // A non-table plot without y cannot have validated; say so anyway.
         return base(Some(crate::i18n::tr("dashboard.invalid_plot").to_string()));
@@ -549,7 +594,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             }
         })
         .collect();
-    if missing_cells > 0 && series_names.len() > 1 {
+    // A heatmap leaves a missing cell empty; every other plot reads it as 0.
+    if missing_cells > 0 && series_names.len() > 1 && plot.kind != "heatmap" {
         notices.push(trf(
             "dashboard.notice.zero_filled",
             &[&missing_cells.to_string()],
@@ -557,7 +603,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     }
 
     let time_axis = result.columns[x_ix].kind == ColumnKind::Temporal;
-    if plot.kind == "bar" && time_axis {
+    if matches!(plot.kind.as_str(), "bar" | "stacked_bar") && time_axis {
         if let Some(filled) = fill_missing_days(&points, series_names.len()) {
             points = filled;
         }
@@ -567,7 +613,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     if plot.kind == "pie" {
         // Every band stays: the slices fold below, and a merged or dropped
         // band would make the shares wrong.
-    } else if plot.kind == "bar" {
+    } else if matches!(plot.kind.as_str(), "bar" | "stacked_bar" | "heatmap") {
+        // A heatmap's columns are cells, not points a line can average.
         if source_points > MAX_BARS {
             points.truncate(MAX_BARS);
             notices.push(trf(
@@ -1087,6 +1134,32 @@ mod tests {
         assert!(!prepared.points[1].present[1]);
         assert!(!prepared.points[2].present[0]);
         assert!(prepared.notice.is_some(), "zero-filled cells are said");
+    }
+
+    #[test]
+    fn a_heatmap_leaves_a_missing_cell_empty_and_caps_its_columns() {
+        let mut rows = vec![vec!["d1", "a", "1"], vec!["d2", "b", "20"]];
+        let bands: Vec<String> = (0..MAX_BARS + 5).map(|i| format!("h{i:03}")).collect();
+        for band in &bands {
+            rows.push(vec![band.as_str(), "a", "3"]);
+        }
+        let data = result(
+            vec![
+                column("x", ColumnKind::Text),
+                column("svc", ColumnKind::Text),
+                column("y", ColumnKind::Numeric),
+            ],
+            rows,
+        );
+        let prepared = prepare(&plot("heatmap", Some("y"), Some("svc")), Some(&Ok(data)));
+        assert_eq!(prepared.series_names, ["a", "b"]);
+        assert_eq!(prepared.points.len(), MAX_BARS, "columns cap as bars do");
+        // d1 has no b: an empty cell, and no word of filling it with 0.
+        assert_eq!(prepared.points[0].present, [true, false]);
+        let notice = prepared.notice.unwrap();
+        let zero_filled = trf("dashboard.notice.zero_filled", &["1"]);
+        assert!(!notice.contains(&zero_filled), "{notice}");
+        assert!(notice.contains(&(MAX_BARS + 7).to_string()), "{notice}");
     }
 
     #[test]

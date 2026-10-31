@@ -23,7 +23,7 @@ use gpui_kit::*;
 use crate::i18n::{tr, trf};
 use crate::query::{ColumnKind, QueryResult};
 use crate::spec::format::{full_text, NumberFormat};
-use crate::spec::plot::{GroupedBars, SeriesPlot};
+use crate::spec::plot::{heat_key, GroupedBars, Heatmap, SeriesPlot};
 use crate::spec::prepare::PlotPoint;
 use crate::ui::encoding::{
     Encoding, BANDS_COLUMN, BAND_COLUMN, MAX_CATEGORY_BANDS, MAX_ORDERED_BANDS, SERIES_COLUMN,
@@ -41,6 +41,12 @@ pub enum ChartKind {
     Area,
     Scatter,
     Pie,
+    /// A split's parts stacked into one bar per band.
+    Stacked,
+    /// x across, the split's values down, each cell's value in colour.
+    Heatmap,
+    /// The rows per range of a numeric x.
+    Histogram,
     Map,
 }
 
@@ -53,6 +59,9 @@ impl ChartKind {
             ChartKind::Area => "chart.kind.area",
             ChartKind::Scatter => "chart.kind.scatter",
             ChartKind::Pie => "chart.kind.pie",
+            ChartKind::Stacked => "chart.kind.stacked",
+            ChartKind::Heatmap => "chart.kind.heatmap",
+            ChartKind::Histogram => "chart.kind.histogram",
             ChartKind::Map => "chart.kind.map",
         })
     }
@@ -156,6 +165,9 @@ pub struct ChartData {
     /// series: the measure's name and the split column's. Titles the chart,
     /// and rules a pie out.
     split: Option<(String, String)>,
+    /// For a chart drawn from column picks with a numeric x and no split:
+    /// the x a histogram would bin.
+    binnable: bool,
 }
 
 type RawPlotRow = (usize, SharedString, Vec<f64>);
@@ -219,6 +231,7 @@ impl ChartData {
                 partial: result.truncated,
                 series_total: 0,
                 split: None,
+                binnable: false,
             };
         }
 
@@ -297,6 +310,7 @@ impl ChartData {
             partial: result.truncated,
             series_total,
             split: None,
+            binnable: false,
         }
     }
 
@@ -309,6 +323,31 @@ impl ChartData {
         kind: ChartKind,
     ) -> Result<Self, String> {
         let columns = &grouped.columns;
+        // The panel asks for bins only of a pick that can be binned, and
+        // their answer names no x; a grouped answer says it by its columns.
+        let binned = (kind == ChartKind::Histogram)
+            .then(|| crate::spec::histogram::from_answer(grouped))
+            .flatten();
+        let binnable = binned.is_some() || encoding.binnable(columns);
+        if let Some((bins, counts)) = binned {
+            {
+                return Ok(Self {
+                    label_name: encoding.x.clone(),
+                    series_names: vec![tr("chart.histogram.rows").to_string()],
+                    is_time_series: false,
+                    rows: crate::spec::histogram::points(bins, &counts, None),
+                    pie: Vec::new(),
+                    pie_skipped: 0,
+                    geo: None,
+                    detected: Vec::new(),
+                    notice: Some(tr("chart.notice.binned").to_string()),
+                    partial: false,
+                    series_total: 1,
+                    split: None,
+                    binnable,
+                });
+            }
+        }
         let temporal = encoding.x_is_temporal(columns);
         let ordered = encoding.x_is_ordered(columns);
         let split = encoding.series.is_some();
@@ -324,7 +363,7 @@ impl ChartData {
         // DuckDB sends what any kind can draw; bars draw fewer bands, and
         // trimming them here keeps the count below the whole result's.
         let kept = match (dash_kind, ordered) {
-            ("bar", _) => MAX_BARS,
+            ("bar" | "stacked_bar" | "heatmap", _) => MAX_BARS,
             (_, true) => MAX_ORDERED_BANDS,
             (_, false) => MAX_CATEGORY_BANDS,
         };
@@ -391,6 +430,7 @@ impl ChartData {
                 .series
                 .clone()
                 .map(|series| (encoding.value_name(), series)),
+            binnable,
         })
     }
 
@@ -508,6 +548,15 @@ impl ChartData {
         ]);
         if !self.is_time_series && self.split.is_none() {
             kinds.push(ChartKind::Pie);
+        }
+        // Its rows are a split's values; a result's own columns are measures
+        // of different sizes, which one colour scale would set side by side.
+        if self.split.is_some() {
+            kinds.push(ChartKind::Stacked);
+            kinds.push(ChartKind::Heatmap);
+        }
+        if self.binnable {
+            kinds.push(ChartKind::Histogram);
         }
         if self.geo.is_some() {
             kinds.push(ChartKind::Map);
@@ -688,6 +737,20 @@ impl RenderOnce for ChartPanel {
                 SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
                     .into_any_element()
             }
+            ChartKind::Stacked => {
+                GroupedBars::of("results-chart-stacked", rows, &data.series_names)
+                    .time_axis(data.is_time_series)
+                    .stacked()
+                    .into_any_element()
+            }
+            ChartKind::Histogram => {
+                GroupedBars::of("results-chart-histogram", rows, &data.series_names)
+                    .bins()
+                    .into_any_element()
+            }
+            ChartKind::Heatmap => Heatmap::of("results-chart-heatmap", rows, &data.series_names)
+                .time_axis(data.is_time_series)
+                .into_any_element(),
             ChartKind::Area => {
                 // One area series per numeric column; ~10 x labels on dense data.
                 // `.id` enables the built-in hover tooltip (crosshair + per-series rows).
@@ -729,23 +792,35 @@ impl RenderOnce for ChartPanel {
         } else {
             data.series_names.join(", ")
         };
-        // Several series need a key; one series is named in the title.
-        let legend = (data.series_names.len() > 1
-            && matches!(
-                kind,
-                ChartKind::Line | ChartKind::Scatter | ChartKind::Area | ChartKind::Bar
-            ))
-        .then(|| {
-            data.series_names
-                .iter()
-                .enumerate()
-                .map(|(ix, name)| {
-                    (
-                        palette[ix % palette.len()],
-                        SharedString::from(name.clone()),
-                    )
-                })
-                .collect::<Vec<_>>()
+        // Several series need a key; one series is named in the title. A
+        // heatmap's key is its colour scale.
+        let legend = if kind == ChartKind::Heatmap {
+            Some(heat_key(&data.rows, None, cx))
+        } else {
+            None
+        };
+        let legend = legend.or_else(|| {
+            (data.series_names.len() > 1
+                && matches!(
+                    kind,
+                    ChartKind::Line
+                        | ChartKind::Scatter
+                        | ChartKind::Area
+                        | ChartKind::Bar
+                        | ChartKind::Stacked
+                ))
+            .then(|| {
+                data.series_names
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, name)| {
+                        (
+                            palette[ix % palette.len()],
+                            SharedString::from(name.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
         });
         // Split series are values, not measures: the title names the measure.
         let title = match &data.split {
@@ -1522,6 +1597,85 @@ mod tests {
         let data = encoded(statement, &counting, ChartKind::Pie).unwrap();
         assert_eq!(data.series_names, ["count(*)"]);
         assert!(!data.pie.is_empty());
+    }
+
+    #[test]
+    fn a_split_draws_as_a_heatmap_and_copies_as_one() {
+        // Orders by weekday and hour: a cell per pair, one pair never seen.
+        let statement = "SELECT h AS hour, 'day ' || d AS weekday, (d * 10 + h)::DOUBLE AS orders                          FROM range(7) a(d), range(24) b(h) WHERE NOT (d = 0 AND h = 3)";
+        let encoding = Encoding {
+            x: "hour".into(),
+            y: Some("orders".into()),
+            agg: Aggregate::Sum,
+            series: Some("weekday".into()),
+        };
+        let data = encoded(statement, &encoding, ChartKind::Heatmap).unwrap();
+        assert!(data.available_kinds().contains(&ChartKind::Heatmap));
+        assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Heatmap);
+        assert!(data.available_kinds().contains(&ChartKind::Stacked));
+        assert_eq!(
+            crate::ui::encoding::dash_kind(ChartKind::Stacked, false, true),
+            "stacked_bar"
+        );
+        assert_eq!(data.series_names.len(), 7);
+        assert_eq!(data.rows.len(), 24);
+        let missing = data
+            .rows
+            .iter()
+            .flat_map(|row| row.present.iter())
+            .filter(|present| !**present)
+            .count();
+        assert_eq!(missing, 1, "the unseen pair stays an empty cell");
+        assert_eq!(
+            crate::ui::encoding::dash_kind(ChartKind::Heatmap, false, true),
+            "heatmap"
+        );
+
+        // Without a split there are no rows to lay the cells in.
+        let whole = Encoding {
+            series: None,
+            ..encoding
+        };
+        let data = encoded(statement, &whole, ChartKind::Heatmap).unwrap();
+        assert!(!data.available_kinds().contains(&ChartKind::Heatmap));
+        assert_eq!(data.resolve(ChartKind::Heatmap), ChartKind::Bar);
+        assert!(!data.available_kinds().contains(&ChartKind::Stacked));
+    }
+
+    #[test]
+    fn a_numeric_x_bins_over_every_row_as_a_histogram() {
+        // 10,000 prices from 0 to 999.9: more rows than the grid keeps.
+        let statement = "SELECT (i % 10000) / 10.0 AS price, 'a' AS sku FROM range(10000) t(i)";
+        let encoding = Encoding {
+            x: "price".into(),
+            y: None,
+            agg: Aggregate::Sum,
+            series: None,
+        };
+        let conn =
+            duckdb::Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+        let sql = crate::spec::histogram::sql(
+            &encoding.x,
+            &format!(
+                "(
+{statement}
+)"
+            ),
+        );
+        let data =
+            ChartData::from_encoded(&encoding, &run(&conn, &sql), ChartKind::Histogram).unwrap();
+        assert_eq!(data.resolve(ChartKind::Histogram), ChartKind::Histogram);
+        assert_eq!(data.rows.len(), 40, "the most bins, of 25 each");
+        assert_eq!(data.rows[0].band, "0–25");
+        let total: f64 = data.rows.iter().map(|row| row.values[0]).sum();
+        assert_eq!(total, 10_000.0, "every row is in a bin");
+
+        // A split asks for more than one count per range.
+        let split = Encoding {
+            series: Some("sku".into()),
+            ..encoding
+        };
+        assert!(!split.binnable(&run(&conn, statement).columns));
     }
 
     #[test]
