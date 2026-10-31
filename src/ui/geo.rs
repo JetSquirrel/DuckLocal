@@ -934,21 +934,39 @@ impl Plot for GeoPlot {
         let sheet = ContentMask {
             bounds: area.dilate(px(DOT_SIZE / 2.)),
         };
+        // Each category's colour once, not once a point: resolving one reads
+        // the theme and converts the palette, and a map has 20,000 points.
+        let colors: Vec<Hsla> = (0..self.data.categories.len())
+            .map(|slot| self.data.category_color(slot, cx))
+            .collect();
+        let uncategorized = cx.theme().blue;
+        // One layer for every point: the scene then orders them as a group,
+        // in paint order, instead of searching its bounds tree once a point
+        // for what each overlaps — most of what a dense map's frame cost.
+        let layer = sheet.bounds;
         window.with_content_mask(Some(sheet), |window| {
-            for p in self.data.points.iter() {
-                let (x, y) = view.project(p.x, p.y);
-                let color = self.color_of(p, cx);
-                let d = p.diameter;
-                let origin = bounds.origin + point(px(x - d / 2.), px(y - d / 2.));
-                window.paint_quad(quad(
-                    Bounds::new(origin, size(px(d), px(d))),
-                    px(d / 2.),
-                    Background::from(color),
-                    px(1.),
-                    ring,
-                    BorderStyle::default(),
-                ));
-            }
+            window.paint_layer(layer, |window| {
+                for p in self.data.points.iter() {
+                    let (x, y) = view.project(p.x, p.y);
+                    let color = match p.category {
+                        Some(slot) => colors
+                            .get(slot)
+                            .copied()
+                            .unwrap_or_else(|| self.data.category_color(slot, cx)),
+                        None => uncategorized,
+                    };
+                    let d = p.diameter;
+                    let origin = bounds.origin + point(px(x - d / 2.), px(y - d / 2.));
+                    window.paint_quad(quad(
+                        Bounds::new(origin, size(px(d), px(d))),
+                        px(d / 2.),
+                        Background::from(color),
+                        px(1.),
+                        ring,
+                        BorderStyle::default(),
+                    ));
+                }
+            });
         });
 
         if let Some(key) = &self.data.size_key {

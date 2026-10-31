@@ -13,7 +13,7 @@
 //! tooltip alike. Past eight the slots repeat; `chart` caps series at a dozen.
 
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::{rgb, App, Hsla};
+use gpui_kit::{rgb, App, Hsla, Rgba};
 
 /// How many distinct colours the palette holds.
 pub const SLOTS: usize = 8;
@@ -71,6 +71,53 @@ pub fn tone(name: &str, cx: &App) -> Option<(Hsla, Hsla)> {
         _ => return None,
     };
     Some((rgb(rule).into(), rgb(ink).into()))
+}
+
+/// The blue of slot 0 from near-white to near-navy, in even steps: the one
+/// hue a heatmap's magnitude is told in. Light mode's slot 0 is its middle
+/// step, `0x2a78d6`.
+const RAMP: [u32; 13] = [
+    0xcde2fb, 0xb7d3f6, 0x9ec5f4, 0x86b6ef, 0x6da7ec, 0x5598e7, 0x3987e5, 0x2a78d6, 0x256abf,
+    0x1c5cab, 0x184f95, 0x104281, 0x0d366b,
+];
+
+/// A magnitude's colour, `t` from 0 (the least) to 1 (the most), and the ink
+/// a value written on it reads in. More is darker on a light surface and
+/// lighter on a dark one, so the least always recedes into the surface
+/// rather than standing out from it.
+pub fn sequential(t: f32, cx: &App) -> (Hsla, Hsla) {
+    let t = if t.is_finite() { t.clamp(0., 1.) } else { 0. };
+    let t = if cx.theme().mode.is_dark() { 1. - t } else { t };
+    let at = t * (RAMP.len() - 1) as f32;
+    let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
+    let mix = at - lo as f32;
+    let channel = |hex: u32, shift: u32| ((hex >> shift) & 0xff) as f32;
+    let [r, g, b] = [16, 8, 0].map(|shift| {
+        channel(RAMP[lo], shift) + (channel(RAMP[hi], shift) - channel(RAMP[lo], shift)) * mix
+    });
+    let fill = Rgba {
+        r: r / 255.,
+        g: g / 255.,
+        b: b / 255.,
+        a: 1.,
+    };
+    // Relative luminance past the middle grey takes dark ink, as the
+    // contrast of white and of near-black on it cross there.
+    let linear = |c: f32| {
+        let c = c / 255.;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    let ink = if luminance > 0.18 {
+        rgb(0x0d1b2a)
+    } else {
+        rgb(0xffffff)
+    };
+    (fill.into(), ink.into())
 }
 
 /// A dashboard's page: a warm grey the plot cards stand out from. In the

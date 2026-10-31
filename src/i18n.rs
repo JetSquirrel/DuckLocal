@@ -699,6 +699,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Averaged by DuckDB over all {} rows: {} points of about {} rows each",
     ),
     (
+        "chart.notice.binned",
+        "由 DuckDB 按完整结果分段计数",
+        "Binned by DuckDB over the whole result",
+    ),
+    (
         "chart.notice.grouped",
         "由 DuckDB 按完整结果分组计算",
         "Grouped by DuckDB over the whole result",
@@ -749,6 +754,9 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("chart.kind.area", "面积图", "Area"),
     ("chart.kind.scatter", "散点图", "Scatter"),
     ("chart.kind.pie", "饼图", "Pie"),
+    ("chart.kind.stacked", "堆叠柱状图", "Stacked"),
+    ("chart.kind.heatmap", "热力图", "Heatmap"),
+    ("chart.kind.histogram", "直方图", "Histogram"),
     ("chart.kind.map", "地图", "Map"),
     ("chart.title.split", "{}（按 {}，以 {} 拆分）", "{} by {}, split by {}"),
     ("chart.pick.x", "X：{}", "X: {}"),
@@ -777,6 +785,18 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "chart.pie.no_positive",
         "饼图需要正数值，当前第一个数值列没有正数。",
         "A pie needs positive values; the first numeric column has none.",
+    ),
+    ("chart.histogram.rows", "行数", "Rows"),
+    ("chart.total", "合计", "Total"),
+    (
+        "chart.histogram.skipped",
+        "{} 行没有数值，未计入",
+        "{} rows without a number left out",
+    ),
+    (
+        "chart.histogram.not_numeric",
+        "直方图按数值分段计数，{} ({}) 不是数值列",
+        "A histogram counts rows per range of a number; {} ({}) is not one",
     ),
     (
         "chart.pie.notice.skipped",
