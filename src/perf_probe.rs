@@ -11,7 +11,8 @@
 //! ```
 //!
 //! Probes: A row materialization, B result filter, C catalog load,
-//! D chart data, E completion candidates.
+//! D chart data, E completion candidates, I chart paint (frames drawn in a
+//! test window, as hovering a chart redraws it).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -279,6 +280,103 @@ fn perf_f_wide_pivot() {
             data.series_count_for_probe(),
             data.clone_rows_for_probe().len(),
             data.series_count_for_probe() * data.clone_rows_for_probe().len()
+        );
+    }
+}
+
+/// Paints the results panel's chart in a test window, frame after frame, the
+/// way hovering a chart repaints it: every pointer move draws the plot again
+/// from the cached `ChartData`.
+mod paint {
+    use std::rc::Rc;
+
+    use gpui_kit::component::{Theme, ThemeMode};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{
+        px, size, AppContext, Bounds, Context, IntoElement, ParentElement, Point, Render, Styled,
+        TestAppContext, Window, WindowBounds, WindowOptions,
+    };
+
+    use crate::ui::chart::{ChartData, ChartKind, ChartPanel};
+
+    const FRAMES: usize = 60;
+
+    struct Harness {
+        data: Rc<ChartData>,
+        kind: ChartKind,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            gpui_kit::div()
+                .size_full()
+                .child(ChartPanel::new(self.data.clone(), self.kind))
+        }
+    }
+
+    fn frames(cx: &mut TestAppContext, name: &str, sql: &str, kind: ChartKind) {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let crate::query::QueryOutcome::Rows(result) = crate::query::run_of(&conn, sql).unwrap()
+        else {
+            panic!()
+        };
+        let data = Rc::new(ChartData::prepare(&result));
+        let (window, _view) = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1400.), px(800.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|_| Harness { data, kind }),
+                )
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            // Warm the text and path caches, as a chart on screen has.
+            window.render_frame(cx);
+            super::probe(&format!("{name} x{FRAMES} frames"), || {
+                for _ in 0..FRAMES {
+                    window.refresh();
+                    window.render_frame(cx);
+                }
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn perf_i_chart_paint(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let series: String = (0..12)
+            .map(|s| format!(", sin(i / 40.0 + {s}) * 100 + {s} * 10 AS s{s}"))
+            .collect();
+        let time = format!(
+            "SELECT TIMESTAMP '2026-01-01' + INTERVAL (i) MINUTE AS t{series} FROM range(1500) r(i)"
+        );
+        frames(cx, "I1 line 12 x 1500", &time, ChartKind::Line);
+        frames(cx, "I2 scatter 12 x 1500", &time, ChartKind::Scatter);
+        frames(cx, "I3 area 12 x 1500", &time, ChartKind::Area);
+        frames(
+            cx,
+            "I4 bars 200 x 3",
+            "SELECT 'category-' || i AS c, i AS a, i * 2 AS b, 300 - i AS d FROM range(200) r(i)",
+            ChartKind::Bar,
+        );
+        frames(
+            cx,
+            "I5 map 20k points, 5 categories",
+            "SELECT 30 + (i % 200) / 10.0 AS lat, 100 + (i // 200) / 10.0 AS lng,
+                    'k' || (i % 7) AS kind FROM range(20000) r(i)",
+            ChartKind::Map,
         );
     }
 }
