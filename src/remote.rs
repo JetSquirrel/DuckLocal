@@ -46,27 +46,38 @@ Options:
   --title TITLE      The new query tab's title
   --run              Run the SQL once the tab is open and PATHs are attached
   --no-launch        Fail with kind not_running instead of starting a window
+  --if-revision REV  Refuse (kind stale) unless the window still shows the
+                     revision --state reported; never starts a window
+  --wait             Wait until the request has finished in the window, up to
+                     5 minutes, and report how it went
   --state            Open nothing: print what the window shows (see below)
   --active           With --state: only the tab the person is looking at
 
-Output: {delivered, launched}. The window opens the request in its own
-session — its connection, attached data and history, not this command's —
-and reports its own errors there. Exit 2 for arguments, 1 when no window can
-be reached.
+Output: {delivered, launched, request_id}. Delivered means the window has the
+request, not that it worked: it opens the request in its own session — its
+connection, attached data and history, not this command's. The state's
+`actions` says what became of each request_id: stale, queued, running, opened,
+succeeded or failed. With --if-revision or --wait the output adds {status,
+tab_id, result_status, error, revision}, revision being the one to base the
+next action on. Exit 2 for arguments, 1 when no window can be reached (kind
+not_running), the window changed (stale), the request failed in the window
+(open_failed), or the wait ran out (timeout; the request carries on).
 
 With --state, nothing opens and no window starts: the output is what the
-running window shows — {database, attached, active_tab, tabs}: each query
-tab's SQL and result (columns, row count, the first 20 rows, or the error,
-and the chart's column picks as .dash blocks when some are made), and each
-dashboard's plots and the values its filters have picked. Exit 1
-with kind not_running when no window is up, timeout when it does not answer
-within 5s. --no-launch is accepted and changes nothing.
+running window shows — {schema_version, revision, limits, actions, database,
+attached, active_tab, tabs}: each tab's id and title, each query tab's SQL and
+result (columns, row count, the first 20 rows within `limits`, never the whole
+result, or the error, and the chart's column picks as .dash blocks when some
+are made), and each dashboard's plots and the values its filters have picked.
+The fields are documented in docs/agent-handoff.md. Exit 1 with kind
+not_running when no window is up, timeout when it does not answer within 5s.
+--no-launch is accepted and changes nothing.
 
 --state PATH keeps only the tabs showing that .dash file (exit 1 with kind
 not_open, and the open dashboards, when none does); --state --active keeps
 only the active tab. Either way `tabs` holds just those, `active_tab` is
 the active one's place among them (null when it is not one of them), and
-database and attached are reported as always.
+everything else, revision included, still describes the whole window.
 ";
 
 const OPEN_SPEC: &[FlagSpec] = &[
@@ -98,6 +109,14 @@ const OPEN_SPEC: &[FlagSpec] = &[
         name: "--active",
         takes_value: false,
     },
+    FlagSpec {
+        name: "--if-revision",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--wait",
+        takes_value: false,
+    },
 ];
 
 /// The endpoint file, next to the history store.
@@ -123,6 +142,16 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_millis(150);
 /// How long a started window gets to begin listening.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a delivered request may take to appear in the state's actions:
+/// the window drains its queue on a slow poll, so this is a hung window.
+const ACTION_APPEARS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long `--wait` waits for a request to finish.
+const ACTION_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How often a waiting command reads the state.
+const ACTION_POLL: Duration = Duration::from_millis(250);
+
 /// Where a running window can be reached.
 #[derive(Debug, Serialize, Deserialize)]
 struct Endpoint {
@@ -143,6 +172,12 @@ pub(crate) struct Request {
     pub title: Option<String>,
     #[serde(default)]
     pub run: bool,
+    /// Where the outcome lands in the state's `actions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Refuse the request unless the window still shows this revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub based_on_revision: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -502,7 +537,9 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
         sql: None,
         title: None,
         run: false,
+        ..Request::default()
     };
+    let mut wait = false;
     let mut sql_file: Option<PathBuf> = None;
     let mut launch = true;
     let mut state = false;
@@ -521,6 +558,10 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
             Arg::Flag("--no-launch", None) => launch = false,
             Arg::Flag("--state", None) => state = true,
             Arg::Flag("--active", None) => active = true,
+            Arg::Flag("--if-revision", Some(value)) => {
+                request.based_on_revision = Some(utf8(value, "--if-revision")?);
+            }
+            Arg::Flag("--wait", None) => wait = true,
             Arg::Positional(value) => {
                 // Joined rather than canonicalized: a pattern or a path that
                 // does not exist is the window's to report, and a pattern
@@ -543,8 +584,12 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
         // What may come along: one spec to narrow to, or --active. And
         // --no-launch, which --state already is: a caller that always passes
         // it to keep a window from appearing should not have to drop it here.
-        let opens_something =
-            request.sql.is_some() || sql_file.is_some() || request.title.is_some() || request.run;
+        let opens_something = request.sql.is_some()
+            || sql_file.is_some()
+            || request.title.is_some()
+            || request.run
+            || request.based_on_revision.is_some()
+            || wait;
         let scope = match (request.paths.as_slice(), active, opens_something) {
             ([], false, false) => StateScope::All,
             ([], true, false) => StateScope::Active,
@@ -594,6 +639,12 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
         ));
     }
 
+    let tracked = wait || request.based_on_revision.is_some();
+    // A window started now cannot show the revision the caller read.
+    let launch = launch && request.based_on_revision.is_none();
+    let request_id = new_request_id()?;
+    request.request_id = Some(request_id.clone());
+
     let dir = data_dir()
         .ok_or_else(|| CliError::failure("not_running", "Cannot resolve the app data directory"))?;
     let launched = match deliver(&dir, &request) {
@@ -604,7 +655,7 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
         Err(Unreachable::NotRunning) if !launch => {
             return Err(CliError::failure(
                 "not_running",
-                "No DuckLocal window is running; omit --no-launch to start one",
+                "No DuckLocal window is running; omit --no-launch and --if-revision to start one",
             ));
         }
         Err(Unreachable::NotRunning) => {
@@ -613,7 +664,119 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
             true
         }
     };
-    Ok(json!({"delivered": true, "launched": launched}).to_string())
+    let mut output = json!({"delivered": true, "launched": launched, "request_id": request_id});
+    if tracked {
+        let times = (ACTION_APPEARS_TIMEOUT, ACTION_WAIT_TIMEOUT, ACTION_POLL);
+        let (action, revision) = await_action(|| fetch_state(&dir), &request_id, wait, times)?;
+        for field in ["status", "tab_id", "result_status", "error"] {
+            output[field] = action[field].clone();
+        }
+        output["revision"] = json!(revision);
+    }
+    Ok(output.to_string())
+}
+
+fn new_request_id() -> Result<String, CliError> {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| CliError::failure("internal", format!("no randomness for an id: {e}")))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Read the state until `request_id`'s action is there — and, with `finish`,
+/// done. A stale or failed action is an error whenever it is seen. Answers the
+/// action and the window's revision. `times` is how long it may take to appear,
+/// how long to finish, and how long between reads.
+fn await_action(
+    mut fetch: impl FnMut() -> Result<Value, Unreachable>,
+    request_id: &str,
+    finish: bool,
+    (appears, finishes, poll): (Duration, Duration, Duration),
+) -> Result<(Value, String), CliError> {
+    let start = Instant::now();
+    let unconfirmed = |what: &str| {
+        CliError::failure(
+            "timeout",
+            format!("The window has request {request_id}, but {what}"),
+        )
+        .with_hint(format!(
+            "It may still finish: look for request_id {request_id} in the `actions` of \
+             `ducklocal open --state`"
+        ))
+    };
+    loop {
+        let state = match fetch() {
+            Ok(state) => Some(state),
+            // Busy on the UI thread for now; the deadlines below still hold.
+            Err(Unreachable::Timeout(_)) => None,
+            Err(Unreachable::NotRunning) => {
+                return Err(CliError::failure(
+                    "not_running",
+                    format!("The window closed before request {request_id} finished"),
+                ))
+            }
+            Err(Unreachable::Refused(message)) => {
+                return Err(CliError::failure("refused", message))
+            }
+        };
+        let action = match &state {
+            Some(state) if state.get("schema_version").is_none() => {
+                return Err(CliError::failure(
+                    "incompatible",
+                    "The running window is older than this command and cannot report \
+                     how a request went",
+                )
+                .with_hint("Restart DuckLocal, or drop --if-revision and --wait"));
+            }
+            Some(state) => state["actions"].as_array().and_then(|actions| {
+                actions
+                    .iter()
+                    .find(|action| action["request_id"] == json!(request_id))
+            }),
+            None => None,
+        };
+        if let Some(action) = action {
+            let status = action["status"].as_str().unwrap_or_default();
+            let message = action["error"].as_str().unwrap_or_default();
+            match status {
+                "stale" => {
+                    return Err(CliError::failure(
+                        "stale",
+                        format!(
+                            "The window changed since revision {}; nothing was opened",
+                            action["based_on_revision"].as_str().unwrap_or_default()
+                        ),
+                    )
+                    .with_hint(format!(
+                        "Read `ducklocal open --state` again (the window is now at revision \
+                         {}), then decide on what it shows now",
+                        action["current_revision"].as_str().unwrap_or_default()
+                    )));
+                }
+                "failed" => {
+                    return Err(CliError::failure("open_failed", message).with_hint(format!(
+                        "The person sees this in the window too; request {request_id}, tab {}",
+                        action["tab_id"]
+                    )));
+                }
+                "queued" | "running" if finish => {}
+                _ => {
+                    let revision = state
+                        .as_ref()
+                        .and_then(|state| state["revision"].as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    return Ok((action.clone(), revision));
+                }
+            }
+            if start.elapsed() >= finishes {
+                return Err(unconfirmed("it has not finished"));
+            }
+        } else if start.elapsed() >= appears {
+            return Err(unconfirmed("it has not reported on it"));
+        }
+        std::thread::sleep(poll);
+    }
 }
 
 fn utf8(value: std::ffi::OsString, what: &str) -> Result<String, CliError> {
@@ -697,6 +860,8 @@ mod tests {
 
     fn request() -> Request {
         Request {
+            request_id: None,
+            based_on_revision: None,
             paths: vec!["/tmp/a.csv".into()],
             sql: Some("SELECT 1".into()),
             title: Some("Agent".into()),
@@ -798,6 +963,117 @@ mod tests {
         let error = narrow_state(state, &StateScope::Path(dir.join("absent.dash"))).unwrap_err();
         assert_eq!(error.kind, "not_open");
         assert!(error.hint.unwrap().contains("/elsewhere/theirs.dash"));
+    }
+
+    /// A window whose state answers from `states`, in turn, the last for good.
+    fn scripted(states: Vec<Value>) -> impl FnMut() -> Result<Value, Unreachable> {
+        let mut states = states.into_iter();
+        let mut last = Value::Null;
+        move || {
+            if let Some(state) = states.next() {
+                last = state;
+            }
+            Ok(last.clone())
+        }
+    }
+
+    fn with_action(status: &str, extra: Value) -> Value {
+        let mut action = json!({
+            "request_id": "r1",
+            "status": status,
+            "tab_id": 3,
+            "result_status": null,
+            "error": null,
+            "based_on_revision": null,
+            "current_revision": null,
+        });
+        for (name, value) in extra.as_object().unwrap() {
+            action[name] = value.clone();
+        }
+        json!({"schema_version": 1, "revision": "abc", "actions": [action]})
+    }
+
+    const QUICK: (Duration, Duration, Duration) = (
+        Duration::from_millis(40),
+        Duration::from_millis(40),
+        Duration::from_millis(1),
+    );
+
+    #[test]
+    fn a_wait_follows_the_action_to_its_end() {
+        let states = vec![
+            json!({"schema_version": 1, "revision": "abc", "actions": []}),
+            with_action("queued", json!({})),
+            with_action("running", json!({})),
+            with_action("succeeded", json!({"result_status": "rows"})),
+        ];
+        let (action, revision) = await_action(scripted(states), "r1", true, QUICK).unwrap();
+        assert_eq!(action["status"], "succeeded");
+        assert_eq!(action["result_status"], "rows");
+        assert_eq!(revision, "abc");
+    }
+
+    #[test]
+    fn without_a_wait_the_first_report_is_the_answer() {
+        let states = vec![with_action("queued", json!({}))];
+        let (action, _) = await_action(scripted(states), "r1", false, QUICK).unwrap();
+        assert_eq!(action["status"], "queued");
+    }
+
+    #[test]
+    fn a_stale_or_failed_action_is_a_distinct_error() {
+        let stale = with_action(
+            "stale",
+            json!({"based_on_revision": "old", "current_revision": "new"}),
+        );
+        let error = await_action(scripted(vec![stale]), "r1", false, QUICK).unwrap_err();
+        assert_eq!(error.kind, "stale");
+        assert!(error.message.contains("old"));
+        assert!(error.hint.unwrap().contains("new"));
+
+        let failed = with_action("failed", json!({"error": "no such table: t"}));
+        let error = await_action(scripted(vec![failed]), "r1", true, QUICK).unwrap_err();
+        assert_eq!(error.kind, "open_failed");
+        assert_eq!(error.message, "no such table: t");
+    }
+
+    #[test]
+    fn a_wait_that_runs_out_says_the_request_may_carry_on() {
+        let running = with_action("running", json!({}));
+        let error = await_action(scripted(vec![running]), "r1", true, QUICK).unwrap_err();
+        assert_eq!(error.kind, "timeout");
+        assert!(error.hint.unwrap().contains("r1"));
+
+        let never = json!({"schema_version": 1, "revision": "abc", "actions": []});
+        let error = await_action(scripted(vec![never]), "r1", true, QUICK).unwrap_err();
+        assert_eq!(error.kind, "timeout");
+    }
+
+    #[test]
+    fn a_window_older_than_the_contract_is_told_apart() {
+        let old = json!({"tabs": []});
+        let error = await_action(scripted(vec![old]), "r1", true, QUICK).unwrap_err();
+        assert_eq!(error.kind, "incompatible");
+    }
+
+    #[test]
+    fn a_window_that_closes_during_a_wait_is_not_a_timeout() {
+        let error = await_action(|| Err(Unreachable::NotRunning), "r1", true, QUICK).unwrap_err();
+        assert_eq!(error.kind, "not_running");
+    }
+
+    #[test]
+    fn a_request_says_what_to_track_and_an_older_one_still_parses() {
+        let request = Request {
+            request_id: Some("r1".into()),
+            based_on_revision: Some("abc".into()),
+            ..Request::default()
+        };
+        let text = serde_json::to_string(&request).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&text).unwrap(), request);
+        let older: Request = serde_json::from_str(r#"{"paths":[],"run":true}"#).unwrap();
+        assert_eq!(older.request_id, None);
+        assert!(older.run);
     }
 
     #[test]

@@ -673,17 +673,21 @@ impl ResultsPanel {
         let mut summary = match &self.view {
             ResultView::Empty => json!({"status": "empty"}),
             ResultView::Running => json!({"status": "running"}),
-            ResultView::Rows(result) => json!({
-                "status": "rows",
-                "columns": result.columns.iter().map(|c| json!({
-                    "name": c.name,
-                    "type": c.duck_type,
-                })).collect::<Vec<_>>(),
-                "row_count": result.rows.len(),
-                "truncated": result.truncated,
-                "preview": result.rows.iter().take(crate::remote::STATE_PREVIEW_ROWS).collect::<Vec<_>>(),
-                "elapsed_ms": result.elapsed_ms,
-            }),
+            ResultView::Rows(result) => {
+                let (preview, preview_truncated) = crate::handoff::bounded_preview(&result.rows);
+                json!({
+                    "status": "rows",
+                    "columns": result.columns.iter().map(|c| json!({
+                        "name": c.name,
+                        "type": c.duck_type,
+                    })).collect::<Vec<_>>(),
+                    "row_count": result.rows.len(),
+                    "truncated": result.truncated,
+                    "preview": preview,
+                    "preview_truncated": preview_truncated,
+                    "elapsed_ms": result.elapsed_ms,
+                })
+            }
             ResultView::Affected { count, elapsed_ms } => json!({
                 "status": "affected",
                 "count": count,
@@ -713,6 +717,11 @@ impl ResultsPanel {
                 })
             }
         };
+        summary["view"] = json!(match self.tab {
+            ResultsTab::Table => "table",
+            ResultsTab::Chart => "chart",
+            ResultsTab::Overview => "overview",
+        });
         if let Some(sql) = &self.rows_sql {
             summary["sql"] = json!(sql);
         }

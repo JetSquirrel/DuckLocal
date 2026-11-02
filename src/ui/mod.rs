@@ -340,10 +340,13 @@ fn run_open_request(
                 state.update(cx, |state, cx| state.end_open(cx));
                 match result {
                     Ok(outcome) => apply_open_outcome(state, outcome, window, cx),
-                    Err(e) => window.push_notification(
-                        Notification::error(trf("notify.open.failed", &[&e.to_string()])),
-                        cx,
-                    ),
+                    Err(e) => {
+                        state.update(cx, |state, _| state.note_open_failure(e.to_string()));
+                        window.push_notification(
+                            Notification::error(trf("notify.open.failed", &[&e.to_string()])),
+                            cx,
+                        )
+                    }
                 }
             })
             .ok();
@@ -440,6 +443,14 @@ pub fn apply_open_outcome(
         }
     });
 
+    // The notifications are the person's; an agent's request reads this.
+    let failure = database_error
+        .clone()
+        .or_else(|| report.problems.first().cloned())
+        .or_else(|| report.failed.first().cloned());
+    if let Some(failure) = failure {
+        state.update(cx, |state, _| state.note_open_failure(failure));
+    }
     if let Some(error) = database_error {
         window.push_notification(
             Notification::error(trf("notify.connect.failed", &[&error])),

@@ -69,7 +69,7 @@ ducklocal open --run --sql "SELECT ..."                   # hand a result to the
 ducklocal open --state                                    # read back what the window shows
 ```
 
-Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option.
+Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option, and the [handoff contract](docs/agent-handoff.md) for how an agent stays in step with the window.
 
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and file conversion. Copy it into your project:
 
