@@ -463,7 +463,12 @@ fn spec_sources(file: &Path, source: &str) -> Vec<Value> {
 }
 
 /// `ducklocal check` ran. `report` is its output, in either form.
-pub(crate) fn record_check(file: &Path, source: &str, report: Result<&str, &CliError>) {
+pub(crate) fn record_check(
+    file: &Path,
+    source: &str,
+    restricted: bool,
+    report: Result<&str, &CliError>,
+) {
     if active().is_none() {
         return;
     }
@@ -480,6 +485,7 @@ pub(crate) fn record_check(file: &Path, source: &str, report: Result<&str, &CliE
     let cwd = std::env::current_dir().unwrap_or_default();
     let mut event = json!({
         "kind": "check",
+        "restricted": restricted,
         "spec": cwd.join(file).to_string_lossy().replace('\\', "/"),
         "revision": spec_revision(source),
         "sources": spec_sources(file, source),

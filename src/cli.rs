@@ -72,6 +72,8 @@ TARGET is a csv/tsv/parquet/json file, a workbook (its first sheet), or, with
 
 pub(crate) const CHECK_HELP: &str = "\
 Usage: ducklocal check FILE [--database PATH] [--summary]
+                            [--restricted [--allow-read PATH]... [--timeout SECONDS]
+                             [--memory-limit SIZE]]
 
 Validate a .dash dashboard spec: parse it, resolve its references, check
 each query with DuckDB's parser, then run every query read-only and check
@@ -90,6 +92,16 @@ queries not run and empty those that returned no rows. Failures print the
 same either way.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.
+
+--restricted is for a dashboard you did not write. Its SQL then runs under the
+limits `query --restricted` sets, and nothing is readable but what --allow-read
+names: not even the dashboard's own folder, unless you name it. Paths in the
+SQL still start from the spec's folder. Every query must be one SELECT, so a
+top-level PIVOT is refused. --timeout (default 60) covers the whole check.
+Exit 1 with kind policy_denied, listing each query refused, or timeout or
+resource_limit; the output adds {restricted}, the limits it ran under. It binds
+the SQL, not the command line, and is no operating-system sandbox: see
+docs/agent-security.md.
 
 For editors, `ducklocal lsp [--database PATH]` serves the same diagnostics,
 with completion, hover and go-to-definition, over stdio.
@@ -458,10 +470,7 @@ struct Options {
     read_write: bool,
     limit: usize,
     format: Format,
-    restricted: bool,
-    allow_read: Vec<PathBuf>,
-    timeout_seconds: Option<u64>,
-    memory_limit: Option<String>,
+    limits: crate::restricted::Flags,
 }
 
 /// How a result is written to stdout.
@@ -534,12 +543,12 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
         read_write: false,
         limit: 1000,
         format: Format::Json,
-        restricted: false,
-        allow_read: Vec::new(),
-        timeout_seconds: None,
-        memory_limit: None,
+        limits: Default::default(),
     };
     for arg in parse_args("query", args, QUERY_SPEC, &["--sql"])? {
+        let Some(arg) = options.limits.take(arg)? else {
+            continue;
+        };
         match arg {
             Arg::Flag("--sql", Some(value)) => {
                 options.sql = Some(
@@ -554,26 +563,6 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                 options.database = Some(database_path(&value)?);
             }
             Arg::Flag("--read-write", None) => options.read_write = true,
-            Arg::Flag("--restricted", None) => options.restricted = true,
-            Arg::Flag("--allow-read", Some(value)) => options.allow_read.push(value.into()),
-            Arg::Flag("--timeout", Some(value)) => {
-                let text = value.to_str().unwrap_or("");
-                options.timeout_seconds = Some(
-                    text.parse()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
-                        .ok_or_else(|| {
-                            CliError::argument(format!(
-                                "--timeout must be a whole number of seconds, 1 or more; \
-                                 got {text:?}"
-                            ))
-                        })?,
-                );
-            }
-            Arg::Flag("--memory-limit", Some(value)) => {
-                options.memory_limit = Some(value.to_string_lossy().into_owned());
-            }
             Arg::Flag("--format", Some(value)) => {
                 let text = value.to_string_lossy().to_ascii_lowercase();
                 options.format = match text.as_str() {
@@ -622,21 +611,13 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
     if options.read_write && options.database.is_none() {
         return Err(CliError::argument("--read-write requires --database"));
     }
-    if options.restricted && options.read_write {
+    if options.limits.restricted && options.read_write {
         return Err(
             CliError::argument("--restricted only reads; it cannot take --read-write")
                 .with_hint("Writing needs the person's approval to run without --restricted"),
         );
     }
-    if !options.restricted
-        && (!options.allow_read.is_empty()
-            || options.timeout_seconds.is_some()
-            || options.memory_limit.is_some())
-    {
-        return Err(CliError::argument(
-            "--allow-read, --timeout and --memory-limit need --restricted",
-        ));
-    }
+    options.limits.validate()?;
     Ok(options)
 }
 
@@ -757,16 +738,7 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     // a failure, is as much a part of how the work went as a result.
     let run = || -> Result<_, CliError> {
         validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
-        let policy = options
-            .restricted
-            .then(|| {
-                crate::restricted::Policy::new(
-                    &options.allow_read,
-                    options.timeout_seconds,
-                    options.memory_limit.clone(),
-                )
-            })
-            .transpose()?;
+        let policy = options.limits.policy()?;
         let conn = open(options.database.clone(), options.read_write)?;
         let watch = match &policy {
             Some(policy) => {
@@ -790,7 +762,7 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
     crate::session::record_query(
         &sql,
         options.database.as_deref(),
-        options.restricted,
+        options.limits.restricted,
         outcome.as_ref().map(|(result, _)| result),
     );
     let (result, policy) = outcome?;
