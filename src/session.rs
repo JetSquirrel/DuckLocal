@@ -648,7 +648,12 @@ fn doubts(event: &Value) -> Vec<String> {
         }
     }
     if event["sources_known"] == json!(false) && event["status"] != json!("failed") {
-        doubts.push("its sources could not be read from the SQL".to_string());
+        doubts.push(if event["sql"] == json!(REDACTED) {
+            "its SQL was not kept because it may hold credentials, so its sources are unknown"
+                .to_string()
+        } else {
+            "its sources could not be read from the SQL".to_string()
+        });
     }
     for source in event["sources"].as_array().into_iter().flatten() {
         let name = source["ref"].as_str().unwrap_or("?");
@@ -1145,6 +1150,10 @@ mod tests {
         let failed = json!({"kind": "query", "status": "failed", "sources_known": false});
         assert_eq!(doubts(&failed), vec!["it failed".to_string()]);
 
+        let withheld = json!({
+            "kind": "query", "status": "ok", "sources_known": false, "sql": REDACTED,
+        });
+        assert!(doubts(&withheld)[0].contains("may hold credentials"));
         let unknown = json!({"kind": "query", "status": "ok", "sources_known": false});
         assert!(doubts(&unknown)[0].contains("could not be read"));
 
