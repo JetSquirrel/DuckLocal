@@ -597,6 +597,86 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+/// `restricted` relies on all of this, and the second half is why it has two
+/// layers: an allowed directory is writable too, so the settings alone would
+/// let `COPY` overwrite the very files `--allow-read` named. Should a release
+/// separate reading from writing, or stop refusing any of these, this fails.
+#[test]
+fn locked_external_access_refuses_all_but_the_allowed_paths() {
+    let base = std::env::temp_dir().join(format!("ducklocal_contract_{}", std::process::id()));
+    let allowed = base.join("allowed");
+    // Named to begin as `allowed` does: the check is by directory, not prefix.
+    let beside = base.join("allowed_not");
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&beside).unwrap();
+    std::fs::write(allowed.join("in.csv"), "n\n1\n").unwrap();
+    std::fs::write(beside.join("out.csv"), "n\n2\n").unwrap();
+    let path = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let (inside, outside) = (path(&allowed), path(&beside));
+
+    let conn = mem();
+    conn.execute_batch(&format!(
+        "SET allowed_directories = ['{inside}'];
+         SET enable_external_access = false;
+         SET lock_configuration = true;"
+    ))
+    .unwrap();
+    let run = |sql: &str| {
+        conn.prepare(sql)
+            .and_then(|mut statement| statement.query([]).map(|_| ()))
+            .map_err(|e| e.to_string())
+    };
+    run(&format!("SELECT * FROM '{inside}/in.csv'")).unwrap();
+
+    for sql in [
+        format!("SELECT * FROM '{outside}/out.csv'"),
+        format!("SELECT * FROM '{inside}/../allowed_not/out.csv'"),
+        format!("SELECT * FROM glob('{outside}/*')"),
+        format!("COPY (SELECT 1) TO '{outside}/written.csv'"),
+        "SELECT * FROM 'https://example.com/x.csv'".to_string(),
+        "SELECT * FROM 's3://example/x.csv'".to_string(),
+        "LOAD httpfs".to_string(),
+    ] {
+        let error = run(&sql).unwrap_err();
+        assert!(error.contains("Permission Error"), "{sql}: {error}");
+    }
+    for sql in [
+        "SET enable_external_access = true",
+        "SET allowed_directories = ['/']",
+        "SET lock_configuration = false",
+        "RESET enable_external_access",
+    ] {
+        let error = run(sql).unwrap_err();
+        assert!(
+            error.contains("configuration has been locked"),
+            "{sql}: {error}"
+        );
+    }
+
+    // Pinned, and not wanted: allowed means writable.
+    run(&format!("COPY (SELECT 1) TO '{inside}/written.csv'")).unwrap();
+    assert!(allowed.join("written.csv").exists());
+    assert!(!beside.join("written.csv").exists());
+    std::fs::remove_dir_all(&base).ok();
+}
+
+/// `restricted::Policy::classify` reads this off a failed statement.
+#[test]
+fn running_out_of_memory_says_so() {
+    let conn = mem();
+    conn.execute_batch("SET temp_directory = ''; SET memory_limit = '20MB'")
+        .unwrap();
+    let error = conn
+        .query_row(
+            "SELECT count(*) FROM (SELECT repeat('x', 1000) s, i FROM range(5000000) t(i) \
+             ORDER BY s, i DESC)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("Out of Memory Error"), "{error}");
+}
+
 /// DuckDB installs a known extension the moment a query needs one — a
 /// download — unless told not to, so `db::config`, where every DuckLocal
 /// connection starts, says so; loading what is already installed stays on.

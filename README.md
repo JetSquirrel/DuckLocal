@@ -71,6 +71,8 @@ ducklocal open --state                                    # read back what the w
 
 Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option.
 
+SQL you did not write yourself should run with `query --restricted --allow-read PATH`: DuckDB then refuses other files, the network, extensions and writes. It is not an OS sandbox; see [what it does and doesn't limit](docs/agent-security.md).
+
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and file conversion. Copy it into your project:
 
 ```bash

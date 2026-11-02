@@ -1518,6 +1518,278 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
     s.error(&["open", "--active"], 2, "argument");
 }
 
+/// Each attempt names what it would touch, and afterwards the files say
+/// whether it happened: an exit code alone could not tell a refused write
+/// from one that went through and then failed.
+#[test]
+fn restricted_sql_reaches_only_what_it_was_allowed() {
+    let s = Sandbox::new();
+    let allowed = s.0.join("allowed");
+    let beside = s.0.join("allowed_not");
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&beside).unwrap();
+    std::fs::write(allowed.join("in.csv"), "n\n1\n").unwrap();
+    std::fs::write(allowed.join("other.csv"), "n\n2\n").unwrap();
+    std::fs::write(beside.join("secret.csv"), "n\n99\n").unwrap();
+
+    let query = |sql: &str, allow: &str| -> Vec<String> {
+        ["query", "--restricted", "--allow-read", allow, "--sql", sql]
+            .map(str::to_string)
+            .to_vec()
+    };
+    let run = |args: Vec<String>| s.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), None);
+    let denied = |sql: &str| {
+        let output = run(query(sql, "allowed"));
+        assert_eq!(output.status.code(), Some(1), "{sql}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["kind"], "policy_denied", "{sql}: {error}");
+        assert!(error["error"]["hint"].is_string(), "{sql}: {error}");
+        error
+    };
+
+    // Allowed: by relative path, by absolute path, by glob, and a shape that
+    // only parses as a SELECT once DuckDB has read it.
+    let inside = run(query("SELECT n FROM 'allowed/in.csv'", "allowed"));
+    let inside = s.decode_success(inside);
+    assert_eq!(inside["rows"], json!([[1]]));
+    assert_eq!(inside["restricted"]["timeout_seconds"], 60);
+    assert_eq!(inside["restricted"]["memory_limit"], "2GB");
+    assert_eq!(
+        inside["restricted"]["allow_read"].as_array().unwrap().len(),
+        1
+    );
+    let absolute = allowed.join("in.csv");
+    let sql = format!("SELECT n FROM '{}'", absolute.to_string_lossy());
+    assert_eq!(
+        s.decode_success(run(query(&sql, "allowed")))["rows"],
+        json!([[1]])
+    );
+    let glob = s.decode_success(run(query(
+        "SELECT count(*) AS c FROM 'allowed/*.csv'",
+        "allowed",
+    )));
+    assert_eq!(glob["rows"], json!([[2]]));
+    s.decode_success(run(query(
+        "SELECT * FROM (PIVOT 'allowed/in.csv' ON n IN (1) USING count(*))",
+        "allowed",
+    )));
+    // One file allowed is not its folder.
+    let one = run(query("SELECT n FROM 'allowed/other.csv'", "allowed/in.csv"));
+    assert_eq!(one.status.code(), Some(1));
+    s.decode_success(run(query(
+        "SELECT n FROM 'allowed/in.csv'",
+        "allowed/in.csv",
+    )));
+
+    // Reads outside it.
+    for sql in [
+        "SELECT * FROM 'allowed_not/secret.csv'",
+        "SELECT * FROM 'allowed/../allowed_not/secret.csv'",
+        "SELECT * FROM '*/secret.csv'",
+        "SELECT * FROM read_text('allowed_not/secret.csv')",
+        "SELECT * FROM glob('allowed_not/*')",
+    ] {
+        denied(sql);
+    }
+    // The network: refused before anything connects, so this needs none.
+    denied("SELECT * FROM 'https://example.com/x.csv'");
+    denied("SELECT * FROM 's3://example/x.csv'");
+    // Extensions, settings, and persistent secrets.
+    denied("INSTALL httpfs");
+    denied("LOAD httpfs");
+    denied("SET enable_external_access = true");
+    denied("SET lock_configuration = false");
+    denied("SELECT count(*) FROM duckdb_secrets()");
+    // Writes, inside what it may read as well as outside.
+    let before = std::fs::read(allowed.join("in.csv")).unwrap();
+    for sql in [
+        "COPY (SELECT 1) TO 'written.csv'",
+        "COPY (SELECT 1) TO 'allowed/written.csv'",
+        "COPY (SELECT 42 AS n) TO 'allowed/in.csv'",
+        "COPY 'allowed/in.csv' TO 'allowed_not/written.csv'",
+        "EXPORT DATABASE 'allowed/exported'",
+        "ATTACH 'allowed/new.duckdb'",
+        "EXPLAIN ANALYZE COPY (SELECT 1) TO 'allowed/written.csv'",
+        "CREATE TABLE t AS SELECT 1",
+        "PRAGMA version",
+    ] {
+        denied(sql);
+    }
+    assert_eq!(std::fs::read(allowed.join("in.csv")).unwrap(), before);
+    assert!(!s.0.join("written.csv").exists());
+    assert!(!allowed.join("written.csv").exists());
+    assert!(!allowed.join("new.duckdb").exists());
+    assert!(!allowed.join("exported").exists());
+    assert!(!beside.join("written.csv").exists());
+
+    // The same statements run without the flag, which stays the way to do
+    // what a person has approved.
+    s.decode_success(s.run(
+        &["query", "--sql", "SELECT * FROM 'allowed_not/secret.csv'"],
+        None,
+    ));
+}
+
+#[test]
+fn restricted_leaves_a_database_file_as_it_was() {
+    let s = Sandbox::new();
+    let database = s.0.join("app.duckdb");
+    let database_text = database.to_string_lossy().to_string();
+    s.run(
+        &[
+            "query",
+            "--database",
+            &database_text,
+            "--read-write",
+            "--sql",
+            "CREATE TABLE t AS SELECT 1 AS n",
+        ],
+        None,
+    );
+    let before = std::fs::read(&database).unwrap();
+    let base = [
+        "query",
+        "--restricted",
+        "--database",
+        &database_text,
+        "--sql",
+    ];
+    let read = s.run(&[&base[..], &["SELECT n FROM t"]].concat(), None);
+    assert_eq!(s.decode_success(read)["rows"], json!([[1]]));
+    for sql in ["INSERT INTO t VALUES (2)", "DROP TABLE t", "CHECKPOINT"] {
+        let output = s.run(&[&base[..], &[sql]].concat(), None);
+        assert_eq!(output.status.code(), Some(1), "{sql}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["kind"], "policy_denied", "{sql}");
+    }
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+}
+
+#[test]
+fn restricted_stops_at_its_limits_and_says_which() {
+    let s = Sandbox::new();
+    let endless = "SELECT count(*) FROM range(100000000000) a, range(100000000000) b";
+    let error = s.error(
+        &["query", "--restricted", "--timeout", "1", "--sql", endless],
+        1,
+        "timeout",
+    );
+    assert!(error["error"]["message"].as_str().unwrap().contains("1s"));
+
+    let hungry = "SELECT count(*) FROM (SELECT repeat('x', 1000) s, i FROM range(5000000) t(i) \
+                  ORDER BY s, i DESC)";
+    s.error(
+        &[
+            "query",
+            "--restricted",
+            "--memory-limit",
+            "20MB",
+            "--sql",
+            hungry,
+        ],
+        1,
+        "resource_limit",
+    );
+    let quick = "SELECT 1 AS n";
+    let limited = s.success(&[
+        "query",
+        "--restricted",
+        "--timeout",
+        "5",
+        "--memory-limit",
+        "512MB",
+        "--sql",
+        quick,
+    ]);
+    assert_eq!(limited["restricted"]["timeout_seconds"], 5);
+    assert_eq!(limited["restricted"]["memory_limit"], "512MB");
+}
+
+#[test]
+fn restricted_flags_refuse_what_they_cannot_honour() {
+    let s = Sandbox::new();
+    let sql = "SELECT 1";
+    // The limits mean nothing without the profile: silently unlimited is the
+    // one thing they must not be.
+    s.error(&["query", "--allow-read", ".", "--sql", sql], 2, "argument");
+    s.error(&["query", "--timeout", "5", "--sql", sql], 2, "argument");
+    s.error(
+        &["query", "--memory-limit", "1GB", "--sql", sql],
+        2,
+        "argument",
+    );
+    s.error(
+        &[
+            "query",
+            "--restricted",
+            "--allow-read",
+            "no_such_folder",
+            "--sql",
+            sql,
+        ],
+        2,
+        "argument",
+    );
+    s.error(
+        &["query", "--restricted", "--timeout", "0", "--sql", sql],
+        2,
+        "argument",
+    );
+    s.error(
+        &["query", "--restricted", "--timeout", "soon", "--sql", sql],
+        2,
+        "argument",
+    );
+    s.error(
+        &[
+            "query",
+            "--restricted",
+            "--memory-limit",
+            "1GB'; COPY",
+            "--sql",
+            sql,
+        ],
+        2,
+        "argument",
+    );
+    std::fs::write(s.0.join("app.duckdb"), b"").unwrap();
+    s.error(
+        &[
+            "query",
+            "--restricted",
+            "--database",
+            "app.duckdb",
+            "--read-write",
+            "--sql",
+            sql,
+        ],
+        2,
+        "argument",
+    );
+    // --allow-read repeats; other flags still may not.
+    std::fs::create_dir_all(s.0.join("a")).unwrap();
+    std::fs::create_dir_all(s.0.join("b")).unwrap();
+    let both = s.success(&[
+        "query",
+        "--restricted",
+        "--allow-read",
+        "a",
+        "--allow-read",
+        "b",
+        "--sql",
+        sql,
+    ]);
+    assert_eq!(
+        both["restricted"]["allow_read"].as_array().unwrap().len(),
+        2
+    );
+    s.error(
+        &["query", "--restricted", "--restricted", "--sql", sql],
+        2,
+        "argument",
+    );
+}
+
 #[test]
 fn schema_stats_profiles_one_relation() {
     let s = Sandbox::new();
