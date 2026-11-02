@@ -28,7 +28,7 @@ Query history, settings and saved tabs live in the app's data folder (the menu's
 
 ## Where the boundaries are
 
-- **Opening a `.dash` file runs its SQL.** That SQL can only read, but "read" includes `read_csv('https://...')` when `httpfs` is already installed, and the address can carry data from other tables in the same query. So a dashboard someone sends you can make a network request, or read any local file you can, when you open it. Don't open dashboards from people you don't trust if you've installed `httpfs`. Without it, DuckDB can't reach remote addresses and won't install it on its own.
+- **Opening a `.dash` file runs its SQL.** That SQL can only read, but "read" includes `read_csv('https://...')` when `httpfs` is already installed, and the address can carry data from other tables in the same query. So a dashboard someone sends you can make a network request, or read any local file you can, when you open it. Don't open dashboards from people you don't trust if you've installed `httpfs`. Without it, DuckDB can't reach remote addresses and won't install it on its own. The same goes for a proposed dashboard change: its checks run the proposed SQL when you click Review, not before.
 - **Extensions are third-party code.** They run inside DuckLocal with your permissions, and we can't vouch for them, community extensions least of all.
 - **Credentials you configure** can be used by any SQL in that session, including a dashboard's.
 - **SQL you run** does what it says. `COPY` can write files and remote queries can send data. Read-only mode protects only the database file. `query --restricted` limits SQL from the command line, but it isn't an OS sandbox: see [agent-security.md](agent-security.md).
