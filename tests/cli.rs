@@ -1665,6 +1665,260 @@ fn restricted_leaves_a_database_file_as_it_was() {
     assert_eq!(std::fs::read(&database).unwrap(), before);
 }
 
+/// A dashboard under `reports/` over `data/`, with `private/` beside them, and
+/// `reports/data/`, which a path in its SQL finds through the search path.
+fn restricted_check_folder(s: &Sandbox) {
+    for dir in ["reports/data", "data", "private"] {
+        std::fs::create_dir_all(s.0.join(dir)).unwrap();
+    }
+    std::fs::write(s.0.join("data/in.csv"), "n\n1\n2\n").unwrap();
+    std::fs::write(s.0.join("private/secret.csv"), "n\n99\n").unwrap();
+    std::fs::write(s.0.join("reports/data/beside.csv"), "n\n98\n").unwrap();
+}
+
+fn check_report(output: Output) -> Value {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn restricted_check_spec(s: &Sandbox, name: &str, sql: &str) -> String {
+    let spec = format!(
+        r#"
+source "numbers" {{ path = "../data/in.csv" }}
+query "mine" {{ sql = "SELECT n FROM numbers" }}
+query "theirs" {{
+  sql = <<SQL
+    {sql}
+  SQL
+}}
+plot "a" {{ type = "table" query = query.mine }}
+plot "b" {{ type = "table" query = query.theirs }}
+"#
+    );
+    let path = format!("reports/{name}.dash");
+    std::fs::write(s.0.join(&path), spec).unwrap();
+    path
+}
+
+#[test]
+fn check_restricted_runs_a_dashboard_inside_what_it_was_allowed() {
+    let s = Sandbox::new();
+    restricted_check_folder(&s);
+    let args = |spec: &str| {
+        ["check", spec, "--restricted", "--allow-read", "data"]
+            .map(str::to_string)
+            .to_vec()
+    };
+    let run = |args: &[String]| s.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), None);
+
+    // A source from the spec's folder, and a query reading what it can see.
+    let spec = restricted_check_spec(&s, "fine", "SELECT n FROM numbers");
+    let report = check_report(run(&args(&spec)));
+    assert_eq!(report["queries"][0]["rows"], 2);
+    assert_eq!(report["queries"][1]["rows"], 2);
+    assert_eq!(report["restricted"]["timeout_seconds"], 60);
+    assert_eq!(
+        report["restricted"]["allow_read"].as_array().unwrap().len(),
+        1
+    );
+    let mut summary = args(&spec);
+    summary.push("--summary".to_string());
+    let summary = check_report(run(&summary));
+    assert_eq!(summary["ok"], true);
+    assert_eq!(summary["restricted"]["memory_limit"], "2GB");
+
+    // Nothing is allowed unless named, not even beside the spec: the failure
+    // lists both queries, and the check does not run them some other way.
+    let error = s.error(&["check", &spec, "--restricted"], 1, "policy_denied");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("\"mine\""), "{message}");
+    assert!(message.contains("\"theirs\""), "{message}");
+    assert!(error["error"]["hint"].is_string());
+
+    // A path in the SQL starts from the spec's folder, when that is allowed.
+    let beside = restricted_check_spec(&s, "beside", "SELECT n FROM 'data/beside.csv'");
+    let report = check_report(s.run(
+        &[
+            "check",
+            &beside,
+            "--restricted",
+            "--allow-read",
+            "data",
+            "--allow-read",
+            "reports/data",
+        ],
+        None,
+    ));
+    assert_eq!(report["queries"][1]["rows"], 1);
+
+    // Without the flag it is the check it always was, secret and all.
+    let open = restricted_check_spec(&s, "open", "SELECT n FROM '../private/secret.csv'");
+    let report = check_report(s.run(&["check", &open], None));
+    assert_eq!(report["queries"][1]["rows"], 1);
+}
+
+#[test]
+fn check_restricted_refuses_what_a_dashboard_should_not_reach() {
+    let s = Sandbox::new();
+    restricted_check_folder(&s);
+    let check = |spec: &str, code: i32, kind: &str| {
+        s.error(
+            &["check", spec, "--restricted", "--allow-read", "data"],
+            code,
+            kind,
+        )
+    };
+    for (name, sql) in [
+        ("outside", "SELECT n FROM '../private/secret.csv'"),
+        // Allowed by its spelling from here; the file is the one the search
+        // path finds, and that is the one DuckDB has to judge.
+        ("searched", "SELECT n FROM 'data/beside.csv'"),
+        ("searched_glob", "SELECT n FROM 'data/bes*.csv'"),
+        ("through", "SELECT n FROM '../data/../private/secret.csv'"),
+        ("glob", "SELECT * FROM glob('../private/*')"),
+        (
+            "text",
+            "SELECT content FROM read_text('../private/secret.csv')",
+        ),
+        ("http", "SELECT * FROM 'https://example.com/x.csv'"),
+        ("s3", "SELECT * FROM 's3://example/x.csv'"),
+        ("secrets", "SELECT * FROM duckdb_secrets()"),
+    ] {
+        let spec = restricted_check_spec(&s, name, sql);
+        let error = check(&spec, 1, "policy_denied");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("\"theirs\""), "{sql}: {message}");
+        // The query that stayed inside is not part of what was refused.
+        assert!(!message.contains("\"mine\""), "{sql}: {message}");
+    }
+
+    // Refused by the same gate as without the flag, before anything runs: a
+    // spec's writes are its mistake, and nothing lands.
+    for (name, sql) in [
+        ("copy", "COPY (SELECT 1) TO '../data/written.csv'"),
+        ("attach", "ATTACH '../data/written.duckdb'"),
+        ("install", "INSTALL httpfs"),
+        ("load", "LOAD httpfs"),
+        ("set", "SET enable_external_access = true"),
+    ] {
+        let spec = restricted_check_spec(&s, name, sql);
+        check(&spec, 2, "spec");
+        assert!(!s.0.join("data/written.csv").exists(), "{sql}");
+        assert!(!s.0.join("data/written.duckdb").exists(), "{sql}");
+    }
+
+    // The window draws a top-level PIVOT; run restricted, it is not a SELECT.
+    let pivot = restricted_check_spec(&s, "pivot", "PIVOT '../data/in.csv' ON n USING count(*)");
+    let error = check(&pivot, 1, "policy_denied");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("single SELECT"));
+}
+
+#[test]
+fn check_restricted_leaves_a_database_file_as_it_was() {
+    let s = Sandbox::new();
+    restricted_check_folder(&s);
+    s.success(&[
+        "query",
+        "--database",
+        "new.duckdb",
+        "--read-write",
+        "--sql",
+        "CREATE TABLE t AS SELECT 1 AS n",
+    ]);
+    let before = std::fs::read(s.0.join("new.duckdb")).unwrap();
+    let spec = restricted_check_spec(&s, "db", "SELECT n FROM t");
+    let report = check_report(s.run(
+        &[
+            "check",
+            &spec,
+            "--database",
+            "new.duckdb",
+            "--restricted",
+            "--allow-read",
+            "data",
+        ],
+        None,
+    ));
+    assert_eq!(report["queries"][1]["rows"], 1);
+    assert_eq!(std::fs::read(s.0.join("new.duckdb")).unwrap(), before);
+}
+
+#[test]
+fn check_restricted_stops_at_its_limits_and_says_which() {
+    let s = Sandbox::new();
+    restricted_check_folder(&s);
+    let endless = restricted_check_spec(
+        &s,
+        "endless",
+        "SELECT sum(i) AS n FROM range(100000000000000) t(i)",
+    );
+    let error = s.error(
+        &[
+            "check",
+            &endless,
+            "--restricted",
+            "--allow-read",
+            "data",
+            "--timeout",
+            "1",
+        ],
+        1,
+        "timeout",
+    );
+    assert!(error["error"]["message"].as_str().unwrap().contains("1s"));
+
+    let hungry = restricted_check_spec(
+        &s,
+        "hungry",
+        "SELECT count(*) AS n FROM (SELECT repeat('x', 1000) s, i FROM range(5000000) t(i) ORDER BY s, i DESC)",
+    );
+    s.error(
+        &[
+            "check",
+            &hungry,
+            "--restricted",
+            "--allow-read",
+            "data",
+            "--memory-limit",
+            "20MB",
+        ],
+        1,
+        "resource_limit",
+    );
+}
+
+#[test]
+fn check_restricted_flags_refuse_what_they_cannot_honour() {
+    let s = Sandbox::new();
+    restricted_check_folder(&s);
+    let spec = restricted_check_spec(&s, "flags", "SELECT 1 AS n");
+    for flags in [
+        &["--allow-read", "data"][..],
+        &["--timeout", "5"],
+        &["--memory-limit", "1GB"],
+    ] {
+        let mut args = vec!["check", spec.as_str()];
+        args.extend_from_slice(flags);
+        s.error(&args, 2, "argument");
+    }
+    for flags in [
+        &["--restricted", "--allow-read", "no_such_folder"][..],
+        &["--restricted", "--timeout", "0"],
+        &["--restricted", "--memory-limit", "lots"],
+    ] {
+        let mut args = vec!["check", spec.as_str()];
+        args.extend_from_slice(flags);
+        s.error(&args, 2, "argument");
+    }
+}
+
 #[test]
 fn restricted_stops_at_its_limits_and_says_which() {
     let s = Sandbox::new();
@@ -2325,6 +2579,7 @@ fn a_session_records_the_lineage_and_says_what_no_longer_holds() {
     std::fs::write(s.0.join("a.dash"), format!("{spec}\n")).unwrap();
     let step = json(run(&["session", "get", "--seq", &seq]));
     assert_eq!(step["kind"], "check");
+    assert_eq!(step["restricted"], false);
     assert_eq!(step["revision"]["text"], spec);
     assert!(step["doubts"][0]
         .as_str()

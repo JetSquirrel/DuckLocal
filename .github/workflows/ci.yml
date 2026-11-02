@@ -103,6 +103,14 @@ jobs:
           sudo apt-get install -y strace xvfb mesa-vulkan-drivers
           scripts/check-offline.sh target/debug/ducklocal
 
+      # Linux otherwise only builds. docs/agent-security.md states what
+      # --restricted enforces per platform, and that claim needs a run here.
+      - name: Run restricted-execution tests
+        if: runner.os == 'Linux'
+        run: |
+          cargo test --locked --test cli restricted
+          cargo test --locked --bin ducklocal -- duckdb_contract:: restricted::
+
       # cargo test builds the app for the CLI/LSP integration tests too.
       # Building it separately first repeats GPUI compilation with different
       # test-support features. Report compilation separately from execution.

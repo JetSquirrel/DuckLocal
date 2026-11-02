@@ -214,7 +214,7 @@ pub fn check(spec: &Path, text: &str) -> Verdict {
             })
             .collect()
     };
-    match super::check_source(spec, text, None, false, false) {
+    match super::check_source(spec, text, None, false, false, None) {
         Err(error) => Verdict {
             failure: Some(error.message),
             ..Verdict::default()

@@ -64,6 +64,22 @@ const SPEC: &[FlagSpec] = &[
         name: "--summary",
         takes_value: false,
     },
+    FlagSpec {
+        name: "--restricted",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--allow-read",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--timeout",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--memory-limit",
+        takes_value: true,
+    },
 ];
 
 /// `ducklocal check FILE [--database PATH] [--summary]`.
@@ -74,7 +90,11 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     let mut file = None;
     let mut database = None;
     let mut summary = false;
+    let mut limits = crate::restricted::Flags::default();
     for arg in parse_args("check", args, SPEC, &[])? {
+        let Some(arg) = limits.take(arg)? else {
+            continue;
+        };
         match arg {
             Arg::Flag("--database", Some(value)) => {
                 database = Some(crate::cli::database_path(&value)?);
@@ -99,23 +119,29 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     }
+    limits.validate()?;
     let file = file.ok_or_else(|| CliError::argument("Name a .dash file to check"))?;
     let source = std::fs::read_to_string(&file).map_err(|e| CliError::failure("io", e))?;
-    let outcome = check_source(&file, &source, database, summary, true);
-    crate::session::record_check(&file, &source, outcome.as_deref());
+    let outcome = limits
+        .policy()
+        .and_then(|policy| check_source(&file, &source, database, summary, true, policy.as_ref()));
+    crate::session::record_check(&file, &source, limits.restricted, outcome.as_deref());
     outcome
 }
 
 /// The checks on `source`, as the spec at `file`: its paths start from that
 /// folder, and the report names it. A proposal's text is not on disk at the
 /// path it is meant for. `announce` tells the window an agent is at work, which
-/// it is not when the window itself is checking a proposal.
+/// it is not when the window itself is checking a proposal. With a `policy`,
+/// the SQL reaches only what it allows, and what it refuses is reported as a
+/// refusal rather than as a failing query.
 pub fn check_source(
     file: &std::path::Path,
     source: &str,
     database: Option<PathBuf>,
     summary: bool,
     announce: bool,
+    policy: Option<&crate::restricted::Policy>,
 ) -> Result<String, CliError> {
     let file = file.to_path_buf();
     let path_display = file.display().to_string();
@@ -183,6 +209,21 @@ pub fn check_source(
             .execute_batch(&crate::query::set_file_search_path(&search_path))
             .map_err(|e| CliError::failure("database", e))?;
     }
+    // After the search path: the policy locks every setting.
+    let watch = match policy {
+        Some(policy) => {
+            policy.enforce(&connection)?;
+            Some(policy.watch(&connection))
+        }
+        None => None,
+    };
+    let limited = |message: &str| {
+        policy
+            .zip(watch.as_ref())
+            .and_then(|(policy, watch)| policy.classify(message, watch))
+    };
+    // Every query refused, so one run names every path to ask the person about.
+    let mut denied: Vec<CliError> = Vec::new();
     // The window, if one has this spec open, marks the dashboard while the
     // check runs and each plot while its query does.
     let _checking = announce.then(|| presence::Checking::start(&file));
@@ -206,6 +247,16 @@ pub fn check_source(
         // What runs is the query with the sources it names in front of
         // it — the same SQL the dashboard runs, with nothing picked.
         let sql = source::expand(&filter::neutral(&query.sql), &spec.sources, &base);
+        if let Some(policy) = policy {
+            if let Err(mut error) = policy.admit(&connection, &sql) {
+                error.message = located(error.message);
+                if error.kind != "policy_denied" {
+                    return Err(error);
+                }
+                denied.push(error);
+                continue;
+            }
+        }
         let outcome = describe(&connection, &sql).and_then(|columns| {
             match crate::query::run_of(&connection, &sql) {
                 Ok(crate::query::QueryOutcome::Rows(result)) => {
@@ -222,12 +273,28 @@ pub fn check_source(
                 query_columns[index] = Some(columns);
                 query_rows[index] = Some((rows, truncated));
             }
-            Err(message) if database.is_none() && names_a_missing_table(&message) => {
-                unresolved
-                    .push(json!({"query": query.name, "line": query.line, "reason": message}));
-            }
-            Err(message) => failures.push(located(message)),
+            Err(message) => match limited(&message) {
+                Some(mut error) => {
+                    error.message = located(error.message);
+                    // Past a time or memory limit the rest would only fail too.
+                    if error.kind != "policy_denied" {
+                        return Err(error);
+                    }
+                    denied.push(error);
+                }
+                None if database.is_none() && names_a_missing_table(&message) => {
+                    unresolved
+                        .push(json!({"query": query.name, "line": query.line, "reason": message}));
+                }
+                None => failures.push(located(message)),
+            },
         }
+    }
+    if let Some(first) = denied.first() {
+        let messages: Vec<&str> = denied.iter().map(|error| error.message.as_str()).collect();
+        let mut error = CliError::failure("policy_denied", messages.join("\n"));
+        error.hint = first.hint.clone();
+        return Err(error);
     }
     // Nothing picked, every `$name` is TRUE and binds anywhere; a pick puts
     // the filter's column there, and a query that cannot see it fails on the
@@ -253,6 +320,10 @@ pub fn check_source(
                 path_display, query.line, query.name
             ));
         }
+    }
+    // The time can also run out while binding the picks above.
+    if let Some(error) = limited("") {
+        return Err(error);
     }
     if !failures.is_empty() && diagnostics.is_empty() {
         return Err(CliError::failure("sql", failures.join("\n")));
@@ -319,7 +390,7 @@ pub fn check_source(
     // queries it could not run, whose plots went unchecked — passing says
     // nothing about those — and the ones that ran and came back empty.
     if summary {
-        return Ok(json!({
+        let mut line = json!({
             "file": path_display,
             "ok": true,
             "sources": spec.sources.len(),
@@ -332,11 +403,14 @@ pub fn check_source(
                 .filter(|(_, rows)| matches!(rows, Some((_, true))))
                 .map(|(q, _)| &q.name)
                 .collect::<Vec<_>>(),
-        })
-        .to_string());
+        });
+        if let Some(policy) = policy {
+            line["restricted"] = policy.report();
+        }
+        return Ok(line.to_string());
     }
 
-    Ok(json!({
+    let mut report = json!({
         "file": path_display,
         "sources": spec.sources.iter().map(|s| json!({
             "name": s.name,
@@ -403,8 +477,11 @@ pub fn check_source(
         "database": database.as_ref().map(|p| p.display().to_string()),
         "unresolved": unresolved,
         "empty": empty,
-    })
-    .to_string())
+    });
+    if let Some(policy) = policy {
+        report["restricted"] = policy.report();
+    }
+    Ok(report.to_string())
 }
 
 /// A dashboard query's SQL, checked without running it: exactly one statement,

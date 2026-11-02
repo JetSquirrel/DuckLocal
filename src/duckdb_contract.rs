@@ -660,6 +660,109 @@ fn locked_external_access_refuses_all_but_the_allowed_paths() {
     std::fs::remove_dir_all(&base).ok();
 }
 
+/// The limits `docs/agent-security.md` states about paths: DuckDB resolves a
+/// link before it compares, so one inside an allowed directory cannot lead out,
+/// and a different spelling of an allowed path still works. A hard link is the
+/// same file by another name, so nothing can tell: pinned, and not wanted.
+#[test]
+fn an_allowed_directory_keeps_links_from_leading_out_of_it() {
+    let base = std::env::temp_dir().join(format!("ducklocal_links_{}", std::process::id()));
+    let allowed = base.join("Allowed Long Name");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(allowed.join("in.csv"), "inside").unwrap();
+    std::fs::write(outside.join("secret.csv"), "secret").unwrap();
+
+    let mut linked = Vec::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(outside.join("secret.csv"), allowed.join("file_link.csv")).unwrap();
+        symlink(&outside, allowed.join("dir_link")).unwrap();
+        linked.extend(["file_link.csv", "dir_link/secret.csv", "dir_link/*.csv"]);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+        // Creating these takes a privilege not every Windows account has.
+        if symlink_file(outside.join("secret.csv"), allowed.join("file_link.csv")).is_ok() {
+            linked.push("file_link.csv");
+        }
+        if symlink_dir(&outside, allowed.join("dir_link")).is_ok() {
+            linked.extend(["dir_link/secret.csv", "dir_link/*.csv"]);
+        }
+        // A junction takes no privilege.
+        let made = std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(allowed.join("junction"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        linked.extend(["junction/secret.csv", "junction/*.csv"]);
+    }
+    std::fs::hard_link(outside.join("secret.csv"), allowed.join("hard.csv")).unwrap();
+
+    let path = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    let inside = path(&allowed);
+    let conn = mem();
+    conn.execute_batch(&format!(
+        "SET allowed_directories = ['{inside}'];
+         SET enable_external_access = false;
+         SET lock_configuration = true;"
+    ))
+    .unwrap();
+    let read = |file: &str| {
+        conn.query_row(
+            &format!("SELECT string_agg(content, '') FROM read_text('{file}')"),
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| e.to_string())
+    };
+    assert_eq!(
+        read(&format!("{inside}/in.csv")).unwrap().unwrap(),
+        "inside"
+    );
+
+    for file in linked {
+        let error = read(&format!("{inside}/{file}")).unwrap_err();
+        assert!(error.contains("Permission Error"), "{file}: {error}");
+    }
+    // One link in the way fails the whole recursive glob, rather than skipping.
+    let error = read(&format!("{inside}/**/*.csv")).unwrap_err();
+    assert!(error.contains("Permission Error"), "{error}");
+    let outside_uri = path(&outside.join("secret.csv"));
+    let error = read(&format!("file:///{}", outside_uri.trim_start_matches('/'))).unwrap_err();
+    assert!(error.contains("Permission Error"), "{error}");
+
+    // Pinned, and not wanted: `docs/agent-security.md` says so.
+    assert_eq!(
+        read(&format!("{inside}/hard.csv")).unwrap().unwrap(),
+        "secret"
+    );
+
+    // Windows spells one file many ways, and each means the file it names.
+    #[cfg(windows)]
+    {
+        let upper = inside.to_uppercase();
+        assert_eq!(read(&format!("{upper}/IN.CSV")).unwrap().unwrap(), "inside");
+        let back = allowed.to_string_lossy().replace('/', "\\");
+        let verbatim = format!(r"\\?\{back}\in.csv");
+        assert_eq!(read(&verbatim).unwrap().unwrap(), "inside");
+        let unc = format!(
+            r"\\localhost\{}$\Windows\win.ini",
+            back.chars().next().unwrap()
+        );
+        let error = read(&unc).unwrap_err();
+        assert!(error.contains("Permission Error"), "{error}");
+    }
+    std::fs::remove_dir_all(&base).ok();
+}
+
 /// `restricted::Policy::classify` reads this off a failed statement.
 #[test]
 fn running_out_of_memory_says_so() {

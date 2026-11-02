@@ -1,5 +1,5 @@
-//! `ducklocal query --restricted`: running SQL an agent wrote, or read out of
-//! data, with DuckDB's own limits on what it can reach.
+//! `ducklocal query --restricted` and `check --restricted`: running SQL an agent
+//! wrote, or read out of data, with DuckDB's own limits on what it can reach.
 //!
 //! Two layers, because neither is enough alone (`docs/agent-security.md`):
 //!
@@ -13,6 +13,7 @@
 //! This runs inside DuckLocal's process. It is no operating-system sandbox,
 //! and it binds the SQL, not whoever chooses the command line.
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -21,10 +22,77 @@ use std::time::Duration;
 use duckdb::Connection;
 use serde_json::{json, Value};
 
-use crate::cli::CliError;
+use crate::cli::{Arg, CliError};
 
 pub(crate) const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 pub(crate) const DEFAULT_MEMORY_LIMIT: &str = "2GB";
+
+/// The restriction flags as a command line gave them, for every command that
+/// takes them.
+#[derive(Debug, Default)]
+pub(crate) struct Flags {
+    pub(crate) restricted: bool,
+    allow_read: Vec<PathBuf>,
+    timeout_seconds: Option<u64>,
+    memory_limit: Option<String>,
+}
+
+impl Flags {
+    /// Keep `arg` if it is one of these flags, or hand it back.
+    pub(crate) fn take(&mut self, arg: Arg) -> Result<Option<Arg>, CliError> {
+        match arg {
+            Arg::Flag("--restricted", None) => self.restricted = true,
+            Arg::Flag("--allow-read", Some(value)) => self.allow_read.push(value.into()),
+            Arg::Flag("--timeout", Some(value)) => {
+                self.timeout_seconds = Some(seconds(&value)?);
+            }
+            Arg::Flag("--memory-limit", Some(value)) => {
+                self.memory_limit = Some(value.to_string_lossy().into_owned());
+            }
+            other => return Ok(Some(other)),
+        }
+        Ok(None)
+    }
+
+    /// A limit given without the restriction would look like it applied.
+    pub(crate) fn validate(&self) -> Result<(), CliError> {
+        if !self.restricted
+            && (!self.allow_read.is_empty()
+                || self.timeout_seconds.is_some()
+                || self.memory_limit.is_some())
+        {
+            return Err(CliError::argument(
+                "--allow-read, --timeout and --memory-limit need --restricted",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn policy(&self) -> Result<Option<Policy>, CliError> {
+        self.restricted
+            .then(|| {
+                Policy::new(
+                    &self.allow_read,
+                    self.timeout_seconds,
+                    self.memory_limit.clone(),
+                )
+            })
+            .transpose()
+    }
+}
+
+fn seconds(value: &OsString) -> Result<u64, CliError> {
+    let text = value.to_str().unwrap_or("");
+    text.parse()
+        .ok()
+        .filter(|n| *n > 0)
+        .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or_else(|| {
+            CliError::argument(format!(
+                "--timeout must be a whole number of seconds, 1 or more; got {text:?}"
+            ))
+        })
+}
 
 /// What a restricted statement may reach.
 #[derive(Debug)]
