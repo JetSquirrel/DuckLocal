@@ -65,11 +65,14 @@ The same binary works headless and returns structured JSON, so an AI agent can e
 ducklocal schema ./data/                                  # what can be queried, with columns
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal check dashboard.dash                            # validate a dashboard spec
+ducklocal propose dashboard.dash --from new.dash          # suggest a change for a person to review
 ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window
 ducklocal open --state                                    # read back what the window shows
 ```
 
-Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option.
+Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option, and the [handoff contract](docs/agent-handoff.md) for how an agent stays in step with the window.
+
+SQL you did not write yourself should run with `query --restricted --allow-read PATH`: DuckDB then refuses other files, the network, extensions and writes. It is not an OS sandbox; see [what it does and doesn't limit](docs/agent-security.md).
 
 The [official agent skill](skills/ducklocal/SKILL.md) teaches schema-first exploration, SQL analysis, and file conversion. Copy it into your project:
 

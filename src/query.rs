@@ -795,7 +795,7 @@ pub(crate) fn single_statement(sql: &str) -> Result<&str> {
 /// `json_serialize_sql` serializes a single SELECT — `FROM`, `VALUES`,
 /// `TABLE`, `SHOW`, `DESCRIBE` and `SUMMARIZE` all parse to one — and
 /// refuses anything else, including a write behind a `WITH`. Nothing runs.
-fn is_read_only_query(conn: &Connection, sql: &str) -> Result<bool> {
+pub(crate) fn is_read_only_query(conn: &Connection, sql: &str) -> Result<bool> {
     let failed: Option<bool> = conn.query_row(
         "SELECT (json_serialize_sql(?::VARCHAR)::JSON ->> 'error')::BOOLEAN",
         [sql],

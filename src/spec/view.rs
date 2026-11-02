@@ -41,6 +41,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::presence::{self, Presence};
+use super::proposal::{self, ApplyError, Change, DiffLine, Proposal, Verdict};
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::{ResizeHandleContext, ResizeHandleState};
 use gpui_kit::component::alert::Alert;
@@ -49,6 +50,7 @@ use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::input::{CompletionProvider, Editor, EditorState, Rope, RopeExt, TabSize};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::resizable::{resizable_panel, resize_handle_appearance, v_resizable};
 use gpui_kit::component::scroll::ScrollableElement as _;
@@ -56,7 +58,9 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::table::{
     Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, StyledExt};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 
 use super::wheel::WheelLatch;
@@ -230,6 +234,25 @@ pub struct Dashboard {
     /// Each plot's definition as last drawn — its block and its query's SQL —
     /// to tell which plots an edit on disk changed.
     plot_prints: HashMap<String, String>,
+    /// The change an agent proposes and nobody has decided on yet, and why
+    /// the file beside the spec could not be read, if it could not.
+    proposal: Option<Proposal>,
+    proposal_error: Option<String>,
+    /// The spec has moved on since the proposal was made.
+    proposal_stale: bool,
+    /// The proposal under review, in place of the plots.
+    review: Option<Review>,
+}
+
+/// What the review view shows.
+struct Review {
+    id: String,
+    diff: Vec<DiffLine>,
+    /// `None` while the checks run. Run by the window on what it will apply,
+    /// not taken from the proposal.
+    verdict: Option<Verdict>,
+    /// Why the last Apply or Reject did not go through.
+    notice: Option<String>,
 }
 
 /// What a dashboard asks of the workspace around it.
@@ -287,8 +310,13 @@ impl Dashboard {
             window_active: Rc::new(Cell::new(false)),
             external_reload: false,
             plot_prints: HashMap::new(),
+            proposal: None,
+            proposal_error: None,
+            proposal_stale: false,
+            review: None,
         };
         this.load_comments();
+        this.load_proposal();
         this.watch(cx);
         this.reload(cx);
         this
@@ -332,7 +360,148 @@ impl Dashboard {
             })).collect::<Vec<_>>(),
             "filters": filters,
             "comments_file": comments::path_for(&self.path),
+            "proposal": self.proposal.as_ref().map(|proposal| json!({
+                "id": proposal.id,
+                "status": proposal.status,
+                "stale": self.proposal_stale,
+                "reviewing": self.review.is_some(),
+            })),
         })
+    }
+
+    /// Read the proposal beside the spec. Only a pending one concerns the
+    /// window; closing the review when the one on screen has gone is what
+    /// stops a click landing on something the person was not looking at.
+    fn load_proposal(&mut self) {
+        match proposal::load(&self.path) {
+            Ok(found) => {
+                self.proposal = found.filter(Proposal::is_pending);
+                self.proposal_error = None;
+            }
+            Err(error) => {
+                self.proposal = None;
+                self.proposal_error = Some(error);
+            }
+        }
+        self.proposal_stale = self
+            .proposal
+            .as_ref()
+            .is_some_and(|proposal| proposal.is_stale(&self.path));
+        let current = self.proposal.as_ref().map(|proposal| proposal.id.as_str());
+        if self
+            .review
+            .as_ref()
+            .is_some_and(|review| Some(review.id.as_str()) != current)
+        {
+            self.review = None;
+        }
+    }
+
+    /// Show the proposal in place of the plots, and only now run its checks:
+    /// they run the proposed SQL, which should wait for someone to ask.
+    pub fn open_review(&mut self, cx: &mut Context<Self>) {
+        let Some(proposal) = self.proposal.clone() else {
+            return;
+        };
+        let current = std::fs::read_to_string(&self.path).unwrap_or_default();
+        self.review = Some(Review {
+            id: proposal.id.clone(),
+            diff: proposal::diff(&current, &proposal.proposed),
+            verdict: None,
+            notice: None,
+        });
+        cx.notify();
+        let path = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let id = proposal.id.clone();
+            let verdict = smol::unblock(move || proposal::check(&path, &proposal.proposed)).await;
+            this.update(cx, |this, cx| {
+                if let Some(review) = this.review.as_mut().filter(|review| review.id == id) {
+                    review.verdict = Some(verdict);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub fn close_review(&mut self, cx: &mut Context<Self>) {
+        self.review = None;
+        cx.notify();
+    }
+
+    /// Apply the proposal under review. Answers what to tell the person, or
+    /// leaves the review up with the reason on it.
+    pub fn apply_proposal(
+        &mut self,
+        despite_failed: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (id, verdict) = {
+            let review = self.review.as_ref()?;
+            (review.id.clone(), review.verdict.clone()?)
+        };
+        if self.is_dirty(cx) {
+            return self.review_notice(tr("proposal.dirty").to_string(), cx);
+        }
+        match proposal::apply(&self.path, &id, &verdict, despite_failed) {
+            Ok(applied) => {
+                self.review = None;
+                self.load_proposal();
+                // The window's own write: follow it now, and mark the plots
+                // it changed as any edit on disk would.
+                self.known_stamp = FileStamp::capture(&self.path);
+                self.conflict = false;
+                self.read_source();
+                self.external_reload = true;
+                self.reload(cx);
+                let backup = applied.backup.unwrap_or_default();
+                Some(trf("proposal.applied", &[&backup.to_string_lossy()]))
+            }
+            Err(error) => {
+                let notice = self.apply_error_text(error);
+                self.review_notice(notice, cx)
+            }
+        }
+    }
+
+    /// Reject the proposal under review. The spec is not touched.
+    pub fn reject_proposal(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let id = self.review.as_ref()?.id.clone();
+        match proposal::reject(&self.path, &id) {
+            Ok(_) => {
+                self.review = None;
+                self.load_proposal();
+                cx.notify();
+                Some(tr("proposal.rejected").to_string())
+            }
+            Err(error) => {
+                let notice = self.apply_error_text(error);
+                self.review_notice(notice, cx)
+            }
+        }
+    }
+
+    fn apply_error_text(&self, error: ApplyError) -> String {
+        match error {
+            ApplyError::Replaced => tr("proposal.replaced").to_string(),
+            ApplyError::Stale => tr("proposal.stale").to_string(),
+            ApplyError::ChecksFailed => tr("proposal.check.failed").to_string(),
+            ApplyError::Io(message) => trf("proposal.failed", &[&message]),
+        }
+    }
+
+    fn review_notice(&mut self, notice: String, cx: &mut Context<Self>) -> Option<String> {
+        self.load_proposal();
+        if let Some(review) = self.review.as_mut() {
+            review.notice = Some(notice);
+            cx.notify();
+            return None;
+        }
+        // The proposal it was about has gone: nothing left to show it on.
+        cx.notify();
+        Some(notice)
     }
 
     pub fn is_showing_source(&self) -> bool {
@@ -396,6 +565,7 @@ impl Dashboard {
     fn watch(&mut self, cx: &mut Context<Self>) {
         let watched = self.path.clone();
         let comments_path = comments::path_for(&self.path);
+        let proposal_path = proposal::path_for(&self.path);
         let watcher = cx.spawn(async move |this, cx| {
             let mut stamp = FileStamp::capture(&watched);
             let mut debounce = Debounce::new();
@@ -403,8 +573,24 @@ impl Dashboard {
             // on its plot without a reload.
             let mut comments_stamp = FileStamp::capture(&comments_path);
             let mut comments_debounce = Debounce::new();
+            // And the proposal file, so one offers itself as soon as it lands.
+            let mut proposal_stamp = FileStamp::capture(&proposal_path);
+            let mut proposal_debounce = Debounce::new();
             loop {
                 smol::Timer::after(POLL_INTERVAL).await;
+                let next = FileStamp::capture(&proposal_path);
+                let changed = next != proposal_stamp;
+                proposal_stamp = next;
+                if proposal_debounce.observe(Instant::now(), changed)
+                    && this
+                        .update(cx, |this, cx| {
+                            this.load_proposal();
+                            cx.notify();
+                        })
+                        .is_err()
+                {
+                    break;
+                }
                 let next = FileStamp::capture(&comments_path);
                 let changed = next != comments_stamp;
                 comments_stamp = next;
@@ -444,6 +630,7 @@ impl Dashboard {
             return;
         }
         self.known_stamp = stamp;
+        self.load_proposal();
         if self.is_dirty(cx) {
             self.conflict = true;
             cx.notify();
@@ -2187,6 +2374,216 @@ impl Dashboard {
             .into_any_element()
     }
 
+    /// A proposal is waiting: said above whichever view is up, since it can
+    /// land while the person is looking at either.
+    fn render_proposal_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.review.is_some() {
+            return None;
+        }
+        if let Some(error) = &self.proposal_error {
+            return Some(
+                div()
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().danger.alpha(0.12))
+                    .text_sm()
+                    .child(trf("proposal.unreadable", &[error]))
+                    .into_any_element(),
+            );
+        }
+        let proposal = self.proposal.as_ref()?;
+        Some(
+            h_flex()
+                .flex_none()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .items_center()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().primary.alpha(0.08))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(trf("proposal.banner", &[&proposal.author])),
+                        )
+                        .when_some(proposal.note.clone(), |this, note| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(note),
+                            )
+                        }),
+                )
+                .child(
+                    Button::new("dashboard-proposal-review")
+                        .primary()
+                        .xsmall()
+                        .label(tr("proposal.review"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_review(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The proposal against the spec, what the checks say, and the decision.
+    fn render_review(&self, review: &Review, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, border) = (theme.muted_foreground, theme.border);
+        let mut findings: Vec<(Hsla, String)> = Vec::new();
+        let checked = review.verdict.as_ref();
+        match checked {
+            None => findings.push((muted, tr("proposal.checking").to_string())),
+            Some(verdict) => {
+                match &verdict.failure {
+                    Some(failure) => findings.push((
+                        theme.danger,
+                        format!("{}: {failure}", tr("proposal.check.failed")),
+                    )),
+                    None => findings.push((theme.success, tr("proposal.check.passed").to_string())),
+                }
+                for (key, names) in [
+                    ("proposal.check.unresolved", &verdict.unresolved),
+                    ("proposal.check.empty", &verdict.empty),
+                    ("proposal.check.truncated", &verdict.truncated),
+                ] {
+                    if !names.is_empty() {
+                        findings.push((theme.warning, trf(key, &[&names.join(", ")])));
+                    }
+                }
+            }
+        }
+        if self.proposal_stale {
+            findings.push((theme.danger, tr("proposal.stale").to_string()));
+        }
+        if self.is_dirty(cx) {
+            findings.push((theme.warning, tr("proposal.dirty").to_string()));
+        }
+        if let Some(notice) = &review.notice {
+            findings.push((theme.danger, notice.clone()));
+        }
+        let theme = cx.theme();
+        let (added, removed) = (theme.success.alpha(0.16), theme.danger.alpha(0.16));
+        let mono = theme.mono_font_family.clone();
+
+        let can_decide = checked.is_some() && !self.proposal_stale && !self.is_dirty(cx);
+        let failed = checked.is_some_and(|verdict| !verdict.passed());
+        let notify = |message: Option<String>, window: &mut Window, cx: &mut App| {
+            if let Some(message) = message {
+                window.push_notification(Notification::info(message), cx);
+            }
+        };
+        let apply = if failed {
+            Button::new("dashboard-proposal-apply")
+                .danger()
+                .label(tr("proposal.apply_anyway"))
+        } else {
+            Button::new("dashboard-proposal-apply")
+                .primary()
+                .label(tr("proposal.apply"))
+        }
+        .small()
+        .disabled(!can_decide)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            let message = this.apply_proposal(failed, cx);
+            notify(message, window, cx);
+        }));
+
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(tr("proposal.title")),
+                    )
+                    .child(
+                        Button::new("dashboard-proposal-back")
+                            .ghost()
+                            .small()
+                            .label(tr("proposal.back"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_review(cx))),
+                    )
+                    .child(
+                        Button::new("dashboard-proposal-reject")
+                            .outline()
+                            .small()
+                            .label(tr("proposal.reject"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let message = this.reject_proposal(cx);
+                                notify(message, window, cx);
+                            })),
+                    )
+                    .child(apply),
+            )
+            .child(
+                v_flex()
+                    .flex_none()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(border)
+                    .text_xs()
+                    .when_some(
+                        self.proposal.as_ref().and_then(|p| p.note.clone()),
+                        |this, note| this.child(div().text_color(muted).child(note)),
+                    )
+                    .children(
+                        findings
+                            .into_iter()
+                            .map(|(color, text)| div().text_color(color).child(text)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("dashboard-proposal-diff")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .py_1()
+                    .font_family(mono)
+                    .text_xs()
+                    .children(review.diff.iter().map(|line| {
+                        let (mark, background) = match line.change {
+                            Change::Same => (" ", None),
+                            Change::Removed => ("-", Some(removed)),
+                            Change::Added => ("+", Some(added)),
+                        };
+                        h_flex()
+                            .flex_none()
+                            .w_full()
+                            .px_3()
+                            .gap_2()
+                            .when_some(background, |this, background| this.bg(background))
+                            .child(div().flex_none().w_3().text_color(muted).child(mark))
+                            .child(div().flex_1().min_w_0().child(line.text.clone()))
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// The file changed on disk while the buffer holds unsaved edits: said
     /// out loud, above whichever view is up, until a save resolves it.
     fn render_conflict_warning(&self, cx: &App) -> Option<impl IntoElement> {
@@ -2247,7 +2644,12 @@ impl Dashboard {
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.window_active.set(window.is_window_active());
-        let body = if self.showing_source {
+        let review = self.review.take();
+        let reviewing = review.as_ref().map(|review| self.render_review(review, cx));
+        self.review = review;
+        let body = if let Some(reviewing) = reviewing {
+            reviewing
+        } else if self.showing_source {
             // The source view stands on its own, spec error or not: the text
             // of a broken spec is exactly what one opens the source to fix.
             self.render_source(window, cx)
@@ -2432,6 +2834,7 @@ impl Render for Dashboard {
             }))
             .bg(crate::ui::palette::page(cx))
             .text_color(cx.theme().foreground)
+            .children(self.render_proposal_banner(cx))
             .children(self.render_conflict_warning(cx))
             .children(self.render_stale_warning(cx))
             .when(!self.showing_source, |this| {
@@ -3360,6 +3763,212 @@ mod tests {
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
     use gpui_kit::component::table::ColumnSort;
     use std::collections::HashMap;
+
+    /// A proposal in a real dashboard: offered without touching the spec,
+    /// reviewed, and decided on. Over a real file, so what the person is
+    /// promised is what is on disk.
+    mod proposals {
+        use super::super::Dashboard;
+        use crate::spec::proposal::{self, Status};
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::test::TestWindowExt;
+        use gpui_kit::{
+            px, size, AnyWindowHandle, AppContext, Bounds, Entity, Point, TestAppContext,
+            WindowBounds, WindowOptions,
+        };
+        use std::path::{Path, PathBuf};
+
+        const SPEC: &str = "query \"q\" {\n  sql = <<SQL\nSELECT 1 AS n\nSQL\n}\n\
+                            plot \"p\" {\n  type = \"bar\"\n  query = query.q\n  x = \"n\"\n  y = \"n\"\n}\n";
+        const NEW: &str = "query \"q\" {\n  sql = <<SQL\nSELECT 2 AS n\nSQL\n}\n\
+                           plot \"p\" {\n  type = \"bar\"\n  query = query.q\n  x = \"n\"\n  y = \"n\"\n}\n";
+        const BROKEN: &str = "query \"q\" {";
+
+        fn scratch(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir()
+                .join(format!("ducklocal_review_{name}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let spec = dir.join("a.dash");
+            std::fs::write(&spec, SPEC).unwrap();
+            spec
+        }
+
+        /// Stage `text` the way the command does.
+        fn propose(spec: &Path, text: &str) {
+            let from = spec.with_file_name("new.dash");
+            std::fs::write(&from, text).unwrap();
+            let args: Vec<std::ffi::OsString> = vec![spec.into(), "--from".into(), from.into()];
+            proposal::run(&args).unwrap();
+        }
+
+        fn open(cx: &mut TestAppContext, spec: &Path) -> (AnyWindowHandle, Entity<Dashboard>) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::ui::init(cx);
+                Theme::change(ThemeMode::Light, None, cx);
+            });
+            let path = spec.to_path_buf();
+            cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1024.), px(640.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| Dashboard::new(1, path, cx)),
+                )
+            })
+            .expect("open test window")
+        }
+
+        fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+
+        /// Until the checks have landed; they run on a real thread.
+        fn review_checked(cx: &mut TestAppContext, view: &Entity<Dashboard>) {
+            cx.update(|cx| view.update(cx, |this, cx| this.open_review(cx)));
+            for _ in 0..1000 {
+                cx.run_until_parked();
+                let done = cx.read(|cx| {
+                    view.read(cx)
+                        .review
+                        .as_ref()
+                        .is_some_and(|review| review.verdict.is_some())
+                });
+                if done {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the checks never landed");
+        }
+
+        #[gpui_kit::test]
+        fn a_proposal_is_offered_reviewed_and_decided(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let _guard = crate::db::connection_guard();
+            crate::history::with_test_history(|| {
+                crate::db::open_memory().unwrap();
+
+                // Rejected: offered, shown, and the spec never moved.
+                let spec = scratch("reject");
+                propose(&spec, NEW);
+                let (window, view) = open(cx, &spec);
+                let offered = cx.read(|cx| view.read(cx).proposal.clone());
+                assert!(offered.is_some_and(|p| p.is_pending()));
+                frame(cx, window);
+                review_checked(cx, &view);
+                frame(cx, window);
+                cx.read(|cx| {
+                    let this = view.read(cx);
+                    let review = this.review.as_ref().unwrap();
+                    assert!(review.verdict.as_ref().unwrap().passed());
+                    let changed =
+                        |change| review.diff.iter().filter(|l| l.change == change).count();
+                    assert_eq!(changed(super::super::Change::Removed), 1);
+                    assert_eq!(changed(super::super::Change::Added), 1);
+                    assert_eq!(this.summary()["proposal"]["reviewing"], true);
+                });
+                let said = cx.update(|cx| view.update(cx, |this, cx| this.reject_proposal(cx)));
+                assert!(said.is_some());
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), SPEC);
+                assert_eq!(
+                    proposal::load(&spec).unwrap().unwrap().status,
+                    Status::Rejected
+                );
+                cx.read(|cx| {
+                    let this = view.read(cx);
+                    assert!(this.review.is_none() && this.proposal.is_none());
+                });
+                frame(cx, window);
+
+                // Applied: on disk, with what it was kept, and the view follows.
+                let spec = scratch("apply");
+                propose(&spec, NEW);
+                let (window, view) = open(cx, &spec);
+                review_checked(cx, &view);
+                cx.update(|cx| view.update(cx, |this, cx| this.apply_proposal(false, cx)))
+                    .expect("says where the old version went");
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), NEW);
+                let applied = proposal::load(&spec).unwrap().unwrap();
+                assert_eq!(applied.status, Status::Applied);
+                assert_eq!(
+                    std::fs::read_to_string(applied.backup.unwrap()).unwrap(),
+                    SPEC
+                );
+                cx.read(|cx| assert!(view.read(cx).proposal.is_none()));
+                frame(cx, window);
+
+                // A malformed spec: failed, visibly, and needs saying so.
+                let spec = scratch("broken");
+                propose(&spec, BROKEN);
+                let (window, view) = open(cx, &spec);
+                review_checked(cx, &view);
+                frame(cx, window);
+                let said =
+                    cx.update(|cx| view.update(cx, |this, cx| this.apply_proposal(false, cx)));
+                assert_eq!(said, None, "the reason stays on the review");
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), SPEC);
+                cx.read(|cx| {
+                    let review = view.read(cx).review.as_ref().map(|r| r.notice.clone());
+                    assert!(review.flatten().is_some());
+                });
+                cx.update(|cx| view.update(cx, |this, cx| this.apply_proposal(true, cx)))
+                    .expect("applied once told to");
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), BROKEN);
+                assert!(
+                    proposal::load(&spec)
+                        .unwrap()
+                        .unwrap()
+                        .applied_despite_failed_checks
+                );
+
+                // Edited since: refused, and the edit stands.
+                let spec = scratch("stale");
+                propose(&spec, NEW);
+                let (window, view) = open(cx, &spec);
+                review_checked(cx, &view);
+                let edited = format!("{SPEC}\n");
+                std::fs::write(&spec, &edited).unwrap();
+                let said =
+                    cx.update(|cx| view.update(cx, |this, cx| this.apply_proposal(false, cx)));
+                assert_eq!(said, None);
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), edited);
+                cx.read(|cx| assert!(view.read(cx).proposal_stale));
+                frame(cx, window);
+
+                // Replaced while on screen: the review closes, not misleads.
+                let spec = scratch("replaced");
+                propose(&spec, NEW);
+                let (_window, view) = open(cx, &spec);
+                review_checked(cx, &view);
+                propose(&spec, &format!("{NEW}\n"));
+                cx.update(|cx| view.update(cx, |this, _| this.load_proposal()));
+                cx.read(|cx| {
+                    let this = view.read(cx);
+                    assert!(this.review.is_none());
+                    assert!(this.proposal.is_some());
+                });
+                assert_eq!(std::fs::read_to_string(&spec).unwrap(), SPEC);
+
+                // A proposal file that does not read is reported, not ignored.
+                let spec = scratch("corrupt");
+                std::fs::write(proposal::path_for(&spec), "{ not json").unwrap();
+                let (window, view) = open(cx, &spec);
+                cx.read(|cx| {
+                    let error = view.read(cx).proposal_error.clone();
+                    assert!(error.unwrap().contains("proposal.json"));
+                });
+                frame(cx, window);
+            });
+        }
+    }
     use std::path::Path;
     use std::sync::Arc;
 

@@ -16,6 +16,7 @@ Usage:
   ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
   ducklocal comments FILE       Read and answer review comments on a dashboard
+  ducklocal propose FILE        Suggest a dashboard change for the person to review
   ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
 
@@ -35,12 +36,24 @@ Options:
   --read-write       Allow writes (requires --database)
   --limit N          Maximum rows, default 1000
   --format FORMAT    json (default) or md, a Markdown table for reading
+  --restricted       Run one SELECT that can reach nothing else (see below)
+  --allow-read PATH  With --restricted: a file or folder it may read; repeatable
+  --timeout SECONDS  With --restricted: stop after this long, default 60
+  --memory-limit SIZE
+                     With --restricted: such as 512MB, default 2GB
 
 Output: {columns, rows, row_count, truncated, total_rows, total_rows_exact,
 elapsed_ms}, at most 2,000,000 cells. Past the limit, rows are counted up to
 100,000 more; beyond that total_rows is a lower bound and total_rows_exact is
 false. Column types are Arrow names. Errors are JSON on stderr; exit 2 for
 arguments, 1 for SQL or I/O. Read-only is not a sandbox: COPY can write files.
+
+--restricted is for SQL you did not write yourself. DuckDB refuses every file
+outside --allow-read, every URL, every extension and any change of settings,
+and only one SELECT runs, so nothing is written. Exit 1 with kind policy_denied
+for what it refuses, timeout or resource_limit for the limits; the output adds
+{restricted}, the limits it ran under. It binds the SQL, not the command line,
+and is no operating-system sandbox: see docs/agent-security.md.
 ";
 
 pub(crate) const PROFILE_HELP: &str = "\
@@ -399,7 +412,7 @@ pub(crate) fn parse_args(
                 None => error.with_hint(format!("See ducklocal {command} --help")),
             });
         };
-        if !seen.insert(flag.name) {
+        if !seen.insert(flag.name) && !REPEATABLE.contains(&flag.name) {
             return Err(CliError::argument(format!(
                 "Duplicate option: {}",
                 flag.name
@@ -443,6 +456,10 @@ struct Options {
     read_write: bool,
     limit: usize,
     format: Format,
+    restricted: bool,
+    allow_read: Vec<PathBuf>,
+    timeout_seconds: Option<u64>,
+    memory_limit: Option<String>,
 }
 
 /// How a result is written to stdout.
@@ -481,7 +498,26 @@ const QUERY_SPEC: &[FlagSpec] = &[
         name: "--format",
         takes_value: true,
     },
+    FlagSpec {
+        name: "--restricted",
+        takes_value: false,
+    },
+    FlagSpec {
+        name: "--allow-read",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--timeout",
+        takes_value: true,
+    },
+    FlagSpec {
+        name: "--memory-limit",
+        takes_value: true,
+    },
 ];
+
+/// The flags that may be given more than once.
+const REPEATABLE: &[&str] = &["--allow-read"];
 
 const PROFILE_SPEC: &[FlagSpec] = &[FlagSpec {
     name: "--database",
@@ -496,6 +532,10 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
         read_write: false,
         limit: 1000,
         format: Format::Json,
+        restricted: false,
+        allow_read: Vec::new(),
+        timeout_seconds: None,
+        memory_limit: None,
     };
     for arg in parse_args("query", args, QUERY_SPEC, &["--sql"])? {
         match arg {
@@ -512,6 +552,26 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                 options.database = Some(database_path(&value)?);
             }
             Arg::Flag("--read-write", None) => options.read_write = true,
+            Arg::Flag("--restricted", None) => options.restricted = true,
+            Arg::Flag("--allow-read", Some(value)) => options.allow_read.push(value.into()),
+            Arg::Flag("--timeout", Some(value)) => {
+                let text = value.to_str().unwrap_or("");
+                options.timeout_seconds = Some(
+                    text.parse()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
+                        .ok_or_else(|| {
+                            CliError::argument(format!(
+                                "--timeout must be a whole number of seconds, 1 or more; \
+                                 got {text:?}"
+                            ))
+                        })?,
+                );
+            }
+            Arg::Flag("--memory-limit", Some(value)) => {
+                options.memory_limit = Some(value.to_string_lossy().into_owned());
+            }
             Arg::Flag("--format", Some(value)) => {
                 let text = value.to_string_lossy().to_ascii_lowercase();
                 options.format = match text.as_str() {
@@ -559,6 +619,21 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
     }
     if options.read_write && options.database.is_none() {
         return Err(CliError::argument("--read-write requires --database"));
+    }
+    if options.restricted && options.read_write {
+        return Err(
+            CliError::argument("--restricted only reads; it cannot take --read-write")
+                .with_hint("Writing needs the person's approval to run without --restricted"),
+        );
+    }
+    if !options.restricted
+        && (!options.allow_read.is_empty()
+            || options.timeout_seconds.is_some()
+            || options.memory_limit.is_some())
+    {
+        return Err(CliError::argument(
+            "--allow-read, --timeout and --memory-limit need --restricted",
+        ));
     }
     Ok(options)
 }
@@ -677,9 +752,40 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
         }
     };
     validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
+    let policy = options
+        .restricted
+        .then(|| {
+            crate::restricted::Policy::new(
+                &options.allow_read,
+                options.timeout_seconds,
+                options.memory_limit.clone(),
+            )
+        })
+        .transpose()?;
     let conn = open(options.database, options.read_write)?;
-    let result = crate::query::run_cli_of(&conn, &sql, options.limit)
-        .map_err(|e| with_keyword_hint(CliError::failure("sql", e), &sql))?;
+    let watch = match &policy {
+        Some(policy) => {
+            policy.enforce(&conn)?;
+            policy.admit(&conn, &sql)?;
+            Some(policy.watch(&conn))
+        }
+        None => None,
+    };
+    let result = crate::query::run_cli_of(&conn, &sql, options.limit).map_err(|e| {
+        let message = e.to_string();
+        match (&policy, &watch) {
+            (Some(policy), Some(watch)) => policy.classify(&message, watch),
+            _ => None,
+        }
+        .unwrap_or_else(|| with_keyword_hint(CliError::failure("sql", message), &sql))
+    })?;
+    drop(watch);
+    if let (Some(policy), Format::Json) = (&policy, options.format) {
+        let mut output =
+            serde_json::to_value(&result).map_err(|e| CliError::failure("output", e))?;
+        output["restricted"] = policy.report();
+        return Ok(output.to_string());
+    }
     let output = match options.format {
         // Trailing newline is not part of the document; `dispatch` adds the
         // one line ending every output gets.
@@ -817,6 +923,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "open"
             | "check"
             | "comments"
+            | "propose"
             | "presence"
             | "lsp"
             | "--help"
@@ -857,6 +964,10 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             Ok(crate::spec::comments::COMMENTS_HELP.to_string())
         }
         ("comments", _) => crate::spec::comments::run(&args[1..]),
+        ("propose", 2) if args[1] == "--help" => {
+            Ok(crate::spec::proposal::PROPOSE_HELP.to_string())
+        }
+        ("propose", _) => crate::spec::proposal::run(&args[1..]),
         ("presence", 2) if args[1] == "--help" => Ok(crate::spec::presence::HELP.to_string()),
         ("presence", _) => crate::spec::presence::run(&args[1..]),
         ("lsp", 2) if args[1] == "--help" => Ok(LSP_HELP.to_string()),
