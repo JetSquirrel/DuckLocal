@@ -16,6 +16,7 @@ Usage:
   ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
   ducklocal comments FILE       Read and answer review comments on a dashboard
+  ducklocal propose FILE        Suggest a dashboard change for the person to review
   ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
 
@@ -922,6 +923,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "open"
             | "check"
             | "comments"
+            | "propose"
             | "presence"
             | "lsp"
             | "--help"
@@ -962,6 +964,10 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             Ok(crate::spec::comments::COMMENTS_HELP.to_string())
         }
         ("comments", _) => crate::spec::comments::run(&args[1..]),
+        ("propose", 2) if args[1] == "--help" => {
+            Ok(crate::spec::proposal::PROPOSE_HELP.to_string())
+        }
+        ("propose", _) => crate::spec::proposal::run(&args[1..]),
         ("presence", 2) if args[1] == "--help" => Ok(crate::spec::presence::HELP.to_string()),
         ("presence", _) => crate::spec::presence::run(&args[1..]),
         ("lsp", 2) if args[1] == "--help" => Ok(LSP_HELP.to_string()),

@@ -40,6 +40,7 @@ pub mod model;
 pub mod plot;
 pub mod prepare;
 pub mod presence;
+pub mod proposal;
 pub mod source;
 pub mod syntax;
 pub mod tabs;
@@ -99,10 +100,25 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
         }
     }
     let file = file.ok_or_else(|| CliError::argument("Name a .dash file to check"))?;
-    let path_display = file.display().to_string();
     let source = std::fs::read_to_string(&file).map_err(|e| CliError::failure("io", e))?;
+    check_source(&file, &source, database, summary, true)
+}
 
-    let parsed = model::parse(&source)
+/// The checks on `source`, as the spec at `file`: its paths start from that
+/// folder, and the report names it. A proposal's text is not on disk at the
+/// path it is meant for. `announce` tells the window an agent is at work, which
+/// it is not when the window itself is checking a proposal.
+pub fn check_source(
+    file: &std::path::Path,
+    source: &str,
+    database: Option<PathBuf>,
+    summary: bool,
+    announce: bool,
+) -> Result<String, CliError> {
+    let file = file.to_path_buf();
+    let path_display = file.display().to_string();
+
+    let parsed = model::parse(source)
         .map_err(|error| spec_error(&path_display, error.line, &error.message))?;
     // A flawed spec is still checked as far as it goes — its sound queries
     // run, their plots' columns compared — so one run reports every mistake,
@@ -167,7 +183,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     }
     // The window, if one has this spec open, marks the dashboard while the
     // check runs and each plot while its query does.
-    let _checking = presence::Checking::start(&file);
+    let _checking = announce.then(|| presence::Checking::start(&file));
     let mut failures = Vec::new();
     for (index, query) in spec.queries.iter().enumerate() {
         let plots: Vec<String> = spec
@@ -176,7 +192,7 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
             .filter(|plot| plot.query == query.name)
             .map(|plot| plot.name.clone())
             .collect();
-        if !plots.is_empty() {
+        if announce && !plots.is_empty() {
             presence::announce(&file, presence::Activity::Checking, plots);
         }
         let located = |message: String| {
