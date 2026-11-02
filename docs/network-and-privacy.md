@@ -45,7 +45,7 @@ cargo build --locked
 scripts/check-offline.sh target/debug/ducklocal
 ```
 
-The script only proves those paths, on Linux, on that run. On macOS or Windows, a firewall that logs per-app connections (Little Snitch, Windows Firewall logging) gives you the same evidence.
+It first makes a deliberate connection attempt and fails unless it catches that, so a clean result means something. It watches that the window starts on a dashboard and a map with default settings, though it can't confirm what the window drew. The script only proves those paths, on Linux, on that run. On macOS or Windows, a firewall that logs per-app connections (Little Snitch, Windows Firewall logging) gives you the same evidence.
 
 **Read the code.** Every use of a network API is listed in `tests/network_paths.rs`, and that test fails if a new one appears without being added there and to this page. The only HTTP client the native app depends on is `ureq`. `Cargo.lock` also lists `hyper`, `quinn` and `gpui-pre-reqwest`, which only `gpui-kit-assets`' WebAssembly build uses. To confirm that for your platform:
 

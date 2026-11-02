@@ -46,6 +46,34 @@ watch() {
   strace -f -qq -e trace=connect,sendto,sendmsg -o "$LOG.$1" "${@:2}"
 }
 
+# What counts as reaching out, from a set of traces. Inet addresses only: the X
+# server and the like are local sockets. Loopback is the window's own listener;
+# port 53 is a name lookup, even to a local resolver.
+reaching_out() {
+  { cat "$@" | grep -E 'AF_INET6?' || true; } |
+    { grep -E -v 'inet_addr\("127\.|inet_pton\(AF_INET6, "::1"' || true; }
+  { cat "$@" | grep -E 'AF_INET6?' | grep -F 'htons(53)' || true; }
+}
+
+# The control: a check that reports nothing has to be one that could report
+# something. Try to connect to a reserved address that goes nowhere, under the
+# same tracer, and fail unless the filter below catches it.
+echo "== control: a real attempt must be caught"
+strace -f -qq -e trace=connect,sendto,sendmsg -o "$WORK/control.log" \
+  timeout 3 bash -c 'exec 3<>/dev/tcp/192.0.2.1/80' 2>/dev/null || true
+if [ -z "$(reaching_out "$WORK/control.log")" ]; then
+  echo "FAILED: the control's connection attempt went unseen, so this check proves nothing:" >&2
+  cat "$WORK/control.log" >&2
+  exit 1
+fi
+strace -f -qq -e trace=connect,sendto,sendmsg -o "$WORK/loopback.log" \
+  timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/9' 2>/dev/null || true
+if [ -n "$(reaching_out "$WORK/loopback.log")" ]; then
+  echo "FAILED: the control's loopback attempt was taken for reaching out:" >&2
+  cat "$WORK/loopback.log" >&2
+  exit 1
+fi
+
 echo "== command line"
 watch version "$BIN" --version >/dev/null
 watch query "$BIN" query --sql "SELECT count(*) AS n FROM 'cities.csv'" >/dev/null
@@ -57,8 +85,6 @@ watch check-map "$BIN" check map.dash >/dev/null
 
 echo "== window, on a dashboard and a map, with default settings"
 # It stays up until stopped. The endpoint file says it reached its event loop.
-ENDPOINT="$XDG_DATA_HOME/DuckLocal/data/gui-endpoint.json"
-[ -d "$XDG_DATA_HOME/DuckLocal" ] || ENDPOINT="$XDG_DATA_HOME/ducklocal/gui-endpoint.json"
 xvfb-run -a strace -f -qq -e trace=connect,sendto,sendmsg -o "$LOG.window" \
   timeout -k 5 15 "$BIN" orders/dashboard.dash map.dash >"$WORK/window.out" 2>&1 &
 WINDOW=$!
@@ -78,16 +104,11 @@ if [ -z "$started" ]; then
 fi
 
 echo "== what was tried"
-# Inet addresses only: the X server and the like are local sockets. Loopback is
-# the window's own listener; port 53 is a name lookup, even to a local resolver.
-attempts=$(cat "$LOG".* | grep -E 'AF_INET6?' || true)
-outside=$(printf '%s\n' "$attempts" | grep -vE 'inet_addr\("127\.|inet_pton\(AF_INET6, "::1"' | grep . || true)
-lookups=$(printf '%s\n' "$attempts" | grep 'htons(53)' || true)
-
-echo "$(printf '%s\n' "$attempts" | grep -c . || true) inet attempts, all checked"
-if [ -n "$outside$lookups" ]; then
+outside=$(reaching_out "$LOG".*)
+echo "$(cat "$LOG".* | grep -c -E 'AF_INET6?' || true) inet attempts seen, loopback included"
+if [ -n "$outside" ]; then
   echo "FAILED: ordinary local work tried to reach the network:" >&2
-  printf '%s\n%s\n' "$outside" "$lookups" | grep . >&2
+  printf '%s\n' "$outside" >&2
   echo "If this is intended, see 'Adding a new outbound path' in docs/network-and-privacy.md" >&2
   exit 1
 fi
