@@ -1,0 +1,6 @@
+date,channel,region,orders,revenue
+2026-09-01,web,EU,12,340.50
+2026-09-01,store,EU,7,210.00
+2026-09-02,web,US,20,610.25
+2026-09-02,store,US,4,95.00
+2026-09-03,web,EU,15,402.75

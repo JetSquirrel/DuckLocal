@@ -69,6 +69,7 @@ ducklocal propose dashboard.dash --from new.dash          # suggest a change for
 ducklocal session show                                    # how an analysis got here, and what no longer holds
 ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window
 ducklocal open --state                                    # read back what the window shows
+ducklocal project check                                   # will this analysis folder work here, and if not, why
 ```
 
 Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option, and the [handoff contract](docs/agent-handoff.md) for how an agent stays in step with the window.

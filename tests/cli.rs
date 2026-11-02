@@ -1911,6 +1911,277 @@ fn propose_stages_a_change_and_only_the_window_applies_it() {
         .contains("--based-on"));
 }
 
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+fn project_report(s: &Sandbox, dir: &str) -> Value {
+    let output = s.run(&["project", "check", dir], None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// The shipped example, moved: what the issue means by portable.
+#[test]
+fn a_project_moves_as_a_folder_and_says_what_a_move_broke() {
+    let s = Sandbox::new();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/portable_project");
+    copy_tree(&example, &s.0.join("moved/somewhere/else"));
+    let dir = "moved/somewhere/else";
+
+    let report = project_report(&s, dir);
+    assert_eq!(report["ok"], true, "{report}");
+    assert_eq!(report["portable"], true, "{report}");
+    assert_eq!(report["problems"], json!([]));
+    assert_eq!(report["dashboards"][0]["status"], "ok");
+    assert_eq!(report["dashboards"][0]["checked"], true);
+    assert_eq!(report["dashboards"][0]["sources"][0]["status"], "ok");
+    assert!(report["duckdb"].is_string());
+    assert!(report["limitations"][0]
+        .as_str()
+        .unwrap()
+        .contains("not for holding the same data"));
+
+    // The data did not come along: named, and the way out given.
+    let data = s.0.join(dir).join("data/orders.csv");
+    let moved = s.0.join(dir).join("data/2026.csv");
+    std::fs::rename(&data, &moved).unwrap();
+    let report = project_report(&s, dir);
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["problems"][0]["kind"], "missing_source");
+    assert!(report["problems"][0]["hint"]
+        .as_str()
+        .unwrap()
+        .contains("relink --source orders"));
+    assert_eq!(report["problems"].as_array().unwrap().len(), 1, "{report}");
+
+    // Relinked: the dashboard says where it is now, relative, and still works.
+    let spec = s.0.join(dir).join("reports/orders.dash");
+    let before = std::fs::read_to_string(&spec).unwrap();
+    let to = format!("{dir}/data/2026.csv");
+    let relinked = s.run(
+        &["project", "relink", dir, "--source", "orders", "--to", &to],
+        None,
+    );
+    assert!(
+        relinked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&relinked.stderr)
+    );
+    let after = std::fs::read_to_string(&spec).unwrap();
+    assert_eq!(
+        after,
+        before.replace("../data/orders.csv", "../data/2026.csv")
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.0.join(dir).join("reports/orders.dash.bak")).unwrap(),
+        before
+    );
+    assert_eq!(project_report(&s, dir)["ok"], true);
+
+    // Refused, with nothing changed.
+    s.error(
+        &[
+            "project",
+            "relink",
+            dir,
+            "--source",
+            "orders",
+            "--to",
+            "absent.csv",
+        ],
+        2,
+        "argument",
+    );
+    s.error(
+        &["project", "relink", dir, "--source", "nope", "--to", &to],
+        1,
+        "not_found",
+    );
+    s.error(&["project", "relink", dir, "--to", &to], 2, "argument");
+    assert_eq!(std::fs::read_to_string(&spec).unwrap(), after);
+}
+
+#[test]
+fn a_project_check_reports_what_will_not_travel_or_is_not_here() {
+    let s = Sandbox::new();
+    let spec = |source: &str| {
+        format!(
+            "source \"d\" {{\n  path = \"{source}\"\n}}\n\nquery \"q\" {{\n  sql = \"SELECT * FROM d\"\n}}\n\n\
+             plot \"p\" {{\n  type = \"table\"\n  query = query.q\n}}\n"
+        )
+    };
+    std::fs::create_dir_all(s.0.join("p")).unwrap();
+    std::fs::write(s.0.join("p/a.csv"), "n\n1\n").unwrap();
+    std::fs::write(s.0.join("outside.csv"), "n\n1\n").unwrap();
+    let absolute = s.0.join("outside.csv").to_string_lossy().replace('\\', "/");
+    std::fs::write(s.0.join("p/absolute.dash"), spec(&absolute)).unwrap();
+    std::fs::write(s.0.join("p/above.dash"), spec("../outside.csv")).unwrap();
+    std::fs::write(
+        s.0.join("p/remote.dash"),
+        "query \"q\" {\n  sql = \"SELECT * FROM 'https://example.com/x.csv'\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(s.0.join("p/broken.dash"), "query \"q\" {").unwrap();
+    std::fs::write(
+        s.0.join("p/ducklocal-project.json"),
+        json!({
+            "version": 1,
+            "name": "t",
+            "dashboards": [
+                "absolute.dash", "above.dash", "remote.dash", "broken.dash",
+                "absent.dash", "../escape.dash",
+            ],
+            "data": [
+                {"name": "here", "path": "a.csv"},
+                {"name": "gone", "path": "gone.csv", "sample": "a.csv"},
+                {"name": "lake", "path": "s3://bucket/key.parquet"},
+            ],
+            "requires": {"duckdb": "v0.0.1", "extensions": ["no_such_extension", "json"]},
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let report = project_report(&s, "p");
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["portable"], false);
+    let status = |name: &str| {
+        report["dashboards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["path"] == name)
+            .unwrap()
+            .clone()
+    };
+    // Reads, but will not travel.
+    assert_eq!(status("absolute.dash")["sources"][0]["status"], "absolute");
+    assert_eq!(status("above.dash")["sources"][0]["status"], "outside");
+    // Left unrun rather than reaching out, which would hang here anyway.
+    assert_eq!(status("remote.dash")["status"], "remote");
+    assert_eq!(status("remote.dash")["checked"], false);
+    assert_eq!(status("broken.dash")["status"], "failed");
+    assert_eq!(status("absent.dash")["status"], "missing");
+    assert_eq!(status("../escape.dash")["status"], "outside");
+    assert_eq!(status("../escape.dash")["checked"], false);
+
+    let kinds: Vec<&str> = report["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["kind"].as_str().unwrap())
+        .collect();
+    for kind in [
+        "not_portable",
+        "failed_check",
+        "missing_dashboard",
+        "missing_data",
+        "missing_extension",
+    ] {
+        assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+    }
+    assert!(report["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["hint"].is_string()));
+    assert_eq!(report["data"][0]["status"], "ok");
+    assert_eq!(report["data"][1]["status"], "missing");
+    assert_eq!(report["data"][1]["sample"]["there"], true);
+    assert_eq!(report["data"][2]["status"], "remote");
+    assert_eq!(report["extensions"][0]["status"], "missing");
+    assert_ne!(report["extensions"][1]["status"], "missing");
+    let limits = report["limitations"].to_string();
+    assert!(limits.contains("v0.0.1"), "{limits}");
+    assert!(limits.contains("remote.dash"), "{limits}");
+    assert!(limits.contains("lake"), "{limits}");
+    // A key in the address would not show, because the address is not repeated.
+    assert!(!limits.contains("key.parquet"), "{limits}");
+
+    // A data entry relinks in the manifest, and a dashboard keeps its own path.
+    let moved = s.run(
+        &[
+            "project", "relink", "p", "--data", "gone", "--to", "p/a.csv",
+        ],
+        None,
+    );
+    assert!(
+        moved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&moved.stderr)
+    );
+    assert_eq!(project_report(&s, "p")["data"][1]["path"], "a.csv");
+    s.error(
+        &[
+            "project", "relink", "p", "--data", "nope", "--to", "p/a.csv",
+        ],
+        1,
+        "not_found",
+    );
+}
+
+#[test]
+fn a_project_starts_from_what_is_in_the_folder() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.0.join("p/reports")).unwrap();
+    std::fs::create_dir_all(s.0.join("p/.hidden")).unwrap();
+    let spec = "query \"q\" {\n  sql = \"SELECT 1 AS n\"\n}\n";
+    std::fs::write(s.0.join("p/top.dash"), spec).unwrap();
+    std::fs::write(s.0.join("p/reports/sub.dash"), spec).unwrap();
+    std::fs::write(s.0.join("p/.hidden/no.dash"), spec).unwrap();
+
+    let made = s.run(&["project", "init", "p", "--name", "mine"], None);
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(s.0.join("p/ducklocal-project.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["name"], "mine");
+    assert_eq!(
+        manifest["dashboards"],
+        json!(["reports/sub.dash", "top.dash"])
+    );
+    assert!(manifest["requires"]["duckdb"].is_string());
+    assert_eq!(project_report(&s, "p")["ok"], true);
+
+    // It will not replace one, and says what to do instead.
+    let error = s.error(&["project", "init", "p"], 1, "exists");
+    assert!(error["error"]["hint"].is_string());
+    // Mistakes.
+    s.error(&["project"], 2, "argument");
+    s.error(&["project", "dance"], 2, "argument");
+    s.error(&["project", "check", "no_such_folder"], 1, "not_found");
+    s.error(&["project", "init", "no_such_folder"], 1, "io");
+    s.error(&["project", "check", "p", "--to", "x"], 2, "argument");
+    std::fs::create_dir_all(s.0.join("bad")).unwrap();
+    std::fs::write(s.0.join("bad/ducklocal-project.json"), "{ nope").unwrap();
+    s.error(&["project", "check", "bad"], 1, "project");
+    let help = s.run(&["project", "--help"], None);
+    assert!(String::from_utf8(help.stdout).unwrap().contains("relink"));
+    // A lone dashboard needs none of this.
+    std::fs::write(s.0.join("lone.dash"), spec).unwrap();
+    let lone = s.run(&["check", "lone.dash"], None);
+    assert!(lone.status.success());
+}
+
 /// A session, end to end through the real commands: what it records, what it
 /// keeps out, and what it says once the world has moved on.
 #[test]

@@ -17,6 +17,7 @@ Usage:
   ducklocal check FILE          Validate a .dash dashboard spec
   ducklocal comments FILE       Read and answer review comments on a dashboard
   ducklocal propose FILE        Suggest a dashboard change for the person to review
+  ducklocal project check [DIR] Check a portable analysis folder and what it needs
   ducklocal session show [FILE] Read back how an analysis got where it did
   ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
@@ -937,6 +938,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "check"
             | "comments"
             | "propose"
+            | "project"
             | "session"
             | "presence"
             | "lsp"
@@ -982,6 +984,8 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             Ok(crate::spec::proposal::PROPOSE_HELP.to_string())
         }
         ("propose", _) => crate::spec::proposal::run(&args[1..]),
+        ("project", 2) if args[1] == "--help" => Ok(crate::project::HELP.to_string()),
+        ("project", _) => crate::project::run(&args[1..]),
         ("session", 2) if args[1] == "--help" => Ok(crate::session::HELP.to_string()),
         ("session", _) => crate::session::run(&args[1..]),
         ("presence", 2) if args[1] == "--help" => Ok(crate::spec::presence::HELP.to_string()),
