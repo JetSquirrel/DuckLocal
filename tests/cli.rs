@@ -1668,7 +1668,9 @@ fn restricted_leaves_a_database_file_as_it_was() {
 #[test]
 fn restricted_stops_at_its_limits_and_says_which() {
     let s = Sandbox::new();
-    let endless = "SELECT count(*) FROM range(100000000000) a, range(100000000000) b";
+    // Streams, so it holds next to nothing in memory: a join would reach the
+    // memory limit first on a fast machine, and say resource_limit instead.
+    let endless = "SELECT sum(i) FROM range(100000000000000) t(i)";
     let error = s.error(
         &["query", "--restricted", "--timeout", "1", "--sql", endless],
         1,
