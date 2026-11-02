@@ -181,7 +181,7 @@ CSV, JSON, and Parquet work with bundled support; no extra DuckDB CLI is require
 
 ## JSONL and nested JSON
 
-`read_ndjson_objects` is the reader for newline-delimited JSON (one object per line, `.jsonl`/`.ndjson`); `read_json`/`read_json_auto` read JSON documents (an array or a single object). Name the reader explicitly for a JSONL file rather than relying on auto-detection. `json_extract_string(col, '$.a.b[0].c')` walks a nested path — object keys and array indexes — and answers VARCHAR:
+Gzipped text files (`.json.gz`, `.csv.gz`) count as data files too. `read_ndjson_objects` is the reader for newline-delimited JSON (one object per line, `.jsonl`/`.ndjson`); `read_json`/`read_json_auto` read JSON documents (an array or a single object). Name the reader explicitly for a JSONL file rather than relying on auto-detection. `json_extract_string(col, '$.a.b[0].c')` walks a nested path — object keys and array indexes — and answers VARCHAR:
 
 ```bash
 ducklocal query --sql "SELECT json_extract_string(event, '$.payload.items[0].sku') AS sku, count(*) AS n FROM read_ndjson_objects('events.jsonl') GROUP BY 1 ORDER BY n DESC"

@@ -287,11 +287,26 @@ pub fn server_info() -> Result<ServerInfo> {
     with_connection(server_info_of)
 }
 
+/// The extension that says what a data file holds. DuckDB reads gzipped text
+/// as it reads plain text, and logs such as CloudTrail's arrive as `.json.gz`,
+/// so `.gz` says nothing by itself. A gzipped Parquet file is not one DuckDB
+/// can read.
+fn data_extension(path: &str) -> Option<String> {
+    let path = std::path::Path::new(path);
+    let ext = path.extension()?.to_string_lossy().to_lowercase();
+    if ext != "gz" {
+        return Some(ext);
+    }
+    let inner = std::path::Path::new(path.file_stem()?)
+        .extension()?
+        .to_string_lossy()
+        .to_lowercase();
+    (inner != "parquet").then_some(inner)
+}
+
 /// DuckDB table-function reader for a data file extension, if supported.
 pub(crate) fn data_file_reader(path: &str) -> Option<&'static str> {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())?;
+    let ext = data_extension(path)?;
     match ext.as_str() {
         "csv" | "tsv" | "txt" => Some("read_csv_auto"),
         "parquet" => Some("read_parquet"),
@@ -318,9 +333,7 @@ pub fn data_file_kind(path: &str) -> Option<&'static str> {
     if is_excel_file(path) {
         return Some("excel");
     }
-    let ext = std::path::Path::new(path)
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())?;
+    let ext = data_extension(path)?;
     match ext.as_str() {
         "csv" | "tsv" | "txt" => Some("csv"),
         "parquet" => Some("parquet"),
@@ -455,7 +468,18 @@ pub fn attach_excel_sheet_as_of(
 /// The view name a file is known by: its stem.
 pub fn view_name_for(path: &str) -> Result<String> {
     let expanded = expand_tilde(path);
-    std::path::Path::new(&expanded)
+    // `logs.json.gz` is a view called `logs`, as `logs.json` would be.
+    let plain = match expanded.len().checked_sub(3) {
+        Some(end)
+            if expanded
+                .get(end..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(".gz")) =>
+        {
+            &expanded[..end]
+        }
+        _ => expanded.as_str(),
+    };
+    std::path::Path::new(plain)
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .filter(|stem| !stem.is_empty())
@@ -942,6 +966,18 @@ mod tests {
         assert!(!is_data_file("/tmp/a"));
         assert_eq!(data_file_kind("/tmp/a.xlsx"), Some("excel"));
         assert_eq!(data_file_kind("/tmp/a.csv"), Some("csv"));
+    }
+
+    #[test]
+    fn gzipped_text_is_read_as_what_it_holds() {
+        assert_eq!(data_file_reader("/tmp/a.json.gz"), Some("read_json_auto"));
+        assert_eq!(data_file_reader("/tmp/a.CSV.GZ"), Some("read_csv_auto"));
+        assert_eq!(data_file_kind("/tmp/a.jsonl.gz"), Some("json"));
+        assert_eq!(data_file_reader("/tmp/a.parquet.gz"), None);
+        assert_eq!(data_file_reader("/tmp/a.gz"), None);
+        assert_eq!(data_file_reader("/tmp/a.tar.gz"), None);
+        assert_eq!(view_name_for("/tmp/logs.json.gz").unwrap(), "logs");
+        assert_eq!(view_name_for("/tmp/logs.json").unwrap(), "logs");
     }
 
     #[test]

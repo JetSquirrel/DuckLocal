@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "cloudtrail-investigation",
+  "dashboards": [
+    "reports/investigation.dash"
+  ],
+  "requires": {
+    "duckdb": "v2.0.0"
+  }
+}

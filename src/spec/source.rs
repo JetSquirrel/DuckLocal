@@ -36,7 +36,7 @@ pub(crate) fn unreadable(path: &str) -> Option<String> {
             .to_string()
     } else {
         format!(
-            "path {path:?}: a source reads .csv, .tsv, .txt, .parquet, .json, .jsonl or .ndjson files"
+            "path {path:?}: a source reads .csv, .tsv, .txt, .parquet, .json, .jsonl or .ndjson files, and gzipped text"
         )
     })
 }

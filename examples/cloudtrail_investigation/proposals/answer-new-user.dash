@@ -1,0 +1,130 @@
+# A leaked build key: what it did, from the first look.
+
+source "trail" { path = "../data/cloudtrail.json.gz" }
+
+query "totals" {
+  sql = <<SQL
+    WITH events AS (
+      SELECT
+        r.eventName AS event_name,
+        -- Epoch, so a day means the same day in every time zone.
+        make_timestamp(epoch_us(r.eventTime)) AS event_time,
+        r.eventSource AS service,
+        r.sourceIPAddress AS ip,
+        r.userIdentity.userName AS user_name,
+        r.errorCode AS error_code,
+        r.readOnly AS read_only,
+        r.requestParameters AS params
+      FROM (SELECT unnest(Records) AS r FROM trail)
+    )
+    SELECT
+      count(*) FILTER (ip = '203.0.113.77') AS from_new_address,
+      count(error_code) FILTER (ip = '203.0.113.77') AS denied,
+      count(*) FILTER (service = 'iam.amazonaws.com' AND NOT read_only AND error_code IS NULL) AS iam_changes
+    FROM events
+  SQL
+}
+
+query "by_address" {
+  sql = <<SQL
+    WITH events AS (
+      SELECT
+        r.eventName AS event_name,
+        -- Epoch, so a day means the same day in every time zone.
+        make_timestamp(epoch_us(r.eventTime)) AS event_time,
+        r.eventSource AS service,
+        r.sourceIPAddress AS ip,
+        r.userIdentity.userName AS user_name,
+        r.errorCode AS error_code,
+        r.readOnly AS read_only,
+        r.requestParameters AS params
+      FROM (SELECT unnest(Records) AS r FROM trail)
+    )
+    SELECT ip, count(*) AS events, count(error_code) AS denied
+    FROM events
+    WHERE user_name = 'ci-deploy'
+    GROUP BY ip
+    ORDER BY events DESC
+  SQL
+}
+
+query "changes" {
+  sql = <<SQL
+    WITH events AS (
+      SELECT
+        r.eventName AS event_name,
+        -- Epoch, so a day means the same day in every time zone.
+        make_timestamp(epoch_us(r.eventTime)) AS event_time,
+        r.eventSource AS service,
+        r.sourceIPAddress AS ip,
+        r.userIdentity.userName AS user_name,
+        r.errorCode AS error_code,
+        r.readOnly AS read_only,
+        r.requestParameters AS params
+      FROM (SELECT unnest(Records) AS r FROM trail)
+    )
+    SELECT event_time, ip, event_name, params.userName AS target_user, params.policyArn AS policy
+    FROM events
+    WHERE service = 'iam.amazonaws.com' AND NOT read_only AND error_code IS NULL
+    ORDER BY event_time
+  SQL
+}
+
+plot "from_new_address" { type = "card" query = query.totals value = from_new_address title = "Calls from the new address" width = 4 }
+plot "denied" { type = "card" query = query.totals value = denied title = "Refused" tone = "critical" width = 4 }
+plot "iam_changes" { type = "card" query = query.totals value = iam_changes title = "Changes to access" tone = "critical" width = 4 }
+plot "by_address" { type = "bar" query = query.by_address x = ip y = events title = "The build key, by address" width = 6 }
+plot "changes" { type = "table" query = query.changes title = "Changes to access, in order" width = 6 }
+
+query "new_user" {
+  sql = <<SQL
+    WITH events AS (
+      SELECT
+        r.eventName AS event_name,
+        -- Epoch, so a day means the same day in every time zone.
+        make_timestamp(epoch_us(r.eventTime)) AS event_time,
+        r.eventSource AS service,
+        r.sourceIPAddress AS ip,
+        r.userIdentity.userName AS user_name,
+        r.errorCode AS error_code,
+        r.readOnly AS read_only,
+        r.requestParameters AS params
+      FROM (SELECT unnest(Records) AS r FROM trail)
+    )
+    SELECT
+      event_name,
+      params.bucketName AS bucket,
+      error_code,
+      count(*) AS events,
+      min(event_time) AS first_seen,
+      max(event_time) AS last_seen
+    FROM events
+    WHERE user_name = 'svc-backup'
+    GROUP BY ALL
+    ORDER BY first_seen
+  SQL
+}
+
+query "objects_read" {
+  sql = <<SQL
+    WITH events AS (
+      SELECT
+        r.eventName AS event_name,
+        -- Epoch, so a day means the same day in every time zone.
+        make_timestamp(epoch_us(r.eventTime)) AS event_time,
+        r.eventSource AS service,
+        r.sourceIPAddress AS ip,
+        r.userIdentity.userName AS user_name,
+        r.errorCode AS error_code,
+        r.readOnly AS read_only,
+        r.requestParameters AS params
+      FROM (SELECT unnest(Records) AS r FROM trail)
+    )
+    SELECT count(*) AS objects
+    FROM events
+    WHERE user_name = 'svc-backup' AND event_name = 'GetObject' AND error_code IS NULL
+  SQL
+}
+
+plot "objects_read" { type = "card" query = query.objects_read value = objects title = "Objects read by svc-backup" tone = "critical" width = 4 }
+plot "new_user" { type = "table" query = query.new_user title = "What svc-backup did" width = 8 }
