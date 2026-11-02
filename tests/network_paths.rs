@@ -39,9 +39,6 @@ const KNOWN: &[(&str, &str)] = &[
     ("src/remote.rs", "TcpStream::"),
     // The download link the status bar shows when an update cannot install.
     ("src/ui/status_bar.rs", "open_url("),
-    // Not network: the read-only gate lists these as what a dashboard may not
-    // run, and the DuckDB contract tests pin that.
-    ("src/spec/mod.rs", "INSTALL "),
 ];
 
 /// HTTP and telemetry clients the app must not depend on directly.
