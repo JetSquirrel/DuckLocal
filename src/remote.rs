@@ -667,13 +667,29 @@ pub(crate) fn open(args: &[std::ffi::OsString]) -> Result<String, CliError> {
     let mut output = json!({"delivered": true, "launched": launched, "request_id": request_id});
     if tracked {
         let times = (ACTION_APPEARS_TIMEOUT, ACTION_WAIT_TIMEOUT, ACTION_POLL);
-        let (action, revision) = await_action(|| fetch_state(&dir), &request_id, wait, times)?;
+        let awaited = await_action(|| fetch_state(&dir), &request_id, wait, times);
+        let (action, revision) = match awaited {
+            Ok(awaited) => awaited,
+            Err(error) => {
+                crate::session::record_open(&request, Err(&error));
+                return Err(error);
+            }
+        };
         for field in ["status", "tab_id", "result_status", "error"] {
             output[field] = action[field].clone();
         }
         output["revision"] = json!(revision);
     }
+    crate::session::record_open(&request, Ok(&output));
     Ok(output.to_string())
+}
+
+/// What the running window shows, whole: for a session's snapshot.
+pub(crate) fn window_state() -> Result<Value, CliError> {
+    let dir = data_dir()
+        .ok_or_else(|| CliError::failure("not_running", "Cannot resolve the app data directory"))?;
+    let text = read_state(&dir, &StateScope::All)?;
+    serde_json::from_str(&text).map_err(|e| CliError::failure("internal", e))
 }
 
 fn new_request_id() -> Result<String, CliError> {

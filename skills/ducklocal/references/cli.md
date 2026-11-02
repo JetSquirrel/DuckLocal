@@ -73,6 +73,19 @@ Stages `--from` (the whole new spec, or `-` for stdin) beside the spec in `dashb
 
 Output: `{id, status, stale, base_hash, current_hash, note, author, at, decided_at, backup, applied_despite_failed_checks}`, plus after proposing `check`: `{ok, failure, unresolved, empty, truncated}`. `status` is `pending`, `applied`, `rejected`, or `none` with only `current_hash`. A proposal is staged even when `check.ok` is false, and the person sees why. Exit 2 for arguments (including a proposal identical to the spec), 1 with kind `stale` when `--based-on` no longer matches, or `io`.
 
+## Record an analysis session
+
+```bash
+export DUCKLOCAL_SESSION=analysis.session.jsonl    # query, check, propose and open now record themselves
+ducklocal session note --text "EU revenue fell 12%" --refs 3,4
+ducklocal session show --last 20                   # or --format md, for reading
+ducklocal session get --seq 4                      # one step whole, such as a spec's text
+ducklocal session snapshot                         # what the window shows: tabs, SQL, filter picks; no rows
+ducklocal session clear analysis.session.jsonl
+```
+
+Nothing is recorded without `DUCKLOCAL_SESSION`. The file holds SQL and spec text, references to sources with size and modification time, DuckDB and extension versions, and each result's shape and completeness, never its rows. SQL or a spec that may hold credentials is left out (`[not recorded: may hold credentials]`, no hash), which also catches false positives such as a column named `secret`. Errors are kept up to 500 characters and can quote values. `show` gives `{session, steps, latest_seq, omitted_steps, conclusions, events}`. Each event has `doubts`, recomputed on reading: what failed, was truncated, went unchecked, or whose source, database or spec has changed since. Each conclusion has `refs`, `latest`, `steps_since` and the doubts of what it rests on. An empty list means nothing is known against it, not that it is right. `origin` is what the environment says (`DUCKLOCAL_AGENT`), and nothing checks it. What the person does in the window is recorded only through `snapshot` and how a proposal ended. `clear` needs the file named, and refuses one that is not a session file (kind `not_session`). Writing to a file that isn't a session is refused the same way: the command still runs, with a warning on stderr.
+
 ## Review comments on a dashboard
 
 ```bash
