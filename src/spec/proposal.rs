@@ -493,7 +493,9 @@ pub fn run(args: &[OsString]) -> Result<String, CliError> {
     };
     let proposal = propose(&file, proposed, note, based_on.as_deref())?;
     let mut output = report(&file, Some(&proposal));
-    output["check"] = check(&file, &proposal.proposed).to_json();
+    let verdict = check(&file, &proposal.proposed);
+    output["check"] = verdict.to_json();
+    crate::session::record_proposal(&file, &proposal, verdict.passed());
     Ok(output.to_string())
 }
 

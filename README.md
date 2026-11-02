@@ -66,6 +66,7 @@ ducklocal schema ./data/                                  # what can be queried,
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal check dashboard.dash                            # validate a dashboard spec
 ducklocal propose dashboard.dash --from new.dash          # suggest a change for a person to review
+ducklocal session show                                    # how an analysis got here, and what no longer holds
 ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window
 ducklocal open --state                                    # read back what the window shows
 ```
