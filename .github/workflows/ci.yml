@@ -95,6 +95,14 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo build --locked
 
+      # Ordinary local work must not reach the network: see
+      # docs/network-and-privacy.md.
+      - name: Check that local work stays off the network
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y strace xvfb mesa-vulkan-drivers
+          scripts/check-offline.sh target/debug/ducklocal
+
       # cargo test builds the app for the CLI/LSP integration tests too.
       # Building it separately first repeats GPUI compilation with different
       # test-support features. Report compilation separately from execution.
