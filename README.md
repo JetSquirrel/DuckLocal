@@ -72,9 +72,9 @@ ducklocal open --state                                    # read back what the w
 ducklocal project check                                   # will this analysis folder work here, and if not, why
 ```
 
-Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option, and the [handoff contract](docs/agent-handoff.md) for how an agent stays in step with the window.
-
 [A worked investigation](examples/cloudtrail_investigation/README.md) walks a made-up CloudTrail incident from first query to reviewed dashboard.
+
+Database files open read-only unless you pass `--read-write`. See the [CLI guide](https://ducklocal.app/docs/cli) for every command and option, and the [handoff contract](docs/agent-handoff.md) for how an agent stays in step with the window.
 
 SQL you did not write yourself should run with `query --restricted --allow-read PATH`: DuckDB then refuses other files, the network, extensions and writes. It is not an OS sandbox; see [what it does and doesn't limit](docs/agent-security.md).
 
