@@ -81,7 +81,8 @@ use crate::spec::filter::Pick;
 use crate::spec::model::{self, Spec};
 use crate::spec::plot::{heat_key, x_label_count, GroupedBars, Heatmap, SeriesPlot};
 use crate::spec::prepare::{
-    keep_series_order, prepare, sort_series_by_name, Mood, PlotPoint, PreparedPlot,
+    keep_series_colors, keep_series_order, prepare, sort_series_by_name, Mood, PlotPoint,
+    PreparedPlot,
 };
 use crate::spec::watch::{Debounce, FileStamp, POLL_INTERVAL};
 use crate::ui::chart::{legend_row, map_notes, picking_legend_row, pie_parts, PieLook};
@@ -356,6 +357,7 @@ impl Dashboard {
                 "query": plot.query,
                 "failure": plot.failure,
                 "rows": self.results.get(&plot.query).map(|r| r.rows.len()),
+                "scope": plot.scope(self.results.get(&plot.query).map(Arc::as_ref)),
                 "open_comments": self.comments.open_on(&plot.name),
             })).collect::<Vec<_>>(),
             "filters": filters,
@@ -912,6 +914,7 @@ impl Dashboard {
                         for plot in &mut plots {
                             if let Some(before) = this.plots.iter().find(|p| p.name == plot.name) {
                                 keep_series_order(plot, &before.series_names);
+                                keep_series_colors(plot, before);
                             }
                         }
                         this.plots = plots;
@@ -1044,8 +1047,7 @@ impl Dashboard {
             };
             let pick = Pick {
                 column: filter.column.clone(),
-                // A cell showing NULL: SQL NULL, or the text 'NULL'.
-                value: (cell != "NULL").then(|| cell.clone()),
+                value: (!result.is_sql_null(row, column)).then(|| cell.clone()),
             };
             if self.picks.get(&filter.name) == Some(&pick) {
                 if toggle {
@@ -1582,7 +1584,7 @@ impl Dashboard {
                             .enumerate()
                             .map(|(s, name)| {
                                 (
-                                    crate::ui::palette::color(s, cx),
+                                    crate::ui::palette::color(plot.slot(s), cx),
                                     SharedString::from(name.clone()),
                                 )
                             })
@@ -3188,7 +3190,7 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         }
         "heatmap" => Heatmap::new(named_id(), plot).into_any_element(),
         "area" if single => {
-            let color = palette[0];
+            let color = palette[plot.slot(0) % palette.len()];
             let chart = AreaChart::new(plot.points.clone())
                 // A tool's chart shows its data at once: the kit's draw-in replays
                 // on every maximize, restore and tab switch, and only delays it.
@@ -3230,7 +3232,7 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
                 });
             chart = with_value_axis(chart, format);
             for (s, series_name) in plot.series_names.iter().enumerate() {
-                let color = palette[s % palette.len()];
+                let color = palette[plot.slot(s) % palette.len()];
                 chart = chart
                     .y(move |d: &Arc<PlotPoint>| d.values[s])
                     .stroke(color)
@@ -3990,6 +3992,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         };
         assert_eq!(sorted_rows(&result, 1, ColumnSort::Ascending), [1, 0, 3, 2]);
         assert_eq!(
@@ -4016,6 +4019,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         };
         let mut table = SpecTableDelegate::new(Arc::new(result));
         assert_eq!(table.row_text(0), "Web	East");

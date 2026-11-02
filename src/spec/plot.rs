@@ -218,6 +218,33 @@ fn labeled(len: usize, count: usize) -> Vec<bool> {
 /// The alignment of the `i`-th of `len` x labels: the first hugs the left
 /// edge, the last the right, the rest center on their tick, as the catalog's
 /// point charts place them.
+/// Which labels a time axis shows: the first and the last, then each one from
+/// the left that clears those before it and the last. `ticks` ascend, and each
+/// label sits where [`point_label_align`] puts it.
+fn time_labels(ticks: &[f32], widths: &[f32]) -> Vec<usize> {
+    const GAP: f32 = 12.;
+    let Some(last) = ticks.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    if last == 0 {
+        return vec![0];
+    }
+    let last_starts = ticks[last] - widths[last];
+    let mut shown = vec![0];
+    let mut clear_from = ticks[0] + widths[0] + GAP;
+    for i in 1..last {
+        let half = widths[i] / 2.;
+        if ticks[i] - half >= clear_from && ticks[i] + half + GAP <= last_starts {
+            shown.push(i);
+            clear_from = ticks[i] + half + GAP;
+        }
+    }
+    if last_starts >= ticks[0] + widths[0] + GAP {
+        shown.push(last);
+    }
+    shown
+}
+
 fn point_label_align(i: usize, len: usize) -> TextAlign {
     match i {
         0 if len == 1 => TextAlign::Center,
@@ -255,6 +282,8 @@ pub(crate) struct GroupedBars {
     /// A `stacked_bar`'s: a band's series stack into one bar, each from
     /// where the one before it ended, and the bar is labelled by its total.
     stacked: bool,
+    /// Each series' place in the palette, when not its position.
+    slots: Vec<usize>,
 }
 
 /// One bar the plot paints: series `s` of band `d`, from `lo` to `hi` on
@@ -310,6 +339,7 @@ impl GroupedBars {
         // hit test, each built from the plot, agree.
         this.stacked = plot.kind == "stacked_bar";
         this.bins = plot.kind == "histogram";
+        this.slots = plot.series_slots.clone();
         this
     }
 
@@ -329,6 +359,7 @@ impl GroupedBars {
             format: None,
             bins: false,
             stacked: false,
+            slots: Vec::new(),
         }
     }
 
@@ -588,6 +619,7 @@ impl GroupedBars {
             let (band_scale, value_scale) = (band_scale.clone(), value_scale.clone());
             let base_scale = value_scale.clone();
             let selected = self.selected.clone();
+            let slots = self.slots.clone();
             let mut bar = Bar::new()
                 .data(marks)
                 .band_width(bar_width)
@@ -610,7 +642,8 @@ impl GroupedBars {
                 })
                 .value(move |m: &Mark| value_scale.tick(&m.hi))
                 .fill(move |m: &Mark, _: Bounds<f32>, _: BarAlignment| {
-                    let color = palette[m.s % palette.len()];
+                    let slot = slots.get(m.s).copied().unwrap_or(m.s);
+                    let color = palette[slot % palette.len()];
                     match &selected {
                         Some(band) if *band != m.d.band => color.opacity(UNPICKED_OPACITY),
                         _ => color,
@@ -886,8 +919,9 @@ impl Plot for GroupedBars {
             .title(d.band.clone());
         for (s, name) in self.series.iter().enumerate() {
             if d.present.get(s).copied().unwrap_or(false) {
+                let slot = self.slots.get(s).copied().unwrap_or(s);
                 tooltip = tooltip.row(
-                    palette[s % palette.len()],
+                    palette[slot % palette.len()],
                     name.clone(),
                     full_text(self.format, d.values[s]),
                 );
@@ -1224,8 +1258,14 @@ pub(crate) struct SeriesPlot {
     points: Vec<Arc<PlotPoint>>,
     series: Vec<SharedString>,
     /// Each point's x as a number, for a scatter over a numeric column: the x
-    /// axis is then linear, its labels round numbers.
+    /// axis is then linear, its labels round numbers. For a line or scatter
+    /// over times, each point's place in time; see `time_x`.
     xs: Option<Arc<Vec<f64>>>,
+    /// Whether `xs` are times: the axis is linear, as for numbers, and its
+    /// labels are the points' own dates, which a round number of seconds isn't.
+    time_x: bool,
+    /// Each series' place in the palette, when not its position.
+    slots: Vec<usize>,
     /// How the value axis and the tooltip read values.
     format: Option<NumberFormat>,
 }
@@ -1291,12 +1331,17 @@ impl SeriesPlot {
             points,
             series: series_names.iter().map(SharedString::from).collect(),
             xs: None,
+            time_x: false,
+            slots: Vec::new(),
             format: None,
         }
     }
 
     pub(crate) fn lines(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
         let mut this = Self::lines_of(id, plot.points.clone(), &plot.series_names);
+        this.xs = plot.x_values.clone();
+        this.time_x = plot.x_is_time;
+        this.slots = plot.series_slots.clone();
         this.format = plot.format;
         this
     }
@@ -1304,8 +1349,17 @@ impl SeriesPlot {
     pub(crate) fn scatter(id: impl Into<ElementId>, plot: &PreparedPlot) -> Self {
         let mut this = Self::scatter_of(id, plot.points.clone(), &plot.series_names);
         this.xs = plot.x_values.clone();
+        this.time_x = plot.x_is_time;
+        this.slots = plot.series_slots.clone();
         this.format = plot.format;
         this
+    }
+
+    /// Place the points by time, `xs` holding each one's place.
+    pub(crate) fn at_times(mut self, xs: Arc<Vec<f64>>) -> Self {
+        self.xs = Some(xs);
+        self.time_x = true;
+        self
     }
 
     /// Lines over `points` directly, for a caller that holds no
@@ -1340,7 +1394,7 @@ impl SeriesPlot {
     /// The value axis: round ticks over the data and zero, and a gutter as
     /// wide as the widest tick label.
     fn value_axis(&self) -> ValueAxis {
-        let ticks = if self.xs.is_some() {
+        let ticks = if self.xs.is_some() && !self.time_x {
             // A numeric scatter's y spans its points, as its x does.
             let (min, max) = self
                 .values()
@@ -1397,7 +1451,7 @@ impl SeriesPlot {
 
     /// A numeric x axis's round values, as many as the width has room for.
     fn x_ticks(&self, width: f32) -> Vec<f64> {
-        let Some(xs) = &self.xs else {
+        let Some(xs) = self.xs.as_ref().filter(|_| !self.time_x) else {
             return Vec::new();
         };
         let (Some(first), Some(last)) = (xs.first(), xs.last()) else {
@@ -1405,6 +1459,29 @@ impl SeriesPlot {
         };
         let count = ((width / 90.) as usize).clamp(2, 8);
         nice_ticks_over(*first, *last, count)
+    }
+
+    fn slot(&self, s: usize) -> usize {
+        self.slots.get(s).copied().unwrap_or(s)
+    }
+
+    /// The runs of points series `s` draws as one stroke: a NULL ends one, and
+    /// a band the query has no row for doesn't.
+    fn strokes(&self, s: usize) -> Vec<std::ops::Range<usize>> {
+        let mut strokes = Vec::new();
+        let mut start = 0;
+        for (i, point) in self.points.iter().enumerate() {
+            if point.is_gap(s) {
+                if start < i {
+                    strokes.push(start..i);
+                }
+                start = i + 1;
+            }
+        }
+        if start < self.points.len() {
+            strokes.push(start..self.points.len());
+        }
+        strokes
     }
 
     /// Which series the hovered band has, in series order: the dots
@@ -1453,6 +1530,27 @@ impl Plot for SeriesPlot {
             .unwrap_or(0);
         let shown = labeled(self.points.len(), x_label_count_in(width - gutter, widest));
         let labels: Vec<AxisText> = match &x {
+            // The points' own dates, where they are, as many as don't collide:
+            // points in time can bunch up as bands can't.
+            XScale::Numbers { .. } if self.time_x => {
+                let names: Vec<String> = self
+                    .points
+                    .iter()
+                    .map(|d| axis_label(&d.band, shared_year).to_string())
+                    .collect();
+                let ticks: Vec<f32> = (0..names.len())
+                    .map(|i| x.tick_at(i).unwrap_or(gutter) - gutter)
+                    .collect();
+                let widths: Vec<f32> = names.iter().map(|name| label_width(name)).collect();
+                time_labels(&ticks, &widths)
+                    .into_iter()
+                    .map(|i| {
+                        AxisText::new(names[i].clone(), px(ticks[i]), muted)
+                            .font_size(px(LABEL_SIZE))
+                            .align(point_label_align(i, names.len()))
+                    })
+                    .collect()
+            }
             // Round numbers along a numeric axis, not the points' own values.
             XScale::Numbers { scale, .. } => {
                 let ticks = self.x_ticks(width);
@@ -1526,28 +1624,51 @@ impl Plot for SeriesPlot {
             SeriesConnect::Line => {
                 // A cell the query did not return is skipped, not drawn as
                 // zero; the line bridges the gap, as the catalog's line does
-                // over filtered data. Straight from point to point: a curve
-                // through them would show values between the points that the
-                // data never had.
+                // over filtered data. A NULL it did return is a reading that's
+                // missing, and the line stops there. Straight from point to
+                // point: a curve through them would show values between the
+                // points that the data never had.
                 let caches = PathCaches::for_paint("spec-lines", window, cx);
                 caches.update(cx, |caches, _| {
+                    let mut slot = 0;
                     for (s, _) in self.series.iter().enumerate() {
-                        let (x, y) = (x.clone(), y.clone());
-                        let line = Line::new()
-                            .data(self.points.iter().enumerate())
-                            .x(move |(i, _)| x.tick_at(*i))
-                            .y(move |(_, d)| {
-                                d.present
-                                    .get(s)
-                                    .copied()
-                                    .unwrap_or(false)
-                                    .then(|| y.tick(&d.values[s]))
-                                    .flatten()
-                            })
-                            .curve(Curve::Linear)
-                            .stroke(palette[s % palette.len()])
-                            .stroke_width(2.);
-                        line.paint_cached(&bounds, caches.slot(s), window);
+                        for stroke in self.strokes(s) {
+                            let readings = self.points[stroke.clone()]
+                                .iter()
+                                .filter(|d| d.present.get(s).copied().unwrap_or(false))
+                                .count();
+                            let (x, y) = (x.clone(), y.clone());
+                            let color = palette[self.slot(s) % palette.len()];
+                            let line = Line::new()
+                                .data(
+                                    self.points
+                                        .iter()
+                                        .enumerate()
+                                        .skip(stroke.start)
+                                        .take(stroke.len()),
+                                )
+                                .x(move |(i, _)| x.tick_at(*i))
+                                .y(move |(_, d)| {
+                                    d.present
+                                        .get(s)
+                                        .copied()
+                                        .unwrap_or(false)
+                                        .then(|| y.tick(&d.values[s]))
+                                        .flatten()
+                                })
+                                .curve(Curve::Linear)
+                                .stroke(color)
+                                .stroke_width(2.);
+                            // A reading alone between NULLs has no stroke to
+                            // show in, and would otherwise not show at all.
+                            let line = if readings == 1 {
+                                line.dot().dot_size(px(4.)).dot_fill(color)
+                            } else {
+                                line
+                            };
+                            line.paint_cached(&bounds, caches.slot(slot), window);
+                            slot += 1;
+                        }
                     }
                 });
             }
@@ -1567,7 +1688,7 @@ impl Plot for SeriesPlot {
                             let Some(y_tick) = y.tick(&d.values[s]) else {
                                 continue;
                             };
-                            let color = palette[s % palette.len()];
+                            let color = palette[self.slot(s) % palette.len()];
                             let origin = bounds.origin
                                 + point(px(x_tick - DOT_SIZE / 2.), px(y_tick - DOT_SIZE / 2.));
                             window.paint_quad(quad(
@@ -1605,7 +1726,7 @@ impl Plot for SeriesPlot {
         let (x, y) = self.scales(bounds, &axis);
         let index = match &x {
             // Dots, not columns: the one nearest the pointer, across and up.
-            XScale::Numbers { .. } => (0..self.points.len()).min_by(|&a, &b| {
+            XScale::Numbers { .. } if !self.time_x => (0..self.points.len()).min_by(|&a, &b| {
                 let off = |i: usize| {
                     let d = &self.points[i];
                     let s = d.present.iter().position(|p| *p).unwrap_or(0);
@@ -1618,7 +1739,7 @@ impl Plot for SeriesPlot {
                 };
                 off(a).total_cmp(&off(b))
             })?,
-            XScale::Bands(_) => x.nearest_index(position.x.as_f32()),
+            _ => x.nearest_index(position.x.as_f32()),
         };
         let d = self.points.get(index)?;
         let x_tick = x.tick_at(index)?;
@@ -1663,13 +1784,13 @@ impl Plot for SeriesPlot {
                             .size(px(DOT_SIZE))
                             .halo(px(HOVER_HALO))
                             .stroke(background)
-                            .fill(palette[s % palette.len()])
+                            .fill(palette[self.slot(s) % palette.len()])
                     }),
             )
             .title(d.band.clone());
         for (s, name) in self.present_series(state.index) {
             tooltip = tooltip.row(
-                palette[s % palette.len()],
+                palette[self.slot(s) % palette.len()],
                 name.clone(),
                 full_text(self.format, d.values[s]),
             );
@@ -1853,6 +1974,161 @@ mod tests {
         assert_eq!(x_label_count(&[point("2026-09-01")]), 5);
         assert_eq!(x_label_count(&[point("手机银行")]), 10);
         assert_eq!(x_label_count(&[point("")]), 12);
+    }
+
+    /// The whole way through a real paint: bunched times, a NULL either side
+    /// of a lone reading, and a series with a row missing.
+    #[gpui_kit::test]
+    fn a_line_with_breaks_on_a_time_axis_paints(cx: &mut gpui_kit::TestAppContext) {
+        use crate::query::{ColumnKind, ColumnMeta, QueryResult};
+        use crate::spec::prepare::prepare;
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::test::TestWindowExt;
+        use gpui_kit::{div, AppContext, Context, IntoElement, ParentElement, Render, Styled};
+        use gpui_kit::{Window, WindowBounds, WindowOptions};
+
+        struct Host(Arc<crate::spec::prepare::PreparedPlot>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .child(super::SeriesPlot::lines("line", &self.0))
+            }
+        }
+
+        let column = |name: &str, kind| ColumnMeta {
+            name: name.into(),
+            duck_type: String::new(),
+            kind,
+        };
+        let rows = [
+            ["2026-01-01 00:00:00", "1", "a"],
+            ["2026-01-01 00:00:01", "NULL", "a"],
+            ["2026-01-01 00:00:02", "5", "a"],
+            ["2026-01-01 00:00:03", "NULL", "a"],
+            ["2026-01-09 00:00:00", "2", "a"],
+            ["2026-01-09 00:00:01", "3", "a"],
+            ["2026-01-09 00:00:01", "7", "b"],
+        ];
+        let result = QueryResult {
+            columns: vec![
+                column("t", ColumnKind::Temporal),
+                column("y", ColumnKind::Numeric),
+                column("s", ColumnKind::Text),
+            ],
+            rows: rows
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+            text_nulls: Default::default(),
+        };
+        let source = "query \"q\" {
+  sql = \"SELECT 1\"
+}
+            plot \"p\" {
+  type = \"line\"
+  query = query.q
+  x = \"t\"
+  y = \"y\"
+  series = \"s\"
+}
+";
+        let (spec, _) =
+            crate::spec::model::validate_partial(&crate::spec::model::parse(source).unwrap());
+        let plot = &spec.plots[0];
+        let prepared = prepare(plot, Some(&Ok::<_, String>(result)));
+        assert!(prepared.x_is_time);
+        assert!(prepared.points[1].is_gap(0));
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let prepared = Arc::new(prepared);
+        let (window, _) = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(800.), px(400.)),
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    move |_, cx| cx.new(|_| Host(prepared)),
+                )
+            })
+            .expect("open test window");
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
+    /// The spacing a person reads as speed: one day against eight.
+    #[test]
+    fn a_line_over_times_spaces_its_points_by_the_time_between_them() {
+        let day = 86_400.;
+        let plot = super::SeriesPlot::lines_of(
+            "time",
+            bands(&["2026-01-01", "2026-01-02", "2026-01-10"]),
+            &["y".to_string()],
+        )
+        .at_times(Arc::new(vec![0., day, 9. * day]));
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(900.), px(300.)));
+        let (x, _) = plot.scales(bounds, &plot.value_axis());
+        let (a, b, c) = (
+            x.tick_at(0).unwrap(),
+            x.tick_at(1).unwrap(),
+            x.tick_at(2).unwrap(),
+        );
+        assert!(((c - b) / (b - a) - 8.).abs() < 0.01, "{a} {b} {c}");
+        // Hovering finds the time under the pointer, not the nth of three.
+        assert_eq!(x.nearest_index(c - 1.), 2);
+        assert_eq!(x.nearest_index(b + 1.), 1);
+        // Still a line's value axis, from zero.
+        assert_eq!(plot.value_axis().ticks.first(), Some(&0.));
+    }
+
+    #[test]
+    fn time_labels_clear_each_other_however_the_points_bunch() {
+        // Bunched at the start, and the last always named.
+        let ticks = [0., 2., 4., 6., 300., 600.];
+        let widths = [50.; 6];
+        assert_eq!(super::time_labels(&ticks, &widths), [0, 4, 5]);
+        // No room for two.
+        assert_eq!(super::time_labels(&[0., 20.], &[50., 50.]), [0]);
+        assert_eq!(super::time_labels(&[0.], &[50.]), [0]);
+        assert!(super::time_labels(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_null_ends_a_stroke_and_a_missing_row_does_not() {
+        let point_at = |values: Vec<f64>, present: Vec<bool>| {
+            Arc::new(PlotPoint {
+                band: "b".into(),
+                label: "".into(),
+                values,
+                present,
+                ix: 0,
+            })
+        };
+        let plot = super::SeriesPlot::lines_of(
+            "gaps",
+            vec![
+                point_at(vec![1., 1.], vec![true, true]),
+                // Series 0 has a NULL; series 1 has no row here.
+                point_at(vec![f64::NAN, 0.], vec![false, false]),
+                point_at(vec![2., 2.], vec![true, true]),
+                point_at(vec![f64::NAN, 3.], vec![false, true]),
+            ],
+            &["a".to_string(), "b".to_string()],
+        );
+        assert_eq!(plot.strokes(0), [0..1, 2..3]);
+        assert_eq!(plot.strokes(1).first(), Some(&(0..4)));
+        assert_eq!(plot.strokes(1).len(), 1);
     }
 
     fn bands(bands: &[&str]) -> Vec<Arc<PlotPoint>> {

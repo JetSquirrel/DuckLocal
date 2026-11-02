@@ -2435,6 +2435,7 @@ mod tests {
                     .collect(),
                 elapsed_ms: 0,
                 truncated: false,
+                text_nulls: Default::default(),
             })
         };
         let shown = |table: &ResultTableDelegate| {
@@ -2472,6 +2473,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }));
         table.sort = Some((1, ColumnSort::Descending));
         table.resort();

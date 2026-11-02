@@ -47,7 +47,7 @@ pub(crate) struct Placeholder {
 pub(crate) struct Pick {
     /// The column the predicate compares, as named on the filter.
     pub column: String,
-    /// The cell as the result grid shows it; `None` is a cell showing NULL.
+    /// The cell as the result grid shows it; `None` is SQL NULL.
     pub value: Option<String>,
 }
 
@@ -56,10 +56,7 @@ impl Pick {
     pub(crate) fn predicate(&self) -> String {
         let column = format!("\"{}\"", self.column.replace('"', "\"\""));
         match &self.value {
-            // The grid shows SQL NULL and the text 'NULL' alike, so a cell
-            // showing NULL matches either; the cast keeps the comparison
-            // legal for a column that is not text.
-            None => format!("({column} IS NULL OR CAST({column} AS VARCHAR) = 'NULL')"),
+            None => format!("({column} IS NULL)"),
             Some(value) => format!("({column} = '{}')", value.replace('\'', "''")),
         }
     }
@@ -195,8 +192,51 @@ mod tests {
         assert_eq!(
             apply(sql, &picks),
             "FROM t WHERE (\"Sales \"\"Channel\"\"\" = 'it''s') \
-             AND (\"day\" IS NULL OR CAST(\"day\" AS VARCHAR) = 'NULL')"
+             AND (\"day\" IS NULL)"
         );
+    }
+
+    /// The grid shows both as NULL, and they are different rows.
+    #[test]
+    fn a_picked_null_and_the_text_null_select_their_own_rows() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let count = |value: Option<&str>| -> i64 {
+            let predicate = Pick {
+                column: "x".into(),
+                value: value.map(String::from),
+            }
+            .predicate();
+            conn.query_row(
+                &format!(
+                    "SELECT count(*) FROM (VALUES (NULL::VARCHAR), ('NULL'), ('ok')) AS t(x) \
+                     WHERE {predicate}"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count(None), 1);
+        assert_eq!(count(Some("NULL")), 1);
+        assert_eq!(count(Some("ok")), 1);
+    }
+
+    /// From a real result to the pick: the marker is what says which it was.
+    #[test]
+    fn a_result_says_which_cells_are_sql_null() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let crate::query::QueryOutcome::Rows(result) = crate::query::run_of(
+            &conn,
+            "SELECT * FROM (VALUES (1, NULL::VARCHAR), (2, 'NULL'), (3, 'ok')) AS t(n, x) ORDER BY n",
+        )
+        .unwrap() else {
+            panic!("a SELECT returns rows");
+        };
+        assert_eq!(result.rows[0][1], "NULL");
+        assert_eq!(result.rows[1][1], "NULL");
+        assert!(result.is_sql_null(0, 1));
+        assert!(!result.is_sql_null(1, 1));
+        assert!(!result.is_sql_null(2, 1));
     }
 
     #[test]

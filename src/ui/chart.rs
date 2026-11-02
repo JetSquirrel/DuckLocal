@@ -144,6 +144,9 @@ pub struct ChartData {
     series_names: Vec<String>,
     is_time_series: bool,
     rows: Vec<Arc<PlotPoint>>,
+    /// `rows` in time order with each one's place, for a line or a scatter.
+    /// The other kinds keep the order the query gave.
+    time_line: Option<crate::spec::prepare::TimeLine>,
     /// The first series as pie slices, largest first.
     pie: Vec<Arc<PieSlice>>,
     /// Rows the pie leaves out: a zero, negative or missing value is no slice.
@@ -191,9 +194,14 @@ pub(crate) fn collect_plot_rows(
             }
             continue;
         }
+        // A NaN or an infinity would make every bucket it joins one too.
         let values: Option<Vec<f64>> = value_ixes
             .iter()
-            .map(|&col| row.get(col).and_then(|v| parse_number(v)))
+            .map(|&col| {
+                row.get(col)
+                    .and_then(|v| parse_number(v))
+                    .filter(|v| v.is_finite())
+            })
             .collect();
         if let Some(values) = values {
             raw.push((ix, band.clone().into(), values));
@@ -218,6 +226,7 @@ impl ChartData {
                 label_name: String::new(),
                 series_names: Vec::new(),
                 is_time_series: false,
+                time_line: None,
                 rows: Vec::new(),
                 pie: Vec::new(),
                 pie_skipped: 0,
@@ -301,6 +310,9 @@ impl ChartData {
                 .map(|&ix| result.columns[ix].name.clone())
                 .collect(),
             is_time_series,
+            time_line: is_time_series
+                .then(|| crate::spec::prepare::time_line(&rows))
+                .flatten(),
             rows,
             pie,
             pie_skipped,
@@ -335,6 +347,7 @@ impl ChartData {
                     label_name: encoding.x.clone(),
                     series_names: vec![tr("chart.histogram.rows").to_string()],
                     is_time_series: false,
+                    time_line: None,
                     rows: crate::spec::histogram::points(bins, &counts, None),
                     pie: Vec::new(),
                     pie_skipped: 0,
@@ -384,6 +397,7 @@ impl ChartData {
                         .collect(),
                     elapsed_ms: grouped.elapsed_ms,
                     truncated: false,
+                    text_nulls: Default::default(),
                 };
                 &trimmed
             }
@@ -418,6 +432,10 @@ impl ChartData {
             series_total: prepared.series_names.len(),
             series_names: prepared.series_names,
             is_time_series: prepared.time_axis,
+            time_line: prepared
+                .time_axis
+                .then(|| crate::spec::prepare::time_line(&prepared.points))
+                .flatten(),
             rows: prepared.points,
             // A pie's skipped rows are in `prepared.notice` already.
             pie: prepared.pie,
@@ -731,12 +749,24 @@ impl RenderOnce for ChartPanel {
         let rows = data.rows.clone();
 
         let chart = match kind {
-            ChartKind::Line => SeriesPlot::lines_of("results-chart-line", rows, &data.series_names)
-                .into_any_element(),
-            ChartKind::Scatter => {
-                SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
-                    .into_any_element()
-            }
+            ChartKind::Line => match data.time_line.clone() {
+                Some((rows, xs)) => {
+                    SeriesPlot::lines_of("results-chart-line", rows, &data.series_names)
+                        .at_times(xs)
+                        .into_any_element()
+                }
+                None => SeriesPlot::lines_of("results-chart-line", rows, &data.series_names)
+                    .into_any_element(),
+            },
+            ChartKind::Scatter => match data.time_line.clone() {
+                Some((rows, xs)) => {
+                    SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
+                        .at_times(xs)
+                        .into_any_element()
+                }
+                None => SeriesPlot::scatter_of("results-chart-scatter", rows, &data.series_names)
+                    .into_any_element(),
+            },
             ChartKind::Stacked => {
                 GroupedBars::of("results-chart-stacked", rows, &data.series_names)
                     .time_axis(data.is_time_series)
@@ -1206,6 +1236,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }
     }
 
@@ -1285,6 +1316,7 @@ mod tests {
             rows,
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         assert!(data.rows.len() <= super::MAX_POINTS);
         assert!(!data.rows.is_empty());
@@ -1297,6 +1329,37 @@ mod tests {
                 .contains("降采样"),
             "a downsampled chart must say so, got {:?}",
             data.notice
+        );
+    }
+
+    #[test]
+    fn nan_and_infinity_leave_a_results_chart_row_out() {
+        let result = QueryResult {
+            columns: vec![
+                ColumnMeta {
+                    name: "x".into(),
+                    duck_type: String::new(),
+                    kind: ColumnKind::Text,
+                },
+                ColumnMeta {
+                    name: "y".into(),
+                    duck_type: String::new(),
+                    kind: ColumnKind::Numeric,
+                },
+            ],
+            rows: [["a", "1"], ["b", "NaN"], ["c", "inf"], ["d", "2"]]
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+                .collect(),
+            elapsed_ms: 0,
+            truncated: false,
+            text_nulls: Default::default(),
+        };
+        let (rows, total) = super::collect_plot_rows(&result, &[1], usize::MAX);
+        assert_eq!(total, 2);
+        assert_eq!(
+            rows.iter().map(|row| row.2[0]).collect::<Vec<_>>(),
+            [1., 2.]
         );
     }
 
@@ -1337,6 +1400,7 @@ mod tests {
             rows: Vec::from([row]),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         assert_eq!(data.series_names.len(), super::MAX_SERIES);
         assert_eq!(data.rows[0].values.len(), super::MAX_SERIES);
@@ -1359,6 +1423,7 @@ mod tests {
             rows,
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         assert_eq!(data.rows.len(), super::MAX_BARS);
         assert_eq!(data.rows[0].band, "city-0");
@@ -1381,6 +1446,7 @@ mod tests {
             ],
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         };
         let (rows, count) = super::collect_plot_rows(&result, &[1], 1);
         // parse_number accepts infinity, as the existing chart path does.
@@ -1453,6 +1519,7 @@ mod tests {
             rows,
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         assert_eq!(data.pie.len(), MAX_SLICES);
         // Largest first, and nothing is lost to the fold.
