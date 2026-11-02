@@ -128,6 +128,15 @@ ducklocal query --database warehouse.duckdb --read-write --sql "CREATE TABLE sal
 ducklocal query --database warehouse.duckdb --sql "SELECT count(*) FROM sales"
 ```
 
+## Restricted queries
+
+```bash
+ducklocal query --restricted --allow-read ./data --sql "SELECT * FROM 'data/sales.csv'"
+ducklocal query --restricted --database app.duckdb --timeout 10 --memory-limit 512MB --sql "SELECT count(*) FROM orders"
+```
+
+`--restricted` runs one SELECT (`FROM`, `VALUES`, `SHOW`, `DESCRIBE` and `SUMMARIZE` count; `EXPLAIN`, `PRAGMA` and top-level `PIVOT` do not, and a PIVOT that names its values works as a subquery: `SELECT * FROM (PIVOT t ON a IN ('x', 'y') USING sum(b))`) that can read only the `--database` file and the files and folders named by `--allow-read` (repeatable; each must exist). DuckDB refuses every other file, every URL, every extension, and any change of settings. `--timeout` (default 60 seconds) and `--memory-limit` (default `2GB`, nothing spills to disk) bound it. JSON output adds `restricted`: `{allow_read, timeout_seconds, memory_limit}`. Exit 1 with kind `policy_denied` (refused; never retried unrestricted), `policy_setup` (the limits could not be applied; nothing ran), `timeout` or `resource_limit`; exit 2 for `--read-write` with `--restricted`, or `--allow-read`, `--timeout` or `--memory-limit` without it. It binds the SQL, not the command line, and is not an operating-system sandbox; `schema`, `profile`, `check` and `open --run` do not run restricted. `docs/agent-security.md` has the threat model and limits per platform.
+
 CSV, JSON, and Parquet work with bundled support; no extra DuckDB CLI is required. Extensions are not automatically installed, though already installed extensions may autoload. Explicit INSTALL/LOAD requires authorization. Read-only database mode does not prevent filesystem/network side effects: COPY may write output even from a read-only database. Never automatically retry writes.
 
 ## JSONL and nested JSON

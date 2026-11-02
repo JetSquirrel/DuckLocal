@@ -21,6 +21,7 @@ mod query;
 mod query_tabs;
 mod recents;
 mod remote;
+mod restricted;
 mod s3;
 mod schema;
 mod schema_cli;
