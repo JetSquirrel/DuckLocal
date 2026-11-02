@@ -1355,7 +1355,7 @@ mod tests {
             truncated: false,
             text_nulls: Default::default(),
         };
-        let (rows, total) = collect_plot_rows(&result, &[1], usize::MAX);
+        let (rows, total) = super::collect_plot_rows(&result, &[1], usize::MAX);
         assert_eq!(total, 2);
         assert_eq!(
             rows.iter().map(|row| row.2[0]).collect::<Vec<_>>(),

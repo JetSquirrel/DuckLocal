@@ -1,6 +1,6 @@
-# Dashboard quality audit (Codex work package)
+# Dashboard quality audit
 
-**Status:** task specification; **implementation, verification, and findings are assigned to Codex** via the pull-request conversation.
+**Status:** done, with the results in [dashboard-quality-audit-findings.md](dashboard-quality-audit-findings.md). This page is the specification it worked from.
 
 **Goal:** make DuckLocal dashboard charts trustworthy and efficient for real investigations. Prioritize accurate interpretation of data, clear states, and reproducible interactions—not adding more chart types or redesigning the app.
 
@@ -53,7 +53,7 @@ Use small deterministic synthetic fixtures plus existing `examples/` (prefer ext
 | Fast hover and 20k map / 12×1500 scatter | No serious regression against existing perf-probe baselines |
 | Disconnected map tiles / disabled online basemap | Local chart behavior works without network |
 
-## Codex deliverables
+## Deliverables
 
 - [ ] Audit findings with **code references and verified reproductions**, ordered P0/P1/P2. Include items already correct; avoid speculative findings.
 - [ ] Add or extend automated tests for every confirmed P0 behavior and important P1 states.
@@ -73,7 +73,7 @@ Use small deterministic synthetic fixtures plus existing `examples/` (prefer ext
 
 ## Scope and review policy
 
-- **Owner:** Codex for inspection, tests and focused fixes; human maintainer reviews and merges.
+- **Owner:** the maintainer reviews and merges.
 - Do not introduce remote data upload, in-app LLM chat, new chart types, custom chart libraries or new dashboard DSL commands.
 - Keep GUI and agent/CLI output aligned: what the chart shows and what `open --state`/`check` reports must not contradict each other.
 - Link any findings that affect agent-generated `.dash` reviews to #64 / #65.

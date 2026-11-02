@@ -498,6 +498,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
                 result.columns[lat_ix].name, result.columns[lng_ix].name
             ),
             geo: Some(Arc::new(geo)),
+            notice: result.truncated.then(|| truncated_notice(result)),
             ..base(None)
         };
     }
@@ -1460,7 +1461,22 @@ mod tests {
             let notice = prepared.notice.unwrap_or_default();
             assert!(notice.contains(&expected), "{kind}: {notice:?}");
         }
-        // And a numeric scatter, which goes its own way.
+        // And a map, and a numeric scatter, which go their own ways.
+        let located = QueryResult {
+            truncated: true,
+            ..result(
+                vec![
+                    column("lat", ColumnKind::Numeric),
+                    column("lng", ColumnKind::Numeric),
+                ],
+                vec![vec!["1", "2"]],
+            )
+        };
+        let map = prepare(&plot("map", None, None), Some(&Ok(located)));
+        assert_eq!(
+            map.notice.as_deref(),
+            Some(trf("chart.notice.truncated", &["1"]).as_str())
+        );
         let data = QueryResult {
             truncated: true,
             ..y_over(ColumnKind::Numeric, vec![vec!["1", "2"]])
