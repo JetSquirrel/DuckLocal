@@ -2082,6 +2082,7 @@ mod tests {
                     rows: (0..100).map(|n| vec![n.to_string()]).collect(),
                     elapsed_ms: 1,
                     truncated: true,
+                    text_nulls: Default::default(),
                 };
                 let step = Step {
                     piece: Piece {

@@ -704,6 +704,31 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Downsampled: {} points → {} points (each point is the average of {} samples)",
     ),
     (
+        "chart.notice.series_left_out",
+        "仅显示前 {} / {} 个系列",
+        "Showing the first {} of {} series",
+    ),
+    (
+        "chart.notice.nonfinite",
+        "忽略了 {} 个 NaN 或无穷值",
+        "Left out {} NaN or infinite values",
+    ),
+    (
+        "chart.notice.null_breaks",
+        "折线在 {} 个 NULL 值处断开",
+        "The line breaks at {} NULL values",
+    ),
+    (
+        "chart.notice.no_time",
+        "{} 行没有时间，未绘制",
+        "{} rows have no time and aren't drawn",
+    ),
+    (
+        "chart.notice.even_spacing",
+        "各点沿横轴等距排列，不反映实际时间间隔",
+        "Points are evenly spaced along x, not by the time between them",
+    ),
+    (
         "chart.notice.truncated",
         "仅基于表格已加载的前 {} 行绘制，并非完整结果",
         "Drawn from the first {} rows the grid loaded, not the whole result",

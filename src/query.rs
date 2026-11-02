@@ -543,6 +543,21 @@ pub struct QueryResult {
     pub rows: Vec<Vec<String>>,
     pub elapsed_ms: u128,
     pub truncated: bool,
+    /// The `(row, column)` of each cell holding the text `NULL`, which `rows`
+    /// shows just as it shows a SQL NULL. Kept apart because they are rare and
+    /// a filter has to tell them apart.
+    pub text_nulls: std::collections::HashSet<(usize, usize)>,
+}
+
+impl QueryResult {
+    /// Whether a cell is SQL NULL, rather than the text that reads the same.
+    pub fn is_sql_null(&self, row: usize, column: usize) -> bool {
+        self.rows
+            .get(row)
+            .and_then(|cells| cells.get(column))
+            .is_some_and(|cell| cell == "NULL")
+            && !self.text_nulls.contains(&(row, column))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -660,6 +675,7 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
     let row_budget = MAX_ROWS.min(MAX_CELLS / column_count.max(1)).max(1);
 
     let mut out_rows = Vec::new();
+    let mut text_nulls = std::collections::HashSet::new();
     let mut truncated = false;
     while let Some(row) = rows.next()? {
         if out_rows.len() >= row_budget {
@@ -675,6 +691,9 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
             } else {
                 row.get_ref(ix)?
             };
+            if matches!(value, ValueRef::Text(b"NULL")) {
+                text_nulls.insert((out_rows.len(), ix));
+            }
             cells.push(value_ref_to_string(value));
         }
         out_rows.push(cells);
@@ -685,6 +704,7 @@ pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
         rows: out_rows,
         elapsed_ms: started.elapsed().as_millis(),
         truncated,
+        text_nulls,
     }))
 }
 

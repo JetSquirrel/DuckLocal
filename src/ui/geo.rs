@@ -1150,6 +1150,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }
     }
 
@@ -1305,6 +1306,7 @@ mod tests {
             .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }
     }
 

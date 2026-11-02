@@ -21,14 +21,14 @@
 //! Everything here is pure and tested as such; the view (`view.rs`) only
 //! renders what this prepares.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui_kit::SharedString;
 
 use super::format::{full_text, short_text, NumberFormat};
 use super::model::{Note, Plot};
-use crate::i18n::trf;
+use crate::i18n::{tr, trf};
 use crate::query::ColumnKind;
 use crate::query::QueryResult;
 use crate::ui::chart::{format_value, parse_number, pie_slices, PieSlice};
@@ -107,6 +107,12 @@ pub struct PreparedPlot {
     pub query: String,
     pub label_name: String,
     pub series_names: Vec<String>,
+    /// Each series' color, by place in the palette, when a re-run has moved it
+    /// from its position; see [`Self::slot`]. Empty on a first run.
+    pub series_slots: Vec<usize>,
+    /// Every series this plot has drawn and its color, gone ones included, so
+    /// one coming back has the color it left with.
+    pub known_slots: HashMap<String, usize>,
     pub points: Vec<Arc<PlotPoint>>,
     /// A `pie`'s slices, largest first.
     pub pie: Vec<Arc<PieSlice>>,
@@ -128,10 +134,13 @@ pub struct PreparedPlot {
     /// Whether `x` is a date or time column: its bands are points in time,
     /// in order, whose labels may be thinned — a category's never are.
     pub time_axis: bool,
-    /// A scatter over a numeric `x`: each point's x as a number, in the
-    /// order of `points` (ascending), for a linear x axis. `None` for every
-    /// other plot, whose x is bands.
+    /// A scatter over a numeric `x`, or a line or scatter over times: each
+    /// point's x as a number, in the order of `points` (ascending), for a
+    /// linear x axis. `None` for every other plot, whose x is bands.
     pub x_values: Option<Arc<Vec<f64>>>,
+    /// Whether `x_values` are times, whose labels are the points' own dates
+    /// rather than round numbers.
+    pub x_is_time: bool,
     /// How the plot's numbers read: `format`, parsed.
     pub format: Option<NumberFormat>,
     /// What was dropped or merged to keep the plot drawable.
@@ -198,7 +207,8 @@ fn scatter_points(
     base: PreparedPlot,
 ) -> PreparedPlot {
     let mut series: Vec<String> = Vec::new();
-    let mut series_total = 0usize;
+    let mut left_out: HashSet<String> = HashSet::new();
+    let mut nonfinite = 0usize;
     let mut rows: Vec<(f64, f64, usize)> = Vec::new();
     for row in &result.rows {
         let (Some(x), Some(y)) = (
@@ -207,6 +217,10 @@ fn scatter_points(
         ) else {
             continue;
         };
+        if !x.is_finite() || !y.is_finite() {
+            nonfinite += 1;
+            continue;
+        }
         let name = series_ix
             .and_then(|ix| row.get(ix))
             .cloned()
@@ -214,8 +228,8 @@ fn scatter_points(
         let s = match series.iter().position(|known| *known == name) {
             Some(s) => s,
             None => {
-                series_total += 1;
                 if series.len() >= MAX_SERIES {
+                    left_out.insert(name);
                     continue;
                 }
                 series.push(name);
@@ -230,11 +244,20 @@ fn scatter_points(
     rows.sort_by(|a, b| a.0.total_cmp(&b.0));
 
     let mut notices = Vec::new();
-    if series_total > MAX_SERIES {
+    if result.truncated {
+        notices.push(truncated_notice(result));
+    }
+    if !left_out.is_empty() {
         notices.push(trf(
-            "chart.notice.series_capped",
-            &[&MAX_SERIES.to_string(), &series_total.to_string()],
+            "chart.notice.series_left_out",
+            &[
+                &MAX_SERIES.to_string(),
+                &(series.len() + left_out.len()).to_string(),
+            ],
         ));
+    }
+    if nonfinite > 0 {
+        notices.push(trf("chart.notice.nonfinite", &[&nonfinite.to_string()]));
     }
     let drawn = rows.len();
     if drawn > MAX_SCATTER_POINTS {
@@ -290,6 +313,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         query: plot.query.clone(),
         label_name: plot.x.clone(),
         series_names: Vec::new(),
+        series_slots: Vec::new(),
+        known_slots: HashMap::new(),
         points: Vec::new(),
         pie: Vec::new(),
         geo: None,
@@ -301,6 +326,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         width: plot.width(),
         time_axis: false,
         x_values: None,
+        x_is_time: false,
         format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: None,
         failure,
@@ -511,16 +537,26 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     let mut band_ix: HashMap<String, usize> = HashMap::new();
     let mut series: Vec<String> = Vec::new();
     let mut series_ix_of: HashMap<String, usize> = HashMap::new();
-    let mut series_total = 0usize;
-    let mut series_capped = false;
+    let mut left_out: HashSet<String> = HashSet::new();
     let mut sums: Vec<Vec<(f64, u32)>> = Vec::new();
+    // A line stops at a reading that is missing, where a bar has nothing to
+    // show: which cells those are, by band and series.
+    let breaks_at_null = plot.kind == "line";
+    let mut nulls: HashSet<(usize, usize)> = HashSet::new();
+    let mut nonfinite = 0usize;
     for row in &result.rows {
-        let (Some(band), Some(value)) = (row.get(x_ix), row.get(y_ix)) else {
+        let (Some(band), Some(cell)) = (row.get(x_ix), row.get(y_ix)) else {
             continue;
         };
-        let Some(value) = parse_number(value) else {
+        let value = parse_number(cell);
+        if value.is_some_and(|value| !value.is_finite()) {
+            nonfinite += 1;
             continue;
-        };
+        }
+        let is_null = breaks_at_null && cell == "NULL";
+        if value.is_none() && !is_null {
+            continue;
+        }
         let series_name = series_ix
             .and_then(|ix| row.get(ix))
             .cloned()
@@ -528,9 +564,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         let s = match series_ix_of.get(&series_name) {
             Some(&s) => s,
             None => {
-                series_total += 1;
                 if series.len() >= MAX_SERIES {
-                    series_capped = true;
+                    left_out.insert(series_name);
                     continue;
                 }
                 let s = series.len();
@@ -548,9 +583,16 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             sums.push(vec![(0.0, 0); series.len()]);
             b
         });
-        let cell = &mut sums[b][s];
-        cell.0 += value;
-        cell.1 += 1;
+        match value {
+            Some(value) => {
+                let cell = &mut sums[b][s];
+                cell.0 += value;
+                cell.1 += 1;
+            }
+            None => {
+                nulls.insert((b, s));
+            }
+        }
     }
 
     let default_series = result.columns[y_ix].name.clone();
@@ -562,12 +604,22 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     };
 
     let mut notices: Vec<String> = Vec::new();
-    if series_capped {
+    if result.truncated {
+        notices.push(truncated_notice(result));
+    }
+    if !left_out.is_empty() {
         notices.push(trf(
-            "chart.notice.series_capped",
-            &[&MAX_SERIES.to_string(), &series_total.to_string()],
+            "chart.notice.series_left_out",
+            &[
+                &MAX_SERIES.to_string(),
+                &(series_names.len() + left_out.len()).to_string(),
+            ],
         ));
     }
+    if nonfinite > 0 {
+        notices.push(trf("chart.notice.nonfinite", &[&nonfinite.to_string()]));
+    }
+    let mut breaks = 0usize;
     let mut points: Vec<PlotPoint> = bands
         .iter()
         .enumerate()
@@ -579,6 +631,11 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
                     Some(&(sum, count)) if count > 0 => {
                         values.push(sum / count as f64);
                         present.push(true);
+                    }
+                    _ if nulls.contains(&(ix, s)) => {
+                        breaks += 1;
+                        values.push(GAP);
+                        present.push(false);
                     }
                     _ => {
                         values.push(0.0);
@@ -596,11 +653,22 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         })
         .collect();
 
+    if breaks > 0 {
+        notices.push(trf("chart.notice.null_breaks", &[&breaks.to_string()]));
+    }
+
     let time_axis = result.columns[x_ix].kind == ColumnKind::Temporal;
     if matches!(plot.kind.as_str(), "bar" | "stacked_bar") && time_axis {
         if let Some(filled) = fill_missing_days(&points, series_names.len()) {
             points = filled;
         }
+    }
+    // Sorted before any averaging, so that a bucket holds neighbours in time.
+    let on_a_time_axis = time_axis
+        && matches!(plot.kind.as_str(), "line" | "scatter")
+        && order_by_time(&mut points, &mut notices);
+    if time_axis && plot.kind == "area" && !evenly_spaced(&points) {
+        notices.push(tr("chart.notice.even_spacing").to_string());
     }
 
     let source_points = points.len();
@@ -634,8 +702,14 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             }
             let mut values = Vec::with_capacity(sums.len());
             let mut present = Vec::with_capacity(sums.len());
-            for (sum, count) in sums {
-                values.push(if count > 0 { sum / count as f64 } else { 0.0 });
+            for (s, (sum, count)) in sums.into_iter().enumerate() {
+                values.push(if count > 0 {
+                    sum / count as f64
+                } else if chunk.iter().any(|point| point.is_gap(s)) {
+                    GAP
+                } else {
+                    0.0
+                });
                 present.push(count > 0);
             }
             reduced.push(PlotPoint {
@@ -672,6 +746,9 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
     }
 
     let points: Vec<Arc<PlotPoint>> = points.into_iter().map(Arc::new).collect();
+    let x_values = on_a_time_axis
+        .then(|| time_line(&points).map(|(_, xs)| xs))
+        .flatten();
     let (pie, pie_skipped) = if plot.kind == "pie" {
         pie_slices(&points)
     } else {
@@ -689,6 +766,8 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         query: plot.query.clone(),
         label_name: result.columns[x_ix].name.clone(),
         series_names,
+        series_slots: Vec::new(),
+        known_slots: HashMap::new(),
         points,
         pie,
         geo: None,
@@ -699,11 +778,126 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         text: None,
         width: plot.width(),
         time_axis,
-        x_values: None,
+        x_is_time: x_values.is_some(),
+        x_values,
         format: plot.format.as_deref().and_then(NumberFormat::parse),
         notice: crate::i18n::join_all(&notices),
         failure: None,
     }
+}
+
+/// In a band's `values`, a reading the query returned as NULL. Never `present`,
+/// so nothing that reads present values sees it; see [`PlotPoint::is_gap`].
+const GAP: f64 = f64::NAN;
+
+impl PlotPoint {
+    /// Whether series `s` has a NULL here, which a line stops at, rather than
+    /// no row at all, which it crosses.
+    pub(crate) fn is_gap(&self, s: usize) -> bool {
+        !self.present.get(s).copied().unwrap_or(true)
+            && self.values.get(s).is_some_and(|value| value.is_nan())
+    }
+}
+
+fn truncated_notice(result: &QueryResult) -> String {
+    trf("chart.notice.truncated", &[&result.rows.len().to_string()])
+}
+
+/// Seconds a date or time band stands for, on a scale of its own kind: from
+/// the epoch for a date or a timestamp, an offset where it gives one, and from
+/// midnight for a time of day. `None` for anything else, an interval included.
+pub(crate) fn time_of(band: &str) -> Option<f64> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+    let seconds = |at: NaiveDateTime| {
+        let at = at.and_utc();
+        at.timestamp() as f64 + f64::from(at.timestamp_subsec_nanos()) / 1e9
+    };
+    for format in ["%Y-%m-%d %H:%M:%S%.f%#z", "%Y-%m-%dT%H:%M:%S%.f%#z"] {
+        if let Ok(at) = DateTime::parse_from_str(band, format) {
+            return Some(seconds(at.naive_utc()));
+        }
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(at) = NaiveDateTime::parse_from_str(band, format) {
+            return Some(seconds(at));
+        }
+    }
+    if let Ok(day) = NaiveDate::parse_from_str(band, "%Y-%m-%d") {
+        return Some(seconds(day.and_hms_opt(0, 0, 0)?));
+    }
+    let at = NaiveTime::parse_from_str(band, "%H:%M:%S%.f").ok()?;
+    Some(f64::from(at.num_seconds_from_midnight()) + f64::from(at.nanosecond()) / 1e9)
+}
+
+/// Points in time order, and each one's place on a linear axis.
+pub(crate) type TimeLine = (Vec<Arc<PlotPoint>>, Arc<Vec<f64>>);
+
+/// `points` in time order with each one's place in seconds from the first, for
+/// a linear axis. `None` when a band is not a time or they are all one time,
+/// and an even axis says as much as a linear one would.
+pub(crate) fn time_line(points: &[Arc<PlotPoint>]) -> Option<TimeLine> {
+    let mut timed = points
+        .iter()
+        .map(|point| Some((time_of(&point.band)?, point.clone())))
+        .collect::<Option<Vec<_>>>()?;
+    timed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (first, last) = (timed.first()?.0, timed.last()?.0);
+    if first == last {
+        return None;
+    }
+    let xs = timed.iter().map(|(at, _)| at - first).collect();
+    Some((
+        timed.into_iter().map(|(_, point)| point).collect(),
+        Arc::new(xs),
+    ))
+}
+
+/// Puts `points` in time order, leaving out a band with no time, which has no
+/// place on the axis, and saying so. False, with nothing changed, when another
+/// band isn't a time: the axis then stays evenly spaced.
+fn order_by_time(points: &mut Vec<PlotPoint>, notices: &mut Vec<String>) -> bool {
+    let times: Option<Vec<Option<f64>>> = points
+        .iter()
+        .map(|point| match point.band.as_ref() {
+            "NULL" => Some(None),
+            band => time_of(band).map(Some),
+        })
+        .collect();
+    let Some(times) = times else {
+        return false;
+    };
+    let count = points.len();
+    let mut timed: Vec<(f64, PlotPoint)> = times
+        .into_iter()
+        .zip(points.drain(..))
+        .filter_map(|(at, point)| Some((at?, point)))
+        .collect();
+    if timed.len() < count {
+        notices.push(trf(
+            "chart.notice.no_time",
+            &[&(count - timed.len()).to_string()],
+        ));
+    }
+    timed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    points.extend(timed.into_iter().map(|(_, point)| point));
+    true
+}
+
+/// Whether the bands are the same time apart, as an even axis draws them.
+/// Bands that aren't times have no spacing to get wrong.
+fn evenly_spaced(points: &[PlotPoint]) -> bool {
+    let Some(times) = points
+        .iter()
+        .map(|point| time_of(&point.band))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return true;
+    };
+    let mut steps = times.windows(2).map(|pair| pair[1] - pair[0]);
+    let Some(first) = steps.next() else {
+        return true;
+    };
+    steps.all(|step| (step - first).abs() < 1e-6)
 }
 
 /// `points` with an empty band for every day the query skipped, when every
@@ -894,6 +1088,62 @@ pub(crate) fn sort_series_by_name(plot: &mut PreparedPlot) {
     keep_series_order(plot, &names);
 }
 
+impl PreparedPlot {
+    /// Where in the palette series `s` takes its color.
+    pub(crate) fn slot(&self, s: usize) -> usize {
+        self.series_slots.get(s).copied().unwrap_or(s)
+    }
+
+    /// What this plot draws of its query's result, for `open --state`: what
+    /// the chart says under its title, as numbers an agent can read.
+    pub(crate) fn scope(&self, result: Option<&QueryResult>) -> serde_json::Value {
+        let plotted = match self.kind.as_str() {
+            "table" | "card" | "text" => None,
+            "pie" => Some(self.pie.len()),
+            "map" => Some(self.geo.as_ref().map_or(0, |geo| geo.point_count())),
+            _ => Some(self.points.len()),
+        };
+        serde_json::json!({
+            "source_rows": result.map(|result| result.rows.len()),
+            "query_truncated": result.map(|result| result.truncated),
+            "plotted_points": plotted,
+            "series": self.series_names.len(),
+            "x_scale": match (&self.x_values, self.x_is_time) {
+                (Some(_), true) => "time",
+                (Some(_), false) => "number",
+                (None, _) => "even",
+            },
+            "notice": self.notice,
+        })
+    }
+}
+
+/// Gives `plot`'s series the colors they had in `before`, by name. A color
+/// follows position otherwise, so a pick that empties the first series would
+/// recolor every one after it. A new series takes a color no series has had.
+pub(crate) fn keep_series_colors(plot: &mut PreparedPlot, before: &PreparedPlot) {
+    let mut known = before.known_slots.clone();
+    for (s, name) in before.series_names.iter().enumerate() {
+        known.entry(name.clone()).or_insert(before.slot(s));
+    }
+    let mut slots = Vec::with_capacity(plot.series_names.len());
+    for name in &plot.series_names {
+        let slot = match known.get(name) {
+            Some(&slot) => slot,
+            None => {
+                let free = (0..)
+                    .find(|slot| !known.values().any(|held| held == slot))
+                    .unwrap_or_default();
+                known.insert(name.clone(), free);
+                free
+            }
+        };
+        slots.push(slot);
+    }
+    plot.series_slots = slots;
+    plot.known_slots = known;
+}
+
 /// `plot`'s series put back in the order `before` had them, the ones new to
 /// it after: a series keeps its color when a pick re-runs the query. The
 /// order is first appearance, and a query ordered by x alone leaves which
@@ -926,6 +1176,359 @@ pub(crate) fn keep_series_order(plot: &mut PreparedPlot, before: &[String]) {
 mod tests {
     use super::*;
     use crate::query::{ColumnKind, ColumnMeta};
+
+    #[test]
+    fn a_series_keeps_its_color_while_others_come_and_go() {
+        let run = |series: &[&str]| {
+            let data = result(
+                vec![
+                    column("x", ColumnKind::Text),
+                    column("y", ColumnKind::Numeric),
+                    column("s", ColumnKind::Text),
+                ],
+                series.iter().map(|s| vec!["one", "1", *s]).collect(),
+            );
+            prepare(&plot("line", Some("y"), Some("s")), Some(&Ok(data)))
+        };
+        let next = |series: &[&str], before: &PreparedPlot| {
+            let mut plot = run(series);
+            keep_series_order(&mut plot, &before.series_names);
+            keep_series_colors(&mut plot, before);
+            plot
+        };
+        let color_of = |plot: &PreparedPlot, name: &str| {
+            let s = plot.series_names.iter().position(|n| n == name).unwrap();
+            plot.slot(s)
+        };
+
+        let all = run(&["A", "B", "C"]);
+        assert_eq!(color_of(&all, "B"), 1);
+        // A is filtered away, and B and C stay as they were.
+        let narrowed = next(&["B", "C"], &all);
+        assert_eq!(color_of(&narrowed, "B"), 1);
+        assert_eq!(color_of(&narrowed, "C"), 2);
+        // A new series takes no color anyone has had, not A's.
+        let added = next(&["B", "C", "D"], &narrowed);
+        assert_eq!(color_of(&added, "D"), 3);
+        // Everything back, each as it left.
+        let restored = next(&["D", "C", "B", "A"], &added);
+        for (name, slot) in [("A", 0), ("B", 1), ("C", 2), ("D", 3)] {
+            assert_eq!(color_of(&restored, name), slot, "{name}");
+        }
+    }
+
+    /// `open --state` says what the chart does: thinned from how many, cut
+    /// short or not, and the same words it shows.
+    #[test]
+    fn the_state_says_what_a_plot_draws_of_its_query() {
+        let rows = MAX_SCATTER_POINTS + 10;
+        let numbers: Vec<String> = (0..rows).map(|n| n.to_string()).collect();
+        let data = QueryResult {
+            truncated: true,
+            ..result(
+                vec![
+                    column("x", ColumnKind::Numeric),
+                    column("y", ColumnKind::Numeric),
+                ],
+                numbers.iter().map(|n| vec![n.as_str(), "1"]).collect(),
+            )
+        };
+        let prepared = prepare(
+            &plot("scatter", Some("y"), None),
+            Some(&Ok::<_, String>(&data)),
+        );
+        let scope = prepared.scope(Some(&data));
+        assert_eq!(scope["source_rows"], rows);
+        assert_eq!(scope["query_truncated"], true);
+        assert!(scope["plotted_points"].as_u64().unwrap() <= MAX_SCATTER_POINTS as u64);
+        assert_eq!(scope["x_scale"], "number");
+        assert_eq!(scope["series"], 1);
+        assert_eq!(scope["notice"].as_str(), prepared.notice.as_deref());
+        assert!(scope["notice"]
+            .as_str()
+            .unwrap()
+            .contains(&rows.to_string()));
+
+        // Before a result, or for a plot with nothing to plot, nothing claimed.
+        let table = prepare(&plot("table", None, None), Some(&Ok::<_, String>(&data)));
+        assert_eq!(
+            table.scope(Some(&data))["plotted_points"],
+            serde_json::Value::Null
+        );
+        assert_eq!(table.scope(None)["source_rows"], serde_json::Value::Null);
+    }
+
+    /// Loading has no plot yet; these are the two a finished query can be.
+    #[test]
+    fn an_empty_result_is_not_a_failure_and_a_failure_is_not_empty() {
+        let empty = y_over(ColumnKind::Text, vec![]);
+        for kind in ["line", "bar", "pie", "scatter", "area"] {
+            let plot = prepare(&plot(kind, Some("y"), None), Some(&Ok::<_, String>(&empty)));
+            assert_eq!(plot.failure, None, "{kind}");
+            assert!(plot.points.is_empty() && plot.pie.is_empty(), "{kind}");
+            let failed = prepare(
+                &self::plot(kind, Some("y"), None),
+                Some(&Err::<QueryResult, _>("Binder Error".to_string())),
+            );
+            assert_eq!(failed.failure.as_deref(), Some("Binder Error"), "{kind}");
+        }
+    }
+
+    fn y_over(x: ColumnKind, rows: Vec<Vec<&str>>) -> QueryResult {
+        result(vec![column("x", x), column("y", ColumnKind::Numeric)], rows)
+    }
+
+    #[test]
+    fn a_line_over_times_is_placed_by_the_time_between_points() {
+        let data = y_over(
+            ColumnKind::Temporal,
+            vec![
+                vec!["2026-01-10", "3"],
+                vec!["2026-01-01", "1"],
+                vec!["2026-01-02", "2"],
+            ],
+        );
+        let prepared = prepare(&plot("line", Some("y"), None), Some(&Ok(data)));
+        let day = 86_400.;
+        assert_eq!(
+            prepared.x_values.as_deref().map(Vec::as_slice),
+            Some(&[0., day, 9. * day][..])
+        );
+        assert!(prepared.x_is_time);
+        // In time order, whatever order the query gave.
+        let bands: Vec<&str> = prepared.points.iter().map(|p| p.band.as_ref()).collect();
+        assert_eq!(bands, ["2026-01-01", "2026-01-02", "2026-01-10"]);
+    }
+
+    /// The forms DuckDB really renders, through the real conversion.
+    #[test]
+    fn every_time_duckdb_renders_has_a_place_on_the_axis() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch("SET TimeZone = 'UTC'").ok();
+        for (sql, expected) in [
+            ("SELECT DATE '2026-01-02'", 1_767_312_000.),
+            ("SELECT TIMESTAMP '2026-01-02 03:04:05'", 1_767_323_045.),
+            ("SELECT TIMESTAMP '2026-01-02 03:04:05.5'", 1_767_323_045.5),
+            ("SELECT TIME '03:04:05'", 11_045.),
+            ("SELECT TIMESTAMP_S '2026-01-02 03:04:05'", 1_767_323_045.),
+            ("SELECT TIMESTAMP_MS '2026-01-02 03:04:05'", 1_767_323_045.),
+            ("SELECT TIMESTAMP_NS '2026-01-02 03:04:05'", 1_767_323_045.),
+            (
+                "SELECT TIMESTAMPTZ '2026-01-02 03:04:05+00'",
+                1_767_323_045.,
+            ),
+        ] {
+            let crate::query::QueryOutcome::Rows(rows) = crate::query::run_of(&conn, sql).unwrap()
+            else {
+                panic!("{sql} returns rows");
+            };
+            let cell = &rows.rows[0][0];
+            assert_eq!(time_of(cell), Some(expected), "{sql} rendered as {cell}");
+        }
+        // Different offsets for one instant are one time.
+        assert_eq!(
+            time_of("2026-01-02 08:00:00+08"),
+            time_of("2026-01-02 00:00:00+00")
+        );
+        assert_eq!(time_of("3 days"), None);
+        assert_eq!(time_of("NULL"), None);
+    }
+
+    #[test]
+    fn a_band_that_is_not_a_time_keeps_the_line_evenly_spaced() {
+        let data = y_over(
+            ColumnKind::Temporal,
+            vec![vec!["3 days", "1"], vec!["1 day", "2"]],
+        );
+        let prepared = prepare(&plot("line", Some("y"), None), Some(&Ok(data)));
+        assert_eq!(prepared.x_values, None);
+        assert!(!prepared.x_is_time);
+        assert_eq!(prepared.points[0].band.as_ref(), "3 days", "query order");
+    }
+
+    #[test]
+    fn a_null_reading_keeps_its_time_and_breaks_the_line() {
+        let data = y_over(
+            ColumnKind::Temporal,
+            vec![
+                vec!["2026-01-01", "1"],
+                vec!["2026-01-02", "NULL"],
+                vec!["2026-01-03", "0"],
+            ],
+        );
+        let prepared = prepare(&plot("line", Some("y"), None), Some(&Ok(data)));
+        assert_eq!(prepared.points.len(), 3);
+        assert!(prepared.points[1].is_gap(0));
+        assert!(!prepared.points[1].present[0]);
+        // A true zero is a reading.
+        assert!(prepared.points[2].present[0]);
+        assert!(!prepared.points[2].is_gap(0));
+        assert_eq!(prepared.points[1].label.as_ref(), "");
+        assert_eq!(
+            prepared.notice.as_deref(),
+            Some(trf("chart.notice.null_breaks", &["1"]).as_str())
+        );
+    }
+
+    /// Only a line stops at a NULL: on a bar or a pie it stays what it was.
+    #[test]
+    fn a_null_reading_stays_out_of_every_other_chart() {
+        for kind in ["bar", "pie", "area", "heatmap"] {
+            let data = y_over(
+                ColumnKind::Text,
+                vec![vec!["a", "1"], vec!["b", "NULL"], vec!["c", "3"]],
+            );
+            let prepared = prepare(&plot(kind, Some("y"), None), Some(&Ok(data)));
+            assert_eq!(prepared.points.len(), 2, "{kind}");
+            assert!(
+                prepared.points.iter().all(|p| p.values[0].is_finite()),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_with_no_time_says_it_is_left_off_a_time_axis() {
+        let data = y_over(
+            ColumnKind::Temporal,
+            vec![
+                vec!["2026-01-01", "1"],
+                vec!["NULL", "9"],
+                vec!["2026-01-03", "3"],
+            ],
+        );
+        let prepared = prepare(&plot("line", Some("y"), None), Some(&Ok(data)));
+        assert_eq!(prepared.points.len(), 2);
+        assert!(prepared.x_is_time);
+        assert_eq!(
+            prepared.notice.as_deref(),
+            Some(trf("chart.notice.no_time", &["1"]).as_str())
+        );
+    }
+
+    #[test]
+    fn an_area_over_uneven_times_says_it_is_evenly_spaced() {
+        let notice = |rows| {
+            prepare(
+                &plot("area", Some("y"), None),
+                Some(&Ok(y_over(ColumnKind::Temporal, rows))),
+            )
+            .notice
+        };
+        assert_eq!(
+            notice(vec![
+                vec!["2026-01-01", "1"],
+                vec!["2026-01-02", "2"],
+                vec!["2026-01-10", "3"],
+            ])
+            .as_deref(),
+            Some(tr("chart.notice.even_spacing"))
+        );
+        assert_eq!(
+            notice(vec![
+                vec!["2026-01-01", "1"],
+                vec!["2026-01-02", "2"],
+                vec!["2026-01-03", "3"],
+            ]),
+            None
+        );
+    }
+
+    /// Over the real row budget: a share of part of the data is not a share.
+    #[test]
+    fn every_chart_says_when_its_query_was_cut_short() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let crate::query::QueryOutcome::Rows(cut) = crate::query::run_of(
+            &conn,
+            "SELECT (range % 5)::VARCHAR AS x, 1 AS y FROM range(100001)",
+        )
+        .unwrap() else {
+            panic!("a SELECT returns rows");
+        };
+        assert!(cut.truncated);
+        let expected = trf("chart.notice.truncated", &[&cut.rows.len().to_string()]);
+        for kind in [
+            "pie",
+            "bar",
+            "stacked_bar",
+            "line",
+            "area",
+            "heatmap",
+            "scatter",
+        ] {
+            let prepared = prepare(&plot(kind, Some("y"), None), Some(&Ok::<_, String>(&cut)));
+            let notice = prepared.notice.unwrap_or_default();
+            assert!(notice.contains(&expected), "{kind}: {notice:?}");
+        }
+        // And a numeric scatter, which goes its own way.
+        let data = QueryResult {
+            truncated: true,
+            ..y_over(ColumnKind::Numeric, vec![vec!["1", "2"]])
+        };
+        let prepared = prepare(&plot("scatter", Some("y"), None), Some(&Ok(data)));
+        assert!(prepared.x_values.is_some());
+        assert!(prepared
+            .notice
+            .unwrap()
+            .contains(&trf("chart.notice.truncated", &["1"])));
+    }
+
+    #[test]
+    fn nan_and_infinity_do_not_reach_a_chart_and_are_counted() {
+        for bad in ["NaN", "inf", "-inf"] {
+            let data = y_over(ColumnKind::Text, vec![vec!["a", "1"], vec!["a", bad]]);
+            let prepared = prepare(&plot("line", Some("y"), None), Some(&Ok(data)));
+            assert_eq!(prepared.points[0].values[0], 1., "{bad}");
+            assert_eq!(
+                prepared.notice.as_deref(),
+                Some(trf("chart.notice.nonfinite", &["1"]).as_str())
+            );
+        }
+        let data = y_over(
+            ColumnKind::Numeric,
+            vec![vec!["1", "2"], vec!["inf", "3"], vec!["3", "NaN"]],
+        );
+        let prepared = prepare(&plot("scatter", Some("y"), None), Some(&Ok(data)));
+        assert_eq!(prepared.points.len(), 1);
+        assert_eq!(
+            prepared.notice.as_deref(),
+            Some(trf("chart.notice.nonfinite", &["2"]).as_str())
+        );
+    }
+
+    /// More rows of a series past the cap are not more series.
+    #[test]
+    fn the_series_cap_counts_series_not_rows() {
+        for x in [ColumnKind::Text, ColumnKind::Numeric] {
+            let mut data = result(
+                vec![
+                    column("x", x),
+                    column("y", ColumnKind::Numeric),
+                    column("s", ColumnKind::Text),
+                ],
+                vec![],
+            );
+            for i in 0..=MAX_SERIES {
+                data.rows
+                    .push(vec!["1".into(), "1".into(), format!("s{i}")]);
+            }
+            for _ in 0..99 {
+                data.rows
+                    .push(vec!["1".into(), "1".into(), format!("s{MAX_SERIES}")]);
+            }
+            let prepared = prepare(&plot("scatter", Some("y"), Some("s")), Some(&Ok(data)));
+            assert_eq!(
+                prepared.notice.as_deref(),
+                Some(
+                    trf(
+                        "chart.notice.series_left_out",
+                        &[&MAX_SERIES.to_string(), &(MAX_SERIES + 1).to_string()]
+                    )
+                    .as_str()
+                )
+            );
+        }
+    }
 
     fn plot(kind: &str, y: Option<&str>, series: Option<&str>) -> Plot {
         Plot {
@@ -976,6 +1579,7 @@ mod tests {
                 .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }
     }
 
@@ -1327,6 +1931,7 @@ mod tests {
             .collect(),
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         }
     }
 
@@ -1356,6 +1961,7 @@ mod tests {
             rows: vec![vec!["x".into()]],
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         let prepared = prepare(&map_plot(None, None, None), Some(&result));
         assert!(prepared.geo.is_none());
@@ -1383,6 +1989,7 @@ mod tests {
             rows,
             elapsed_ms: 0,
             truncated: false,
+            text_nulls: Default::default(),
         });
         let pie = prepare(&plot("pie", Some("y"), None), Some(&result));
         assert_eq!(pie.points.len(), 301, "nothing truncated");
