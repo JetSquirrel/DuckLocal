@@ -173,6 +173,10 @@ impl Sidebar {
                 .outline()
                 .xsmall()
                 .label(tr(label))
+                // Installing is a download: say so before it is one.
+                .when(matches!(action, ExtensionAction::Install), |button| {
+                    button.tooltip(tr("sidebar.extensions.install.tooltip"))
+                })
                 .loading(this_busy)
                 .disabled(any_busy)
                 .on_click(cx.listener(move |this, _, window, cx| {

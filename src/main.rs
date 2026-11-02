@@ -27,6 +27,7 @@ mod s3;
 mod schema;
 mod schema_cli;
 mod script;
+mod session;
 mod setup;
 mod sources;
 mod spec;

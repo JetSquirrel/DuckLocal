@@ -19,7 +19,7 @@ ducklocal warehouse.duckdb    # or an existing DuckDB database
 
 CSV, TSV, Parquet, JSON, and Excel files are queryable as soon as the window opens. You can also drag them onto the window or pick them from the file dialog; the workspace is remembered for the next launch.
 
-Your data stays on your machine, and there is no account. The only optional network use is the OpenStreetMap base map for map charts (View → Online base map, off by default), the update check, which downloads a newer release from dl.ducklocal.app and installs it on restart (a click on the version in the status bar, or DuckLocal → Check for Updates at Launch, off by default), and S3 when you configure it.
+Your data stays on your machine, and there is no account. The only optional network use is the OpenStreetMap base map for map charts (View → Online base map, off by default), the update check, which downloads a newer release from dl.ducklocal.app and installs it on restart (a click on the version in the status bar, or DuckLocal → Check for Updates at Launch, off by default), S3 when you configure it, extensions you install, and SQL that names a remote address. There is no telemetry. [Network and privacy](docs/network-and-privacy.md) lists every path and how to verify it.
 
 ## Features
 
@@ -66,6 +66,7 @@ ducklocal schema ./data/                                  # what can be queried,
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal check dashboard.dash                            # validate a dashboard spec
 ducklocal propose dashboard.dash --from new.dash          # suggest a change for a person to review
+ducklocal session show                                    # how an analysis got here, and what no longer holds
 ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window
 ducklocal open --state                                    # read back what the window shows
 ducklocal project check                                   # will this analysis folder work here, and if not, why

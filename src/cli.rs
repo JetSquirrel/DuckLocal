@@ -18,6 +18,7 @@ Usage:
   ducklocal comments FILE       Read and answer review comments on a dashboard
   ducklocal propose FILE        Suggest a dashboard change for the person to review
   ducklocal project check [DIR] Check a portable analysis folder and what it needs
+  ducklocal session show [FILE] Read back how an analysis got where it did
   ducklocal presence FILE       Show the person which plots you are working on
   ducklocal --version
 
@@ -752,35 +753,47 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     };
-    validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
-    let policy = options
-        .restricted
-        .then(|| {
-            crate::restricted::Policy::new(
-                &options.allow_read,
-                options.timeout_seconds,
-                options.memory_limit.clone(),
-            )
-        })
-        .transpose()?;
-    let conn = open(options.database, options.read_write)?;
-    let watch = match &policy {
-        Some(policy) => {
-            policy.enforce(&conn)?;
-            policy.admit(&conn, &sql)?;
-            Some(policy.watch(&conn))
-        }
-        None => None,
+    // Whatever stops it from here is worth a line in a session: a refusal, or
+    // a failure, is as much a part of how the work went as a result.
+    let run = || -> Result<_, CliError> {
+        validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
+        let policy = options
+            .restricted
+            .then(|| {
+                crate::restricted::Policy::new(
+                    &options.allow_read,
+                    options.timeout_seconds,
+                    options.memory_limit.clone(),
+                )
+            })
+            .transpose()?;
+        let conn = open(options.database.clone(), options.read_write)?;
+        let watch = match &policy {
+            Some(policy) => {
+                policy.enforce(&conn)?;
+                policy.admit(&conn, &sql)?;
+                Some(policy.watch(&conn))
+            }
+            None => None,
+        };
+        let result = crate::query::run_cli_of(&conn, &sql, options.limit).map_err(|e| {
+            let message = e.to_string();
+            match (&policy, &watch) {
+                (Some(policy), Some(watch)) => policy.classify(&message, watch),
+                _ => None,
+            }
+            .unwrap_or_else(|| with_keyword_hint(CliError::failure("sql", message), &sql))
+        })?;
+        Ok((result, policy))
     };
-    let result = crate::query::run_cli_of(&conn, &sql, options.limit).map_err(|e| {
-        let message = e.to_string();
-        match (&policy, &watch) {
-            (Some(policy), Some(watch)) => policy.classify(&message, watch),
-            _ => None,
-        }
-        .unwrap_or_else(|| with_keyword_hint(CliError::failure("sql", message), &sql))
-    })?;
-    drop(watch);
+    let outcome = run();
+    crate::session::record_query(
+        &sql,
+        options.database.as_deref(),
+        options.restricted,
+        outcome.as_ref().map(|(result, _)| result),
+    );
+    let (result, policy) = outcome?;
     if let (Some(policy), Format::Json) = (&policy, options.format) {
         let mut output =
             serde_json::to_value(&result).map_err(|e| CliError::failure("output", e))?;
@@ -926,6 +939,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "comments"
             | "propose"
             | "project"
+            | "session"
             | "presence"
             | "lsp"
             | "--help"
@@ -972,6 +986,8 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("propose", _) => crate::spec::proposal::run(&args[1..]),
         ("project", 2) if args[1] == "--help" => Ok(crate::project::HELP.to_string()),
         ("project", _) => crate::project::run(&args[1..]),
+        ("session", 2) if args[1] == "--help" => Ok(crate::session::HELP.to_string()),
+        ("session", _) => crate::session::run(&args[1..]),
         ("presence", 2) if args[1] == "--help" => Ok(crate::spec::presence::HELP.to_string()),
         ("presence", _) => crate::spec::presence::run(&args[1..]),
         ("lsp", 2) if args[1] == "--help" => Ok(LSP_HELP.to_string()),

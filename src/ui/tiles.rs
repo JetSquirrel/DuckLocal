@@ -88,6 +88,19 @@ pub(crate) fn enabled(cx: &mut App) -> bool {
     tiles.config.get_or_insert_with(Config::load).enabled
 }
 
+/// Where tiles come from, for saying so: `tile.openstreetmap.org`, unless
+/// `map_tile_url` names another server.
+pub(crate) fn server(cx: &mut App) -> String {
+    let tiles = cx.default_global::<Tiles>();
+    let template = &tiles.config.get_or_insert_with(Config::load).template;
+    template
+        .split("//")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or(template)
+        .to_string()
+}
+
 /// Turn the base map on or off, remember the choice, and redraw every map.
 pub(crate) fn toggle(cx: &mut App) {
     let tiles = cx.default_global::<Tiles>();
@@ -357,6 +370,20 @@ pub(crate) fn extent_of(key: TileKey) -> (f64, f64, f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    /// The promise on the network page: nothing reaches a tile server until
+    /// someone turns it on.
+    #[test]
+    fn the_base_map_is_off_until_turned_on() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            assert!(!super::Config::load().enabled);
+            crate::history::set_setting("map_tiles", "off").unwrap();
+            assert!(!super::Config::load().enabled);
+            crate::history::set_setting("map_tiles", "on").unwrap();
+            assert!(super::Config::load().enabled);
+        });
+    }
+
     use super::{covering, extent_of, tile_url, zoom_for, TileKey, DEFAULT_TEMPLATE, MAX_ZOOM};
 
     #[test]

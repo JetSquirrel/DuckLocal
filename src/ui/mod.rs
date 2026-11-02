@@ -134,6 +134,10 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &ToggleBaseMap, cx| {
         tiles::toggle(cx);
+        if tiles::enabled(cx) {
+            let server = tiles::server(cx);
+            notify_network(trf("notify.network.tiles_on", &[&server]), cx);
+        }
         // The item's check mark is part of the menu, built once.
         set_menus(cx);
     });
@@ -147,6 +151,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &CheckForUpdates, cx| update::check(cx));
     cx.on_action(|_: &ToggleUpdateCheck, cx| {
         update::toggle_at_launch(cx);
+        if update::at_launch(cx) {
+            notify_network(tr("notify.network.update_check_on").to_string(), cx);
+        }
         set_menus(cx);
     });
     // After the bindings: the menu bar reads each item's shortcut from the
@@ -157,6 +164,18 @@ pub fn init(cx: &mut App) {
 
 /// The menu bar: every command the window has, with its shortcut, where a
 /// Mac user looks for it. Rebuilt when the language changes.
+/// Someone just turned on something that reaches the network: say where it
+/// goes, once, as they do it. See docs/network-and-privacy.md.
+fn notify_network(message: String, cx: &mut App) {
+    if let Some(window) = cx.active_window() {
+        window
+            .update(cx, |_, window, cx| {
+                window.push_notification(Notification::info(message), cx);
+            })
+            .ok();
+    }
+}
+
 pub fn set_menus(cx: &mut App) {
     use gpui_kit::component::input;
     use gpui_kit::{Menu, MenuItem};

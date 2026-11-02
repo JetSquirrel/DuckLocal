@@ -185,6 +185,21 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.extensions.status.available", "未安装", "Not installed"),
     ("sidebar.extensions.origin.builtin", "内置", "built in"),
     ("sidebar.extensions.install", "安装", "Install"),
+    (
+        "sidebar.extensions.install.tooltip",
+        "从 DuckDB 的扩展服务器下载",
+        "Downloads it from DuckDB's extension server",
+    ),
+    (
+        "notify.network.tiles_on",
+        "在线底图已开启：地图会向 {} 请求所查看区域的地图瓦片，不会发送你的数据。",
+        "Online base map on: maps now ask {} for the tiles of the area you view. Your rows are not sent.",
+    ),
+    (
+        "notify.network.update_check_on",
+        "每次启动时会向 dl.ducklocal.app 查询新版本，并下载较新的版本。",
+        "DuckLocal will now ask dl.ducklocal.app for a new version at each launch, and download any it finds.",
+    ),
     ("sidebar.extensions.load", "加载", "Load"),
     ("sidebar.extensions.update", "更新", "Update"),
     ("sidebar.extensions.installed_notice", "已安装 {}", "Installed {}"),
@@ -344,8 +359,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dialog.s3.title", "配置 S3 数据源", "Configure S3 source"),
     (
         "dialog.s3.description",
-        "配置后可在侧栏展开 S3 浏览 bucket 与文件，或直接查询 s3://bucket/路径。凭据仅当前会话有效，不会写入磁盘；切换数据库连接后需重新配置。",
-        "Once configured, you can browse buckets and files under S3 in the sidebar, or query s3://bucket/path directly. Credentials are session-only and never written to disk; configure them again after switching database connections.",
+        "配置后可在侧栏展开 S3 浏览 bucket 与文件，或直接查询 s3://bucket/路径。凭据仅当前会话有效，不会写入磁盘；切换数据库连接后需重新配置。启用时会从 extensions.duckdb.org 下载 httpfs 扩展（如尚未安装），之后的请求发往上面的 Endpoint。",
+        "Once configured, you can browse buckets and files under S3 in the sidebar, or query s3://bucket/path directly. Credentials are session-only and never written to disk; configure them again after switching database connections. Enabling downloads DuckDB's httpfs extension from extensions.duckdb.org if it isn't installed, and requests then go to this endpoint.",
     ),
     ("dialog.s3.field.endpoint", "Endpoint", "Endpoint"),
     ("dialog.s3.field.region", "Region", "Region"),

@@ -101,7 +101,9 @@ pub fn check(args: &[OsString]) -> Result<String, CliError> {
     }
     let file = file.ok_or_else(|| CliError::argument("Name a .dash file to check"))?;
     let source = std::fs::read_to_string(&file).map_err(|e| CliError::failure("io", e))?;
-    check_source(&file, &source, database, summary, true)
+    let outcome = check_source(&file, &source, database, summary, true);
+    crate::session::record_check(&file, &source, outcome.as_deref());
+    outcome
 }
 
 /// The checks on `source`, as the spec at `file`: its paths start from that
@@ -326,6 +328,10 @@ pub fn check_source(
             "plots": spec.plots.len(),
             "unresolved": unresolved.iter().map(|u| &u["query"]).collect::<Vec<_>>(),
             "empty": empty.iter().map(|e| &e["query"]).collect::<Vec<_>>(),
+            "truncated": spec.queries.iter().zip(&query_rows)
+                .filter(|(_, rows)| matches!(rows, Some((_, true))))
+                .map(|(q, _)| &q.name)
+                .collect::<Vec<_>>(),
         })
         .to_string());
     }

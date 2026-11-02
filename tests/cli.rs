@@ -2182,6 +2182,237 @@ fn a_project_starts_from_what_is_in_the_folder() {
     assert!(lone.status.success());
 }
 
+/// A session, end to end through the real commands: what it records, what it
+/// keeps out, and what it says once the world has moved on.
+#[test]
+fn a_session_records_the_lineage_and_says_what_no_longer_holds() {
+    let s = Sandbox::new();
+    let session = s.0.join("work.session.jsonl");
+    let run = |args: &[&str]| -> Output {
+        let output = Command::new(env!("CARGO_BIN_EXE_ducklocal"))
+            .args(args)
+            .current_dir(&s.0)
+            .env("HOME", s.0.join("home"))
+            .env("XDG_CONFIG_HOME", s.0.join("home"))
+            .env("XDG_DATA_HOME", s.0.join("home"))
+            .env("DUCKLOCAL_SESSION", &session)
+            .env("DUCKLOCAL_AGENT", "TestAgent")
+            .output()
+            .unwrap();
+        assert!(
+            output.stderr.is_empty() || !output.status.success(),
+            "a session must not add noise: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    let json = |output: Output| -> Value {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    std::fs::write(
+        s.0.join("orders.csv"),
+        "region,amount\nEU,SENSITIVEVALUE\nUS,20\n",
+    )
+    .unwrap();
+    std::fs::write(s.0.join("big.csv"), "n\n1\n2\n3\n").unwrap();
+
+    // Without the variable, nothing is recorded.
+    s.success(&["query", "--sql", "SELECT * FROM 'big.csv'"]);
+    assert!(!session.exists());
+
+    json(run(&[
+        "query",
+        "--sql",
+        "SELECT region, amount FROM 'orders.csv'",
+    ]));
+    json(run(&[
+        "query",
+        "--sql",
+        "SELECT n FROM 'big.csv'",
+        "--limit",
+        "1",
+    ]));
+    let failed = run(&["query", "--sql", "SELECT * FROM 'no_such_file.csv'"]);
+    assert_eq!(failed.status.code(), Some(1));
+    let denied = run(&[
+        "query",
+        "--restricted",
+        "--sql",
+        "COPY (SELECT 1) TO 'x.csv'",
+    ]);
+    assert_eq!(denied.status.code(), Some(1));
+    json(run(&["query", "--sql", "SELECT 1 AS password"]));
+
+    // No rows and no credentials, anywhere in the file.
+    let text = std::fs::read_to_string(&session).unwrap();
+    assert!(!text.contains("SENSITIVEVALUE"), "{text}");
+    assert!(text.contains("may hold credentials"));
+    assert!(!text.contains("AS password"), "{text}");
+
+    let shown = json(run(&["session", "show"]));
+    let events = shown["events"].as_array().unwrap();
+    assert_eq!(shown["steps"], 5);
+    assert_eq!(events[0]["kind"], "query");
+    assert_eq!(events[0]["origin"], "TestAgent");
+    assert_eq!(events[0]["status"], "ok");
+    assert_eq!(events[0]["complete"], true);
+    assert_eq!(events[0]["sources"][0]["ref"], "orders.csv");
+    assert_eq!(events[0]["doubts"], json!([]));
+    assert!(events[0]["engine"]["duckdb"].is_string());
+    // Truncated: never shown as complete.
+    assert_eq!(events[1]["complete"], false);
+    assert_eq!(events[1]["truncated"], true);
+    assert!(events[1]["doubts"][0]
+        .as_str()
+        .unwrap()
+        .contains("only 1 of"));
+    // Failed, and refused, each said.
+    assert_eq!(events[2]["status"], "failed");
+    assert_eq!(events[2]["complete"], false);
+    assert_eq!(events[3]["error_kind"], "policy_denied");
+    assert_eq!(events[3]["restricted"], true);
+
+    // A conclusion rests on steps, and starts out with no doubts about them.
+    let noted = json(run(&[
+        "session", "note", "--text", "EU leads", "--refs", "1",
+    ]));
+    assert_eq!(noted["refs"], json!([1]));
+    let shown = json(run(&["session", "show"]));
+    let conclusion = &shown["conclusions"][0];
+    assert_eq!(conclusion["text"], "EU leads");
+    assert_eq!(conclusion["latest"], true);
+    assert_eq!(conclusion["doubts"], json!([]));
+
+    // The source moves on: the earlier conclusion says so, and a later one is
+    // told apart from it.
+    std::fs::write(s.0.join("orders.csv"), "region,amount\nEU,1\n").unwrap();
+    json(run(&[
+        "session",
+        "note",
+        "--text",
+        "On a truncated result",
+        "--refs",
+        "2",
+    ]));
+    let shown = json(run(&["session", "show"]));
+    let earlier = &shown["conclusions"][0];
+    assert_eq!(earlier["latest"], false);
+    assert!(earlier["doubts"][0]
+        .as_str()
+        .unwrap()
+        .contains("orders.csv has changed"));
+    let later = &shown["conclusions"][1];
+    assert_eq!(later["latest"], true);
+    assert!(later["doubts"][0].as_str().unwrap().contains("only 1 of"));
+    std::fs::remove_file(s.0.join("orders.csv")).unwrap();
+    let shown = json(run(&["session", "show"]));
+    assert!(shown["conclusions"][0]["doubts"][0]
+        .as_str()
+        .unwrap()
+        .contains("no longer there"));
+
+    // A spec's revisions: checked, changed, and the old text still to hand.
+    let spec = "query \"q\" {\n  sql = <<SQL\nSELECT 1 AS n\nSQL\n}\n";
+    std::fs::write(s.0.join("a.dash"), spec).unwrap();
+    json(run(&["check", "a.dash", "--summary"]));
+    let check_seq = json(run(&["session", "show"]))["latest_seq"].clone();
+    let seq = check_seq.to_string();
+    std::fs::write(s.0.join("a.dash"), format!("{spec}\n")).unwrap();
+    let step = json(run(&["session", "get", "--seq", &seq]));
+    assert_eq!(step["kind"], "check");
+    assert_eq!(step["revision"]["text"], spec);
+    assert!(step["doubts"][0]
+        .as_str()
+        .unwrap()
+        .contains("spec has changed"));
+    // `show` stays bounded: the text is left to `get`, and --last is honoured.
+    let shown = json(run(&["session", "show", "--last", "1"]));
+    assert_eq!(shown["events"].as_array().unwrap().len(), 1);
+    assert!(shown["omitted_steps"].as_u64().unwrap() > 0);
+    assert!(shown["events"][0]["revision"].get("text").is_none());
+
+    // A proposal is a step, and shows how it stands.
+    std::fs::write(s.0.join("new.dash"), format!("{spec}\n\n")).unwrap();
+    json(run(&["propose", "a.dash", "--from", "new.dash"]));
+    let shown = json(run(&["session", "show", "--last", "1"]));
+    assert_eq!(shown["events"][0]["kind"], "proposal");
+    assert!(shown["events"][0]["doubts"][0]
+        .as_str()
+        .unwrap()
+        .contains("not yet decided"));
+
+    // For reading, with its doubts in it.
+    let page = String::from_utf8(run(&["session", "show", "--format", "md"]).stdout).unwrap();
+    assert!(page.contains("**Conclusion:** EU leads"), "{page}");
+    assert!(page.contains("⚠"), "{page}");
+
+    // Mistakes.
+    s.error(&["session"], 2, "argument");
+    s.error(&["session", "show"], 2, "argument");
+    assert_eq!(
+        run(&["session", "note", "--text", "x", "--refs", "999"])
+            .status
+            .code(),
+        Some(2)
+    );
+    assert_eq!(
+        run(&["session", "get", "--seq", "999"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(run(&["session", "dance"]).status.code(), Some(2));
+
+    // Clearing: named outright, and only a session file.
+    assert_eq!(run(&["session", "clear"]).status.code(), Some(2));
+    std::fs::write(s.0.join("notes.txt"), "mine").unwrap();
+    assert_eq!(
+        run(&["session", "clear", "notes.txt"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.0.join("notes.txt")).unwrap(),
+        "mine"
+    );
+    assert_eq!(
+        json(run(&["session", "clear", "work.session.jsonl"]))["cleared"],
+        true
+    );
+    assert!(!session.exists());
+    assert_eq!(
+        json(run(&["session", "clear", "work.session.jsonl"]))["cleared"],
+        false
+    );
+}
+
+#[test]
+fn a_session_that_cannot_be_written_warns_and_the_work_still_stands() {
+    let s = Sandbox::new();
+    std::fs::write(s.0.join("notes.txt"), "mine\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_ducklocal"))
+        .args(["query", "--sql", "SELECT 1 AS n"])
+        .current_dir(&s.0)
+        .env("HOME", s.0.join("home"))
+        .env("XDG_CONFIG_HOME", s.0.join("home"))
+        .env("XDG_DATA_HOME", s.0.join("home"))
+        .env("DUCKLOCAL_SESSION", "notes.txt")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let warning: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(warning["warning"]
+        .as_str()
+        .unwrap()
+        .contains("not a session"));
+    assert_eq!(
+        std::fs::read_to_string(s.0.join("notes.txt")).unwrap(),
+        "mine\n"
+    );
+}
+
 #[test]
 fn schema_stats_profiles_one_relation() {
     let s = Sandbox::new();
