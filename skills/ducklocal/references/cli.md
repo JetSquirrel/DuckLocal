@@ -73,6 +73,21 @@ Stages `--from` (the whole new spec, or `-` for stdin) beside the spec in `dashb
 
 Output: `{id, status, stale, base_hash, current_hash, note, author, at, decided_at, backup, applied_despite_failed_checks}`, plus after proposing `check`: `{ok, failure, unresolved, empty, truncated}`. `status` is `pending`, `applied`, `rejected`, or `none` with only `current_hash`. A proposal is staged even when `check.ok` is false, and the person sees why. Exit 2 for arguments (including a proposal identical to the spec), 1 with kind `stale` when `--based-on` no longer matches, or `io`.
 
+## Portable projects
+
+```bash
+ducklocal project init [DIR] [--name NAME]     # write ducklocal-project.json, listing the dashboards found
+ducklocal project check [PATH]                 # what a move would break
+ducklocal project relink --source orders --to data/2026/orders.csv
+ducklocal project relink --data archive --to /mnt/archive/old.csv
+```
+
+An optional `ducklocal-project.json` in a folder: `{"version": 1, "name", "dashboards": ["reports/a.dash"], "data": [{"name", "path", "sample"}], "requires": {"duckdb": "v2.0.0", "extensions": ["httpfs"]}}`, with relative paths and forward slashes. Data is referenced, never copied. Opening the manifest in the window opens its dashboards, only those inside its folder.
+
+`check` runs the `check` pipeline over each dashboard and prints `{project, manifest, ok, portable, ducklocal, duckdb, dashboards, data, extensions, problems, limitations}`, exiting 0 whatever it found. `ok: false` means something is missing or failed; `portable: false` means a path won't survive a move (absolute, outside the folder, or backslashes). Each problem has `{kind, what, hint}`, with kind `missing_source`, `missing_data`, `missing_dashboard`, `missing_extension`, `failed_check`, `not_portable` or `no_dashboards`. Statuses are `ok`, `missing`, `absolute`, `outside` and `remote` for data, `ok`, `failed`, `remote`, `missing` and `outside` for dashboards (`checked` says whether its queries ran), and `loaded`, `installed` and `missing` for extensions. It never reaches the network: a dashboard reading remote data is left unrun and listed in `limitations`, which also says what passing does not cover, such as a source with the same name and different data.
+
+`relink` points a source at a new path in every dashboard naming it, keeping each old one as `NAME.dash.bak`, or changes a manifest data entry. It works everything out before writing, and refuses a path that isn't there. Exit 2 for arguments, 1 with kind `project` (the manifest doesn't read), `exists` (`init` won't replace one) or `not_found`.
+
 ## Review comments on a dashboard
 
 ```bash

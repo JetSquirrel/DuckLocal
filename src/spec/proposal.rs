@@ -81,7 +81,7 @@ fn now() -> String {
 
 /// Written whole and renamed into place, so nothing ever reads half a file and
 /// a failed write leaves the old one as it was.
-fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut name = path.file_name().map(OsString::from).unwrap_or_default();
     name.push(".writing");
     let temporary = path.with_file_name(name);

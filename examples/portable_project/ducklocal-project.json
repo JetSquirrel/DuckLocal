@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "name": "orders",
+  "dashboards": [
+    "reports/orders.dash"
+  ]
+}

@@ -48,6 +48,14 @@ pub fn split(paths: Vec<String>) -> (Vec<PathBuf>, Vec<String>) {
     let mut rest = Vec::new();
     for path in paths {
         let expanded = PathBuf::from(crate::db::expand_tilde(&path));
+        // A project's manifest opens as its dashboards. One that does not read
+        // goes on as data, and opening it as data says what is wrong.
+        if crate::project::is_manifest(&expanded) {
+            if let Ok(dashboards) = crate::project::dashboards_of(&expanded) {
+                specs.extend(dashboards.into_iter().filter(|spec| is_spec(spec)));
+                continue;
+            }
+        }
         if is_spec(&expanded) {
             specs.push(expanded);
         } else {

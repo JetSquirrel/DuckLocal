@@ -1,0 +1,26 @@
+// A dashboard inside a portable project. Its data path is relative to this
+// file, so the whole folder can move:
+//
+//   ducklocal project check examples/portable_project
+//   ducklocal examples/portable_project/ducklocal-project.json
+
+source "orders" {
+  path = "../data/orders.csv"
+}
+
+query "by_channel" {
+  sql = <<SQL
+    SELECT channel, sum(revenue) AS revenue
+    FROM orders
+    GROUP BY channel
+    ORDER BY revenue DESC
+  SQL
+}
+
+plot "revenue" {
+  type  = "bar"
+  title = "Revenue by channel"
+  query = query.by_channel
+  x     = "channel"
+  y     = "revenue"
+}

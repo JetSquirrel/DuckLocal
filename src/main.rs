@@ -17,6 +17,7 @@ mod overview;
 #[cfg(test)]
 mod perf_probe;
 mod profile;
+mod project;
 mod query;
 mod query_tabs;
 mod recents;
