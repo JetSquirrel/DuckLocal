@@ -526,6 +526,18 @@ pub fn is_newer(tag: &str, current: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The promise on the network page: nothing asks for an update at launch
+    /// until someone turns it on.
+    #[gpui_kit::test]
+    fn no_check_at_launch_until_turned_on(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            assert!(!cx.update(super::at_launch));
+            cx.update(super::on_launch);
+            assert_eq!(cx.update(|cx| super::status(cx)), super::Status::Idle);
+        });
+    }
+
     use super::{is_newer, package_url, team_identifier, Manifest};
 
     #[test]
