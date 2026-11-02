@@ -1519,6 +1519,100 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
 }
 
 #[test]
+fn propose_stages_a_change_and_only_the_window_applies_it() {
+    let s = Sandbox::new();
+    let spec = "query \"q\" {\n  sql = <<SQL\nSELECT 1 AS n\nSQL\n}\n";
+    let new = "query \"q\" {\n  sql = <<SQL\nSELECT 2 AS n\nSQL\n}\n";
+    std::fs::write(s.0.join("a.dash"), spec).unwrap();
+    std::fs::write(s.0.join("new.dash"), new).unwrap();
+    std::fs::write(s.0.join("broken.dash"), "query \"q\" {").unwrap();
+    let json = |output: Output| -> Value {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+
+    let none = json(s.run(&["propose", "a.dash", "--status"], None));
+    assert_eq!(none["status"], "none");
+    let hash = none["current_hash"].as_str().unwrap().to_string();
+
+    let staged = json(s.run(
+        &[
+            "propose",
+            "a.dash",
+            "--from",
+            "new.dash",
+            "--note",
+            "two",
+            "--based-on",
+            &hash,
+        ],
+        None,
+    ));
+    assert_eq!(staged["status"], "pending");
+    assert_eq!(staged["stale"], false);
+    assert_eq!(staged["base_hash"], hash.as_str());
+    assert_eq!(staged["note"], "two");
+    assert_eq!(staged["check"]["ok"], true);
+    assert_eq!(std::fs::read_to_string(s.0.join("a.dash")).unwrap(), spec);
+
+    // A malformed spec is staged, and the check says what is wrong with it.
+    let broken = json(s.run(&["propose", "a.dash", "--from", "broken.dash"], None));
+    assert_eq!(broken["status"], "pending");
+    assert_eq!(broken["check"]["ok"], false);
+    assert!(broken["check"]["failure"].is_string());
+    assert_ne!(broken["id"], staged["id"]);
+    // From stdin, too.
+    let piped = json(s.run(&["propose", "a.dash", "--from", "-"], Some(new.as_bytes())));
+    assert_eq!(piped["check"]["ok"], true);
+    assert_eq!(std::fs::read_to_string(s.0.join("a.dash")).unwrap(), spec);
+
+    // Someone edits the spec: the proposal reads as stale, and a new one
+    // based on the old hash is refused.
+    std::fs::write(s.0.join("a.dash"), format!("{spec}\n")).unwrap();
+    let status = json(s.run(&["propose", "a.dash", "--status"], None));
+    assert_eq!(status["status"], "pending");
+    assert_eq!(status["stale"], true);
+    assert_ne!(status["current_hash"], hash.as_str());
+    let error = s.error(
+        &[
+            "propose",
+            "a.dash",
+            "--from",
+            "new.dash",
+            "--based-on",
+            &hash,
+        ],
+        1,
+        "stale",
+    );
+    assert!(error["error"]["hint"].is_string());
+
+    // Nothing here applies: the flag does not exist.
+    s.error(&["propose", "a.dash", "--apply"], 2, "argument");
+    // Mistakes.
+    s.error(&["propose", "a.dash"], 2, "argument");
+    s.error(&["propose", "--status"], 2, "argument");
+    s.error(&["propose", "a.dash", "b.dash", "--status"], 2, "argument");
+    s.error(
+        &["propose", "a.dash", "--status", "--note", "x"],
+        2,
+        "argument",
+    );
+    s.error(&["propose", "absent.dash", "--from", "new.dash"], 1, "io");
+    s.error(&["propose", "a.dash", "--from", "absent.dash"], 1, "io");
+    std::fs::write(s.0.join("same.dash"), format!("{spec}\n")).unwrap();
+    s.error(&["propose", "a.dash", "--from", "same.dash"], 2, "argument");
+    let help = s.run(&["propose", "--help"], None);
+    assert!(String::from_utf8(help.stdout)
+        .unwrap()
+        .contains("--based-on"));
+}
+
+#[test]
 fn schema_stats_profiles_one_relation() {
     let s = Sandbox::new();
     std::fs::write(
