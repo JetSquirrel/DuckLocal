@@ -1519,6 +1519,31 @@ fn open_state_reads_a_running_window_and_never_starts_one() {
 }
 
 #[test]
+fn open_tracks_a_request_only_against_a_window_that_is_there() {
+    let s = Sandbox::new();
+    let help = s.run(&["open", "--help"], None);
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("--if-revision") && help.contains("--wait"));
+    // A window started now cannot show the revision the caller read: this
+    // fails rather than launching one, with no --no-launch asked for.
+    s.error(
+        &["open", "--sql", "SELECT 1", "--if-revision", "abc"],
+        1,
+        "not_running",
+    );
+    s.error(
+        &["open", "--no-launch", "--wait", "--sql", "SELECT 1"],
+        1,
+        "not_running",
+    );
+    // They qualify something to open: alone, or on a read, they are mistakes.
+    s.error(&["open", "--wait"], 2, "argument");
+    s.error(&["open", "--if-revision", "abc"], 2, "argument");
+    s.error(&["open", "--state", "--wait"], 2, "argument");
+    s.error(&["open", "--state", "--if-revision", "abc"], 2, "argument");
+}
+
+#[test]
 fn schema_stats_profiles_one_relation() {
     let s = Sandbox::new();
     std::fs::write(

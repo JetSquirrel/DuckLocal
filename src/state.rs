@@ -80,6 +80,8 @@ pub struct AppState {
     pub s3_config: Option<crate::s3::S3Config>,
     /// Open/attach requests in flight; > 0 while a data source is being opened.
     open_requests: usize,
+    /// How many open requests have failed, and the last one's error.
+    open_failures: (u64, Option<String>),
     /// Set once startup's open request has landed. Until then the panels have
     /// no opinion: their emptiness is "not loaded yet", not "nothing here".
     is_ready: bool,
@@ -113,6 +115,7 @@ impl AppState {
             attached_files: Vec::new(),
             s3_config: None,
             open_requests: 0,
+            open_failures: (0, None),
             is_ready: false,
             // Read once, at construction: the history store is opened before
             // the window, and a store that cannot be read means "shown".
@@ -167,6 +170,20 @@ impl AppState {
     /// Whether an open/attach request is in flight.
     pub fn is_opening(&self) -> bool {
         self.open_requests > 0
+    }
+
+    /// How many open requests have failed, for telling whether one just did.
+    pub fn open_failures(&self) -> u64 {
+        self.open_failures.0
+    }
+
+    pub fn last_open_failure(&self) -> Option<&str> {
+        self.open_failures.1.as_deref()
+    }
+
+    pub fn note_open_failure(&mut self, error: String) {
+        self.open_failures.0 += 1;
+        self.open_failures.1 = Some(error);
     }
 
     /// Mark the start of an open/attach request; paired with `end_open`.

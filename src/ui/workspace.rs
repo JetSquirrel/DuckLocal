@@ -479,7 +479,7 @@ impl Workspace {
         let host = cx.new(|cx| Dashboard::new(id, path.clone(), cx));
         let events = cx.subscribe_in(&host, window, |this, _, event, window, cx| match event {
             DashboardEvent::OpenSql { sql, title } => {
-                this.open_query_tab(sql.clone(), Some(title.clone()), window, cx)
+                this.open_query_tab(sql.clone(), Some(title.clone()), window, cx);
             }
         });
         self.tabs.push(WorkspaceTab::Dashboard(DashboardTab {
@@ -729,6 +729,7 @@ impl Workspace {
             .enumerate()
             .map(|(ix, tab)| {
                 let mut entry = json!({
+                    "id": tab.id(),
                     "title": tab.title().to_string(),
                     "active": ix == self.active,
                 });
@@ -818,8 +819,9 @@ impl Workspace {
         title: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
         let mut tab = self.new_tab_editor(window, cx);
+        let id = tab.id;
         if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
             tab.title = title.into();
         }
@@ -831,6 +833,7 @@ impl Workspace {
         self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
+        id
     }
 
     /// The `+` menu's "Open dashboard…": a `.dash` file, from the system
@@ -1403,8 +1406,38 @@ impl Workspace {
     }
 
     /// Whether the window connection is already running something of ours.
-    fn busy(&self) -> bool {
+    pub(crate) fn busy(&self) -> bool {
         self.running || self.explaining || self.profiling
+    }
+
+    /// Bring query tab `id` forward and run it, for `ducklocal open --run`.
+    /// False when that tab is gone or a run is already going.
+    pub(crate) fn run_query_tab(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let tab = self
+            .tabs
+            .iter()
+            .position(|tab| matches!(tab, WorkspaceTab::Query(tab) if tab.id == id));
+        let Some(ix) = tab.filter(|_| !self.busy()) else {
+            return false;
+        };
+        if ix != self.active {
+            self.activate(ix, window, cx);
+        }
+        self.run_active(window, cx);
+        true
+    }
+
+    /// What query tab `id` shows, as the state reports it; `None` once closed.
+    pub(crate) fn query_tab_result(&self, id: u64, cx: &App) -> Option<serde_json::Value> {
+        self.tabs.iter().find_map(|tab| match tab {
+            WorkspaceTab::Query(tab) if tab.id == id => Some(tab.results.read(cx).summary()),
+            _ => None,
+        })
     }
 
     fn profile_active(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1998,6 +2031,105 @@ mod tests {
         EditorTarget, TabKind,
     };
     use std::path::Path;
+
+    /// A real workspace's state, with a result in its tab, against the
+    /// published schema: the contract is what the window sends, not a copy of
+    /// it in a test.
+    #[gpui_kit::test]
+    fn the_state_a_workspace_reports_fits_the_published_schema(cx: &mut gpui_kit::TestAppContext) {
+        use crate::handoff::{contract::schema_violations, publish, ActionLog};
+        use crate::query::{ColumnKind, ColumnMeta, QueryOutcome, QueryResult};
+        use crate::script::{Piece, PieceKind, Step};
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::{AppContext, Bounds, Point, WindowBounds, WindowOptions};
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let (window, workspace) = cx
+            .update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: gpui_kit::size(gpui_kit::px(1024.), gpui_kit::px(640.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let state = cx.new(crate::state::AppState::new);
+                        cx.new(|cx| super::Workspace::new(state, window, cx))
+                    },
+                )
+            })
+            .expect("open test window");
+        cx.update_window(window, |_, window, cx| {
+            let sql = "SELECT n FROM t".to_string();
+            let tab = workspace.update(cx, |workspace, cx| {
+                let tab = workspace.open_query_tab(sql.clone(), None, window, cx);
+                let Some(super::WorkspaceTab::Query(query)) = workspace.tabs.last() else {
+                    panic!("the tab just opened is a query tab");
+                };
+                let rows = QueryResult {
+                    columns: vec![ColumnMeta {
+                        name: "n".into(),
+                        kind: ColumnKind::Numeric,
+                        duck_type: "INTEGER".into(),
+                    }],
+                    rows: (0..100).map(|n| vec![n.to_string()]).collect(),
+                    elapsed_ms: 1,
+                    truncated: true,
+                };
+                let step = Step {
+                    piece: Piece {
+                        kind: PieceKind::Sql,
+                        range: 0..sql.len(),
+                    },
+                    outcome: Some(Ok(QueryOutcome::Rows(rows))),
+                };
+                query.results.update(cx, |results, cx| {
+                    results.set_script(vec![step], sql.clone(), window, cx)
+                });
+                tab
+            });
+            let read = |cx: &gpui_kit::App| {
+                let mut body = workspace.read(cx).snapshot(cx);
+                body["database"] = serde_json::json!(":memory:");
+                body["attached"] = serde_json::json!([]);
+                publish(body, &ActionLog::default())
+            };
+            let state = read(cx);
+            assert_eq!(schema_violations(&state), Vec::<String>::new());
+
+            let tabs = state["tabs"].as_array().unwrap();
+            let shown = tabs.iter().find(|t| t["id"] == serde_json::json!(tab));
+            let result = &shown.expect("the tab is reported under its id")["result"];
+            assert_eq!(result["status"], "rows");
+            assert_eq!(result["view"], "table");
+            assert_eq!(result["row_count"], 100);
+            assert_eq!(result["truncated"], true);
+            assert_eq!(
+                result["preview"].as_array().unwrap().len(),
+                crate::remote::STATE_PREVIEW_ROWS
+            );
+
+            // Nothing changed, so nothing is stale; an edit makes it so.
+            assert_eq!(read(cx)["revision"], state["revision"]);
+            workspace.update(cx, |workspace, cx| {
+                let Some(super::WorkspaceTab::Query(query)) = workspace.tabs.last() else {
+                    panic!("the tab just opened is a query tab");
+                };
+                query
+                    .editor
+                    .update(cx, |editor, cx| editor.set_value("SELECT 2", window, cx));
+            });
+            assert_ne!(read(cx)["revision"], state["revision"]);
+        })
+        .unwrap();
+    }
 
     /// Three tabs with a dashboard in the middle, the arrangement the branch
     /// mistakes would show up in.

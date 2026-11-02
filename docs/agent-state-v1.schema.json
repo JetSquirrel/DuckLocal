@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DuckLocal window state, version 1",
+  "description": "What `ducklocal open --state` prints. New fields may appear within a version; renaming or removing a field, or changing what one means, bumps schema_version.",
+  "type": "object",
+  "required": ["schema_version", "revision", "limits", "actions", "database", "attached", "active_tab", "tabs"],
+  "properties": {
+    "schema_version": { "enum": [1] },
+    "revision": {
+      "type": "string",
+      "description": "Hash of everything here except schema_version, limits and actions. Pass it to `open --if-revision`. It always covers the whole window, also when --active or a PATH narrows tabs."
+    },
+    "limits": {
+      "type": "object",
+      "required": ["preview_rows", "preview_cell_chars", "preview_bytes"],
+      "properties": {
+        "preview_rows": { "type": "integer" },
+        "preview_cell_chars": { "type": "integer" },
+        "preview_bytes": { "type": "integer" }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "description": "The window's recent `ducklocal open` requests, oldest first; it keeps the last 32.",
+      "items": {
+        "type": "object",
+        "required": ["request_id", "status", "tab_id", "result_status", "error", "based_on_revision", "current_revision"],
+        "properties": {
+          "request_id": { "type": "string" },
+          "status": { "enum": ["stale", "queued", "running", "opened", "succeeded", "failed"] },
+          "tab_id": { "type": ["integer", "null"] },
+          "result_status": { "type": ["string", "null"] },
+          "error": { "type": ["string", "null"] },
+          "based_on_revision": { "type": ["string", "null"] },
+          "current_revision": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "database": { "type": ["string", "null"] },
+    "attached": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "name", "rows"],
+        "properties": {
+          "path": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "active_tab": { "type": ["integer", "null"] },
+    "tabs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "active", "kind"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Stable while the tab is open; not across a restart of the window."
+          },
+          "title": { "type": "string" },
+          "active": { "type": "boolean" },
+          "kind": { "enum": ["query", "dashboard"] },
+          "sql": { "type": "string" },
+          "path": { "type": "string" },
+          "unsaved": { "type": "boolean" },
+          "dashboard": { "type": "object" },
+          "result": {
+            "type": "object",
+            "required": ["status", "view"],
+            "properties": {
+              "status": { "enum": ["empty", "running", "rows", "affected", "failed", "explain", "profile"] },
+              "view": {
+                "enum": ["table", "chart", "overview"],
+                "description": "The results panel's tab the person is on."
+              },
+              "columns": { "type": "array" },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows the window holds; `truncated` says the result has more."
+              },
+              "truncated": { "type": "boolean" },
+              "preview": {
+                "type": "array",
+                "description": "The first rows, within `limits`. Never the whole result."
+              },
+              "preview_truncated": {
+                "type": "boolean",
+                "description": "A cell was cut, or rows were left out, to stay within limits."
+              },
+              "sql": { "type": "string" },
+              "error": { "type": "string" },
+              "chart": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

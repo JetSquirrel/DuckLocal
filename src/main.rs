@@ -10,6 +10,7 @@ mod db;
 mod duckdb_contract;
 mod excel;
 mod extensions;
+mod handoff;
 mod history;
 mod i18n;
 mod overview;

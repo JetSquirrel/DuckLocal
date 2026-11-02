@@ -57,6 +57,7 @@ fn file_url_path(url: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
+use crate::handoff::{Action, ActionLog, ActionStatus};
 use crate::i18n::{tr, trf};
 use crate::state::{self, AppState};
 use crate::ui::sidebar::Sidebar;
@@ -80,6 +81,8 @@ pub struct DuckLocalApp {
     /// opens and `ducklocal open` requests wait in their queues: run beside
     /// it, the one that finished last decided what the window said it was on.
     started: bool,
+    /// What became of each `ducklocal open`, for the state to report.
+    actions: ActionLog,
 }
 
 impl DuckLocalApp {
@@ -288,6 +291,7 @@ impl DuckLocalApp {
             status_bar,
             tour,
             started: false,
+            actions: ActionLog::default(),
         }
     }
 
@@ -320,39 +324,168 @@ impl DuckLocalApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Refused before anything moves: the agent decided this from a window
+        // that is no longer what the person sees.
+        if let Some(based_on) = &request.based_on_revision {
+            let current = crate::handoff::revision(&self.snapshot_body(cx));
+            if *based_on != current {
+                if let Some(id) = request.request_id {
+                    let mut action = Action::new(id, ActionStatus::Stale);
+                    action.based_on_revision = Some(based_on.clone());
+                    action.current_revision = Some(current);
+                    action.error = Some("the window changed since that revision".into());
+                    self.actions.record(action);
+                }
+                return;
+            }
+        }
         window.activate_window();
+        let failures_before = self.state.read(cx).open_failures();
         self.open_external(request.paths, window, cx);
-        let Some(sql) = request.sql else {
-            return;
-        };
-        self.workspace.update(cx, |ws, cx| {
-            ws.open_query_tab(sql, request.title, window, cx)
+        let tab = request.sql.map(|sql| {
+            self.workspace.update(cx, |ws, cx| {
+                ws.open_query_tab(sql, request.title, window, cx)
+            })
         });
-        if !request.run {
+        let run_tab = tab.filter(|_| request.run);
+        let opening = self.state.read(cx).is_opening();
+        if let Some(id) = &request.request_id {
+            let status = if opening || run_tab.is_some() {
+                ActionStatus::Queued
+            } else {
+                ActionStatus::Opened
+            };
+            let mut action = Action::new(id.clone(), status);
+            action.tab_id = tab;
+            self.actions.record(action);
+        }
+        if !opening && run_tab.is_none() {
             return;
         }
+        let id = request.request_id;
         // The SQL may name what the paths attach, and attaching is off the
-        // UI thread: run once no open request is in flight.
-        let state = self.state.clone();
+        // UI thread; a run already going would turn this one away. Wait out
+        // both, then see the run through, so the action says how it ended.
         cx.spawn_in(window, async move |this, cx| {
-            while cx
-                .update(|_, cx| state.read(cx).is_opening())
+            let for_run = run_tab.is_some();
+            while this
+                .read_with(cx, |this, cx| this.waits_to_run(for_run, cx))
                 .unwrap_or(false)
             {
                 smol::Timer::after(Duration::from_millis(50)).await;
             }
-            this.update_in(cx, |this, window, cx| {
-                this.workspace
-                    .update(cx, |ws, cx| ws.run_active(window, cx));
+            let open_error = this
+                .read_with(cx, |this, cx| {
+                    let state = this.state.read(cx);
+                    (state.open_failures() != failures_before)
+                        .then(|| state.last_open_failure().map(str::to_string))
+                        .flatten()
+                })
+                .unwrap_or(None);
+            let Some(tab) = run_tab else {
+                this.update(cx, |this, _| {
+                    this.settle(&id, open_error, |action| {
+                        action.status = ActionStatus::Opened;
+                    });
+                })
+                .ok();
+                return;
+            };
+            let started = loop {
+                let attempt = this.update_in(cx, |this, window, cx| {
+                    let started = this
+                        .workspace
+                        .update(cx, |ws, cx| ws.run_query_tab(tab, window, cx));
+                    if started {
+                        if let Some(id) = &id {
+                            this.actions
+                                .update(id, |action| action.status = ActionStatus::Running);
+                        }
+                    }
+                    (started, this.workspace.read(cx).busy())
+                });
+                match attempt {
+                    // The person started a run just before this one: wait again.
+                    Ok((false, true)) => {
+                        smol::Timer::after(Duration::from_millis(50)).await;
+                    }
+                    Ok((started, _)) => break started,
+                    Err(_) => return,
+                }
+            };
+            if !started {
+                this.update(cx, |this, _| {
+                    this.settle(&id, open_error, |action| {
+                        action.status = ActionStatus::Failed;
+                        action.error = Some("the tab was closed before its SQL could run".into());
+                    });
+                })
+                .ok();
+                return;
+            }
+            while this
+                .read_with(cx, |this, cx| this.waits_to_run(true, cx))
+                .unwrap_or(false)
+            {
+                smol::Timer::after(Duration::from_millis(50)).await;
+            }
+            this.update(cx, |this, cx| {
+                let result = this.workspace.read(cx).query_tab_result(tab, cx);
+                this.settle(&id, open_error, |action| match result {
+                    None => {
+                        action.status = ActionStatus::Failed;
+                        action.error = Some("the tab was closed while its SQL ran".into());
+                    }
+                    Some(result) => {
+                        let status = result["status"].as_str().unwrap_or("empty").to_string();
+                        if status == "failed" {
+                            action.status = ActionStatus::Failed;
+                            action.error = result["error"].as_str().map(str::to_string);
+                        } else {
+                            action.status = ActionStatus::Succeeded;
+                        }
+                        action.result_status = Some(status);
+                    }
+                });
             })
             .ok();
         })
         .detach();
     }
 
+    /// Whether an agent's request must keep waiting: for what it attaches,
+    /// and, when it runs SQL, for the run already going.
+    fn waits_to_run(&self, for_run: bool, cx: &App) -> bool {
+        self.state.read(cx).is_opening() || (for_run && self.workspace.read(cx).busy())
+    }
+
+    /// Finish request `id`'s action. An attach that failed fails the request
+    /// when nothing else did, even if its SQL could run without it: the agent
+    /// asked for that data and did not get it.
+    fn settle(
+        &mut self,
+        id: &Option<String>,
+        open_error: Option<String>,
+        change: impl FnOnce(&mut Action),
+    ) {
+        let Some(id) = id else { return };
+        self.actions.update(id, |action| {
+            change(action);
+            if let (None, Some(open_error)) = (&action.error, open_error) {
+                action.status = ActionStatus::Failed;
+                action.error = Some(open_error);
+            }
+        });
+    }
+
     /// What the window shows, for `ducklocal open --state`: the database, the files
     /// attached to it, and the workspace's tabs.
     fn snapshot(&self, cx: &App) -> serde_json::Value {
+        crate::handoff::publish(self.snapshot_body(cx), &self.actions)
+    }
+
+    /// What the window shows, which is what its revision covers.
+    fn snapshot_body(&self, cx: &App) -> serde_json::Value {
         use serde_json::json;
         let state = self.state.read(cx);
         let mut snapshot = self.workspace.read(cx).snapshot(cx);
@@ -486,6 +619,221 @@ mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::file_url_path;
+
+    /// What `ducklocal open` does to the window, end to end from the request:
+    /// the app is built without its startup, which reads the person's own
+    /// remembered tabs and crash reports, on the in-memory stores.
+    mod requests {
+        use super::super::DuckLocalApp;
+        use crate::handoff::{contract::schema_violations, ActionLog};
+        use crate::remote::Request;
+        use crate::state::AppState;
+        use crate::ui::sidebar::Sidebar;
+        use crate::ui::status_bar::StatusBarView;
+        use crate::ui::title_bar::TitleBarView;
+        use crate::ui::tour::Tour;
+        use crate::ui::workspace::Workspace;
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::{
+            px, size, AnyWindowHandle, AppContext, Bounds, Entity, Point, TestAppContext,
+            WindowBounds, WindowOptions,
+        };
+        use serde_json::Value;
+
+        fn open_app(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<DuckLocalApp>) {
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                crate::ui::init(cx);
+                Theme::change(ThemeMode::Light, None, cx);
+            });
+            cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds {
+                            origin: Point::default(),
+                            size: size(px(1024.), px(640.)),
+                        })),
+                        ..Default::default()
+                    },
+                    cx,
+                    |window, cx| {
+                        let state = cx.new(AppState::new);
+                        let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
+                        let sidebar =
+                            cx.new(|cx| Sidebar::new(state.clone(), workspace.clone(), window, cx));
+                        let title_bar = cx.new(|cx| TitleBarView::new(state.clone(), cx));
+                        let status_bar = cx.new(|cx| StatusBarView::new(state.clone(), cx));
+                        let tour = cx.new(Tour::new);
+                        cx.new(|_| DuckLocalApp {
+                            state,
+                            title_bar,
+                            sidebar,
+                            workspace,
+                            status_bar,
+                            tour,
+                            started: true,
+                            actions: ActionLog::default(),
+                        })
+                    },
+                )
+            })
+            .expect("open test window")
+        }
+
+        fn send(
+            cx: &mut TestAppContext,
+            (window, app): &(AnyWindowHandle, Entity<DuckLocalApp>),
+            request: Request,
+        ) {
+            cx.update_window(*window, |_, window, cx| {
+                app.update(cx, |app, cx| app.open_remote(request, window, cx));
+            })
+            .unwrap();
+        }
+
+        fn state(cx: &mut TestAppContext, app: &Entity<DuckLocalApp>) -> Value {
+            cx.read(|cx| app.read(cx).snapshot(cx))
+        }
+
+        /// The state once request `id` has finished; the run happens on real
+        /// threads, so this lets them work between turns of the executor.
+        fn finished(cx: &mut TestAppContext, app: &Entity<DuckLocalApp>, id: &str) -> Value {
+            for _ in 0..1000 {
+                cx.run_until_parked();
+                let state = state(cx, app);
+                let actions = state["actions"].as_array().unwrap();
+                let action = actions.iter().find(|a| a["request_id"] == id);
+                let status = action.and_then(|a| a["status"].as_str());
+                if !matches!(status, None | Some("queued" | "running")) {
+                    return action.unwrap().clone();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("request {id} never finished: {}", state(cx, app)["actions"]);
+        }
+
+        fn sql(id: &str, sql: &str) -> Request {
+            Request {
+                sql: Some(sql.into()),
+                run: true,
+                request_id: Some(id.into()),
+                ..Request::default()
+            }
+        }
+
+        #[gpui_kit::test]
+        fn a_request_reports_how_it_went(cx: &mut TestAppContext) {
+            // The run is real: its query and timers wake from other threads.
+            cx.executor().allow_parking();
+            let _guard = crate::db::connection_guard();
+            crate::history::with_test_history(|| {
+                crate::db::open_memory().unwrap();
+                let opened = open_app(cx);
+                let app = &opened.1;
+
+                // Based on a window that is gone: refused, and nothing moved.
+                let before = state(cx, app);
+                let tabs = before["tabs"].as_array().unwrap().len();
+                let mut stale = sql("stale", "SELECT 1");
+                stale.based_on_revision = Some("not-this-one".into());
+                send(cx, &opened, stale);
+                let action = finished(cx, app, "stale");
+                assert_eq!(action["status"], "stale");
+                assert_eq!(action["based_on_revision"], "not-this-one");
+                assert_eq!(action["current_revision"], before["revision"]);
+                let after = state(cx, app);
+                assert_eq!(after["tabs"].as_array().unwrap().len(), tabs);
+                assert_eq!(after["revision"], before["revision"]);
+
+                // Based on the window as it is: runs, under the tab it says.
+                let mut current = sql("current", "SELECT 41 + 1 AS answer");
+                current.based_on_revision = before["revision"].as_str().map(str::to_string);
+                send(cx, &opened, current);
+                let action = finished(cx, app, "current");
+                assert_eq!(action["status"], "succeeded", "{action}");
+                assert_eq!(action["result_status"], "rows");
+                let after = state(cx, app);
+                assert_eq!(schema_violations(&after), Vec::<String>::new());
+                let tab = after["tabs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|tab| tab["id"] == action["tab_id"])
+                    .expect("the tab the action names");
+                assert_eq!(tab["result"]["preview"][0][0], "42");
+
+                // A failed run is told apart from one that was delivered.
+                send(cx, &opened, sql("broken", "SELECT * FROM no_such_table"));
+                let action = finished(cx, app, "broken");
+                assert_eq!(action["status"], "failed");
+                assert_eq!(action["result_status"], "failed");
+                assert!(action["error"].as_str().unwrap().contains("no_such_table"));
+
+                // Two at once: the second used to be dropped while the first
+                // ran, and would have run whichever tab was then in front.
+                send(cx, &opened, sql("first", "SELECT 1 AS n"));
+                send(cx, &opened, sql("second", "SELECT 2 AS n"));
+                let first = finished(cx, app, "first");
+                let second = finished(cx, app, "second");
+                assert_eq!(first["status"], "succeeded", "{first}");
+                assert_eq!(second["status"], "succeeded", "{second}");
+                assert_ne!(first["tab_id"], second["tab_id"]);
+                let shown = state(cx, app);
+                let result_of = |action: &Value| {
+                    shown["tabs"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|tab| tab["id"] == action["tab_id"])
+                        .unwrap()["result"]["preview"][0][0]
+                        .clone()
+                };
+                assert_eq!(result_of(&first), "1");
+                assert_eq!(result_of(&second), "2");
+
+                // Nothing to run: opened, and no result to report.
+                send(
+                    cx,
+                    &opened,
+                    Request {
+                        sql: Some("SELECT 3".into()),
+                        request_id: Some("shown".into()),
+                        ..Request::default()
+                    },
+                );
+                let action = finished(cx, app, "shown");
+                assert_eq!(action["status"], "opened");
+                assert_eq!(action["result_status"], Value::Null);
+
+                // Data that will not attach is a failure, not a delivery.
+                send(
+                    cx,
+                    &opened,
+                    Request {
+                        paths: vec!["ducklocal_no_such_file_anywhere.csv".into()],
+                        request_id: Some("missing".into()),
+                        ..Request::default()
+                    },
+                );
+                let action = finished(cx, app, "missing");
+                assert_eq!(action["status"], "failed", "{action}");
+                assert!(action["error"].is_string(), "{action}");
+
+                // A request from an older command is carried out, untracked.
+                let quiet = state(cx, app)["actions"].as_array().unwrap().len();
+                send(
+                    cx,
+                    &opened,
+                    Request {
+                        sql: Some("SELECT 4".into()),
+                        ..Request::default()
+                    },
+                );
+                cx.run_until_parked();
+                assert_eq!(state(cx, app)["actions"].as_array().unwrap().len(), quiet);
+            });
+        }
+    }
 
     #[test]
     fn file_urls_decode_to_paths() {
