@@ -229,6 +229,25 @@ pub(crate) fn hint_for(kind: &str, message: &str) -> Option<&'static str> {
                  over to the next call, and a .dash query cannot run one",
             );
         }
+        // Nothing here retries: whether to try again is the person's to say.
+        if has("Could not establish connection")
+            || has("Unable to connect")
+            || has("Connection refused")
+            || has("Connection reset")
+            || has("Failed to connect")
+            || has("Could not resolve")
+        {
+            return Some(
+                "The remote source did not answer: check the address and the network. An attached \
+                 server needs DETACH and ATTACH again once it is back; neither is done for you",
+            );
+        }
+        if has("HTTP") && (has("403") || has("401")) {
+            return Some(
+                "The remote source refused these credentials: ask the person to check the key, \
+                 region and bucket in DuckLocal. Never put a key in SQL or on the command line",
+            );
+        }
         if has("Could not convert") || has("Conversion Error") {
             return Some(
                 "TRY_CAST(expr AS type) turns values that do not convert into NULL; \
@@ -994,6 +1013,23 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_failure_says_what_to_do_and_a_refusal_differs() {
+        for message in [
+            "IO Error: Could not establish connection to host",
+            "IO Error: Unable to connect to URL \"https://example.com/x.csv\"",
+            "IO Error: Connection refused",
+        ] {
+            let hint = hint_for("sql", message).unwrap();
+            assert!(hint.contains("DETACH"), "{message}: {hint}");
+        }
+        let hint = hint_for("sql", "HTTP Error: HTTP GET error on 's3://b/x' (HTTP 403)").unwrap();
+        assert!(hint.contains("credentials"), "{hint}");
+        assert!(hint.contains("Never put a key"), "{hint}");
+        // Not everything mentioning a number is a refusal.
+        assert_eq!(hint_for("sql", "Binder Error: column 403 not found"), None);
+    }
 
     #[test]
     fn a_misspelled_flag_is_matched_to_the_one_meant() {

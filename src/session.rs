@@ -36,7 +36,7 @@ const DEFAULT_SHOWN_EVENTS: usize = 50;
 /// How many files of a glob get looked at.
 const MAX_GLOB_FILES: usize = 10_000;
 
-const REDACTED: &str = "[not recorded: may hold credentials]";
+pub(crate) const REDACTED: &str = "[not recorded: may hold credentials]";
 
 fn active() -> Option<PathBuf> {
     std::env::var_os(ENV)
@@ -64,7 +64,7 @@ fn capped(text: &str, chars: usize) -> String {
 
 /// Whether text may hold a credential. Errs towards keeping it out: a column
 /// called `secret_santa` costs a query's text, and a key in the file costs more.
-fn may_hold_credentials(text: &str) -> bool {
+pub(crate) fn may_hold_credentials(text: &str) -> bool {
     let lower = text.to_lowercase();
     if [
         "secret",
@@ -152,17 +152,21 @@ fn glob_fingerprint(pattern: &str) -> Value {
     })
 }
 
+/// An address only, without anything that may be a key in the query string or
+/// a password before the host.
+pub(crate) fn safe_address(address: &str) -> String {
+    address
+        .split('?')
+        .next()
+        .filter(|address| !may_hold_credentials(address))
+        .unwrap_or(REDACTED)
+        .to_string()
+}
+
 /// A source as recorded: what it was called, where that is, and what it was.
 fn source_entry(reference: &str, cwd: &Path) -> Value {
     if is_remote(reference) {
-        // Its address only, without anything that may be a key in the query
-        // string or a password before the host.
-        let address = reference
-            .split('?')
-            .next()
-            .filter(|address| !may_hold_credentials(address))
-            .unwrap_or(REDACTED);
-        return json!({"ref": address, "remote": true});
+        return json!({"ref": safe_address(reference), "remote": true});
     }
     let path = cwd.join(reference).to_string_lossy().replace('\\', "/");
     let print = if is_glob(reference) {
@@ -196,6 +200,22 @@ fn source_status(source: &Value) -> &'static str {
 /// Every file and table a SELECT reads, by DuckDB's parser. `None` for a
 /// statement the parser will not serialize: only a SELECT serializes.
 fn references_of(sql: &str) -> Option<Vec<String>> {
+    reads_of(sql).map(|reads| reads.files_and_tables)
+}
+
+/// What a SELECT names, by DuckDB's parser.
+pub(crate) struct Reads {
+    /// Sorted and without duplicates; a name a WITH defines is no table.
+    pub files_and_tables: Vec<String>,
+    /// The catalogs and schemas tables were qualified with.
+    pub qualifiers: Vec<String>,
+    /// Those of the names given with no qualifier.
+    pub bare: Vec<String>,
+    /// A table function that is not a known reader, which may read anything.
+    pub other_function: bool,
+}
+
+pub(crate) fn reads_of(sql: &str) -> Option<Reads> {
     let conn = duckdb::Connection::open_in_memory().ok()?;
     let text: String = conn
         .query_row("SELECT json_serialize_sql(?::VARCHAR)", [sql], |row| {
@@ -216,7 +236,16 @@ fn references_of(sql: &str) -> Option<Vec<String>> {
     found.retain(|name| !walk.defined.contains(name));
     found.sort();
     found.dedup();
-    Some(found)
+    let mut bare = walk.bare;
+    bare.retain(|name| !walk.defined.contains(name));
+    walk.qualifiers.sort();
+    walk.qualifiers.dedup();
+    Some(Reads {
+        files_and_tables: found,
+        qualifiers: walk.qualifiers,
+        bare,
+        other_function: walk.other_function,
+    })
 }
 
 #[derive(Default)]
@@ -227,6 +256,9 @@ struct References {
     /// A reader takes something other than one path, such as a list or an
     /// expression: better to say the sources are unknown than to list some.
     opaque: bool,
+    qualifiers: Vec<String>,
+    bare: Vec<String>,
+    other_function: bool,
 }
 
 impl References {
@@ -237,6 +269,16 @@ impl References {
                 if kind == Some("BASE_TABLE") {
                     if let Some(name) = map.get("table_name").and_then(Value::as_str) {
                         self.found.push(name.to_string());
+                        let qualifiers: Vec<&str> = ["catalog_name", "schema_name"]
+                            .iter()
+                            .filter_map(|field| map.get(*field).and_then(Value::as_str))
+                            .filter(|qualifier| !qualifier.is_empty())
+                            .collect();
+                        if qualifiers.is_empty() {
+                            self.bare.push(name.to_string());
+                        }
+                        self.qualifiers
+                            .extend(qualifiers.into_iter().map(str::to_string));
                     }
                 }
                 if kind == Some("TABLE_FUNCTION") {
@@ -248,6 +290,8 @@ impl References {
                             Some(path) => self.found.push(path.to_string()),
                             None => self.opaque = true,
                         }
+                    } else if !matches!(name, "range" | "generate_series" | "unnest") {
+                        self.other_function = true;
                     }
                 }
                 if let Some(defined) = map.get("cte_map").and_then(|cte| cte["map"].as_array()) {
@@ -266,7 +310,7 @@ impl References {
 }
 
 /// A name that reads a file rather than a table: as DuckDB would take it.
-fn names_a_file(reference: &str, cwd: &Path) -> bool {
+pub(crate) fn names_a_file(reference: &str, cwd: &Path) -> bool {
     is_remote(reference)
         || is_glob(reference)
         || reference.contains(['/', '\\'])

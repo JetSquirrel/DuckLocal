@@ -14,12 +14,22 @@ use crate::i18n::trf;
 const MAX_LIST_ENTRIES: usize = 1000;
 
 /// In-memory S3 credentials. Lives only for the session, never written to disk.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct S3Config {
     pub endpoint: String,
     pub region: String,
     pub key_id: String,
     pub secret: String,
+}
+
+/// By hand, so a debug print or a log line cannot carry the key.
+impl std::fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Config")
+            .field("endpoint", &self.endpoint)
+            .field("region", &self.region)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
