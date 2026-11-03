@@ -4,6 +4,7 @@
 mod app;
 mod assets;
 mod cli;
+mod connections;
 mod crash;
 mod db;
 #[cfg(test)]

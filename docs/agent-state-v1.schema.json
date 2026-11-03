@@ -37,6 +37,35 @@
       }
     },
     "database": { "type": ["string", "null"] },
+    "connections": {
+      "type": "object",
+      "description": "What the window's connection reaches, as metadata only: never a key. Outside the revision, and reading it makes no network request.",
+      "properties": {
+        "s3": {
+          "type": ["object", "null"],
+          "description": "S3 as configured in the window, or null.",
+          "properties": {
+            "endpoint": { "type": "string" },
+            "region": { "type": "string" }
+          }
+        },
+        "databases": {
+          "type": ["array", "null"],
+          "description": "Attached databases, or null while a query holds the connection.",
+          "items": {
+            "type": "object",
+            "required": ["name", "kind", "location", "read_only"],
+            "properties": {
+              "name": { "type": "string" },
+              "kind": { "type": "string" },
+              "location": { "enum": ["local", "remote"] },
+              "address": { "type": ["string", "null"] },
+              "read_only": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
     "attached": {
       "type": "array",
       "items": {

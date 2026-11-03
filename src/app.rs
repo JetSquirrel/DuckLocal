@@ -481,7 +481,41 @@ impl DuckLocalApp {
     /// What the window shows, for `ducklocal open --state`: the database, the files
     /// attached to it, and the workspace's tabs.
     fn snapshot(&self, cx: &App) -> serde_json::Value {
-        crate::handoff::publish(self.snapshot_body(cx), &self.actions)
+        let mut snapshot = crate::handoff::publish(self.snapshot_body(cx), &self.actions);
+        self.add_connections(&mut snapshot, cx);
+        snapshot
+    }
+
+    /// What the connection reaches, and how far each result went. Outside the
+    /// revision, like `limits`: a query holding the connection leaves the list
+    /// unknown, and that does not change what the window shows.
+    fn add_connections(&self, snapshot: &mut serde_json::Value, cx: &App) {
+        use crate::connections::{self, AttachedFile};
+        let state = self.state.read(cx);
+        let databases =
+            crate::db::try_with_connection(connections::databases_of).and_then(Result::ok);
+        snapshot["connections"] =
+            connections::describe(state.s3_config.as_ref(), databases.as_deref());
+        let attached: Vec<AttachedFile> = state
+            .attached_files
+            .iter()
+            .map(|file| AttachedFile {
+                name: &file.view_name,
+                path: &file.path,
+            })
+            .collect();
+        let tabs = snapshot["tabs"].as_array_mut().into_iter().flatten();
+        for tab in tabs {
+            let Some(sql) = tab["result"]["sql"].as_str().map(str::to_string) else {
+                continue;
+            };
+            tab["result"]["reach"] = connections::reach(
+                &sql,
+                &attached,
+                databases.as_deref(),
+                state.s3_config.is_some(),
+            );
+        }
     }
 
     /// What the window shows, which is what its revision covers.
@@ -498,11 +532,16 @@ impl DuckLocalApp {
             .attached_files
             .iter()
             .map(|file| json!({
-                "path": file.path,
+                "path": if file.path.contains("://") {
+                    crate::session::safe_address(&file.path)
+                } else {
+                    file.path.clone()
+                },
                 "name": file.view_name,
                 "rows": file.row_count,
             }))
             .collect::<Vec<_>>());
+        crate::handoff::withhold_credentials(&mut snapshot);
         snapshot
     }
 
@@ -719,6 +758,68 @@ mod tests {
                 request_id: Some(id.into()),
                 ..Request::default()
             }
+        }
+
+        /// The window as an agent reads it, S3 configured and a key in a tab:
+        /// what it reaches is there, and the key is nowhere.
+        #[gpui_kit::test]
+        fn the_state_says_what_it_reaches_and_no_key(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let _guard = crate::db::connection_guard();
+            crate::history::with_test_history(|| {
+                crate::db::open_memory().unwrap();
+                let opened = open_app(cx);
+                let app = &opened.1;
+                let state_entity = cx.read(|cx| app.read(cx).state.clone());
+                state_entity.update(cx, |state, cx| {
+                    state.set_s3_configured(
+                        Some(crate::s3::S3Config {
+                            endpoint: "s3.example.com".into(),
+                            region: "eu-west-1".into(),
+                            key_id: "AKIDEXAMPLEVALUE".into(),
+                            secret: "wJalrXUtnFEMIEXAMPLEVALUE".into(),
+                        }),
+                        cx,
+                    );
+                });
+
+                send(cx, &opened, sql("local", "SELECT 1 AS n"));
+                assert_eq!(finished(cx, app, "local")["status"], "succeeded");
+                let typed = "CREATE SECRET s (TYPE s3, KEY_ID 'AKIDEXAMPLEVALUE', \
+                             SECRET 'wJalrXUtnFEMIEXAMPLEVALUE')";
+                send(
+                    cx,
+                    &opened,
+                    Request {
+                        sql: Some(typed.into()),
+                        request_id: Some("typed".into()),
+                        ..Request::default()
+                    },
+                );
+                finished(cx, app, "typed");
+
+                let shown = state(cx, app);
+                assert_eq!(schema_violations(&shown), Vec::<String>::new());
+                let text = shown.to_string();
+                assert!(!text.contains("AKIDEXAMPLEVALUE"), "{text}");
+                assert!(!text.contains("wJalrXUtnFEMI"), "{text}");
+                assert_eq!(shown["connections"]["s3"]["endpoint"], "s3.example.com");
+                assert_eq!(shown["connections"]["s3"]["region"], "eu-west-1");
+                assert!(shown["connections"]["databases"].is_array());
+
+                let tabs = shown["tabs"].as_array().unwrap();
+                let ran = tabs
+                    .iter()
+                    .find(|tab| tab["sql"] == "SELECT 1 AS n")
+                    .unwrap();
+                assert_eq!(ran["result"]["reach"]["reach"], "local");
+                assert!(ran.get("sql_withheld").is_none());
+                let hidden = tabs.iter().find(|tab| tab["sql_withheld"] == true).unwrap();
+                assert_eq!(hidden["sql"], crate::session::REDACTED);
+
+                // Reading twice is the same window.
+                assert_eq!(state(cx, app)["revision"], shown["revision"]);
+            });
         }
 
         #[gpui_kit::test]

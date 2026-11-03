@@ -59,7 +59,11 @@ connection, attached data and history, not this command's. The state's
 `actions` says what became of each request_id: stale, queued, running, opened,
 succeeded or failed. With --if-revision or --wait the output adds {status,
 tab_id, result_status, error, revision}, revision being the one to base the
-next action on. Exit 2 for arguments, 1 when no window can be reached (kind
+next action on. --state adds {connections}: S3's endpoint and region, and each
+attached database's name, kind, location (local or remote) and address, never
+a key. A result adds {reach}: local, remote or unknown, read from its SQL. SQL
+that may hold credentials reads as withheld, with sql_withheld: true.
+Exit 2 for arguments, 1 when no window can be reached (kind
 not_running), the window changed (stale), the request failed in the window
 (open_failed), or the wait ran out (timeout; the request carries on).
 

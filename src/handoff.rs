@@ -127,6 +127,35 @@ pub(crate) fn publish(mut body: Value, actions: &ActionLog) -> Value {
     body
 }
 
+/// Keep SQL that may hold a key out of what an agent reads, by the check a
+/// session file uses: a tab of `CREATE SECRET` is the person's, and the agent
+/// can ask. Before the revision is taken, so its hash cannot be tried against
+/// guesses either.
+pub(crate) fn withhold_credentials(snapshot: &mut Value) {
+    use crate::session::{may_hold_credentials, REDACTED};
+    let holds = |value: &Value| value.as_str().is_some_and(may_hold_credentials);
+    for tab in snapshot["tabs"].as_array_mut().into_iter().flatten() {
+        if tab["kind"] != json!("query") {
+            continue;
+        }
+        let withheld = holds(&tab["sql"]) || holds(&tab["result"]["sql"]);
+        if withheld {
+            tab["sql"] = json!(REDACTED);
+            tab["sql_withheld"] = json!(true);
+            if tab["result"]["sql"].is_string() {
+                tab["result"]["sql"] = json!(REDACTED);
+            }
+            if tab["result"]["chart"]["dash"].is_string() {
+                tab["result"]["chart"]["dash"] = json!(REDACTED);
+            }
+        }
+        // A failure quotes the statement it failed on.
+        if tab["result"]["error"].is_string() && (withheld || holds(&tab["result"]["error"])) {
+            tab["result"]["error"] = json!(REDACTED);
+        }
+    }
+}
+
 /// A result's first rows as the state carries them, and whether anything of
 /// those rows was left out: a long cell is cut at `PREVIEW_CELL_CHARS`, and
 /// rows stop once `PREVIEW_BYTES` is reached.

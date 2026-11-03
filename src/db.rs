@@ -237,6 +237,13 @@ pub fn with_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Result<T>
     f(conn)
 }
 
+/// `with_connection`, unless something holds the connection: `None` then, for
+/// a caller on the window's thread that must not wait for a running query.
+pub fn try_with_connection<T>(f: impl FnOnce(&Connection) -> Result<T>) -> Option<Result<T>> {
+    let guard = CONNECTION.try_lock().ok()?;
+    guard.as_ref().map(f)
+}
+
 fn lock() -> Result<std::sync::MutexGuard<'static, Option<Connection>>> {
     CONNECTION
         .lock()
