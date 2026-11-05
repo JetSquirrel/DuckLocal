@@ -88,6 +88,11 @@ jobs:
             ducklocal-macos-arm64.dmg \
             "$VERSION"
 
+      # The app and its Quick Look extension, as they ship: each must load
+      # on the oldest macOS assets/Info.plist promises.
+      - name: Check macOS deployment target
+        run: scripts/check-macos-target.sh DuckLocal.app
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:

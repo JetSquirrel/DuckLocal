@@ -807,12 +807,13 @@ fn utf8(value: std::ffi::OsString, what: &str) -> Result<String, CliError> {
 
 /// Start the GUI detached from this command, so it outlives the terminal.
 /// Inside a macOS bundle, through LaunchServices, which gives it the Dock
-/// icon and menu bar a double-click would.
+/// icon and menu bar a double-click would. `/usr/bin/open` by path: this
+/// runs from the user's shell, whose PATH may hold another `open`.
 fn start_window() -> Result<(), CliError> {
     let exe = std::env::current_exe().map_err(|e| CliError::failure("launch", e))?;
     let mut command = match bundle_of(&exe) {
         Some(bundle) => {
-            let mut command = std::process::Command::new("open");
+            let mut command = std::process::Command::new("/usr/bin/open");
             command.arg("-a").arg(bundle);
             command
         }

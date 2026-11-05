@@ -327,11 +327,16 @@ fn download(url: &str, package: &Package, path: &Path) -> anyhow::Result<()> {
 
 /// The app (macOS) or executable inside downloaded package `file`, copied
 /// out into `dir`.
+///
+/// The macOS tools here, and the ones `verify` and `install_staged` run, go
+/// by absolute path: an app started from a terminal inherits that shell's
+/// PATH, and an update that checks its own signature must not run whatever
+/// `codesign` comes first on it.
 fn unpack(file: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     if cfg!(target_os = "macos") {
         let mount = dir.join("mount");
         std::fs::create_dir_all(&mount)?;
-        run(std::process::Command::new("hdiutil")
+        run(std::process::Command::new("/usr/bin/hdiutil")
             .args([
                 "attach",
                 "-nobrowse",
@@ -342,10 +347,10 @@ fn unpack(file: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
             .arg(&mount)
             .arg(file))?;
         let app = dir.join("DuckLocal.app");
-        let copied = run(std::process::Command::new("ditto")
+        let copied = run(std::process::Command::new("/usr/bin/ditto")
             .arg(mount.join("DuckLocal.app"))
             .arg(&app));
-        let _ = run(std::process::Command::new("hdiutil")
+        let _ = run(std::process::Command::new("/usr/bin/hdiutil")
             .args(["detach", "-force"])
             .arg(&mount));
         copied?;
@@ -377,11 +382,11 @@ fn verify(new: &Path, target: &Path) -> anyhow::Result<()> {
     if !cfg!(target_os = "macos") {
         return Ok(());
     }
-    run(std::process::Command::new("codesign")
+    run(std::process::Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
         .arg(new))?;
     let team = |app: &Path| -> anyhow::Result<String> {
-        let output = std::process::Command::new("codesign")
+        let output = std::process::Command::new("/usr/bin/codesign")
             .args(["-dv", "--verbose=2"])
             .arg(app)
             .output()?;
@@ -442,7 +447,7 @@ old="$app.old-$$"
 if mv "$app" "$old"; then
   if mv "$new" "$app"; then rm -rf "$old"; else mv "$old" "$app"; fi
 fi
-if [ "$relaunch" = 1 ]; then open "$app"; fi
+if [ "$relaunch" = 1 ]; then /usr/bin/open "$app"; fi
 "#;
     std::process::Command::new("/bin/sh")
         .arg("-c")
