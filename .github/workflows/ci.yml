@@ -47,6 +47,11 @@ jobs:
       - name: Run tests
         run: cargo test --locked --workspace
 
+      # The test run built the app; a pull request that drops the pinned
+      # deployment target fails here rather than on a release tag.
+      - name: Check macOS deployment target
+        run: scripts/check-macos-target.sh target/debug/ducklocal
+
   build:
     # The release ships Linux and Windows builds too; nothing else compiles
     # them, so a change that breaks either shows up here, on the pull request,
