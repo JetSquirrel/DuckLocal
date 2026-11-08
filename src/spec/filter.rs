@@ -30,6 +30,10 @@
 //! Finding `$name` skips string literals, quoted identifiers, comments and
 //! dollar-quoted strings, so a `'$5'` in the data or a `$$ … $$` body is never
 //! mistaken for one.
+//!
+//! A filter with `multiple = true` collects values click by click; its
+//! predicate is `("channel" IN ('Web', 'App'))`, with `OR … IS NULL` when NULL
+//! is one of them.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -42,22 +46,47 @@ pub(crate) struct Placeholder {
     pub range: Range<usize>,
 }
 
-/// A value picked on a plot, for the queries that name its filter.
+/// What is picked on a plot, for the queries that name its filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Pick {
     /// The column the predicate compares, as named on the filter.
     pub column: String,
-    /// The cell as the result grid shows it; `None` is SQL NULL.
-    pub value: Option<String>,
+    /// The cells as the result grid shows them, in the order picked, none
+    /// repeated; `None` is SQL NULL. One unless the filter takes `multiple`;
+    /// a pick with none is no pick and is not kept.
+    pub values: Vec<Option<String>>,
 }
 
 impl Pick {
     /// The predicate that stands in for the placeholder.
     pub(crate) fn predicate(&self) -> String {
         let column = format!("\"{}\"", self.column.replace('"', "\"\""));
-        match &self.value {
-            None => format!("({column} IS NULL)"),
-            Some(value) => format!("({column} = '{}')", value.replace('\'', "''")),
+        let null = self.values.iter().any(Option::is_none);
+        let literals: Vec<String> = self
+            .values
+            .iter()
+            .flatten()
+            .map(|value| format!("'{}'", value.replace('\'', "''")))
+            .collect();
+        let listed = match literals.as_slice() {
+            [] => None,
+            [one] => Some(format!("{column} = {one}")),
+            many => Some(format!("{column} IN ({})", many.join(", "))),
+        };
+        match (listed, null) {
+            (Some(listed), true) => format!("({listed} OR {column} IS NULL)"),
+            (Some(listed), false) => format!("({listed})"),
+            (None, _) => format!("({column} IS NULL)"),
+        }
+    }
+
+    /// `value` taken out of the pick when it is in it, otherwise added.
+    pub(crate) fn toggle(&mut self, value: Option<String>) {
+        match self.values.iter().position(|v| *v == value) {
+            Some(at) => {
+                self.values.remove(at);
+            }
+            None => self.values.push(value),
         }
     }
 }
@@ -179,14 +208,14 @@ mod tests {
             "channel".to_string(),
             Pick {
                 column: "Sales \"Channel\"".into(),
-                value: Some("it's".into()),
+                values: vec![Some("it's".into())],
             },
         );
         picks.insert(
             "day".to_string(),
             Pick {
                 column: "day".into(),
-                value: None,
+                values: vec![None],
             },
         );
         assert_eq!(
@@ -196,6 +225,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_pick_of_several_values_reads_any_of_them() {
+        let mut pick = Pick {
+            column: "kind".into(),
+            values: vec![Some("api".into())],
+        };
+        pick.toggle(Some("o'web".into()));
+        assert_eq!(pick.predicate(), "(\"kind\" IN ('api', 'o''web'))");
+        pick.toggle(None);
+        pick.toggle(Some("api".into()));
+        assert_eq!(
+            pick.values,
+            [Some("o'web".to_string()), None],
+            "a value toggled twice is out again"
+        );
+        assert_eq!(
+            pick.predicate(),
+            "(\"kind\" = 'o''web' OR \"kind\" IS NULL)"
+        );
+        pick.toggle(Some("o'web".into()));
+        assert_eq!(pick.predicate(), "(\"kind\" IS NULL)");
+    }
+
+    #[test]
+    fn several_values_select_their_rows_and_nulls_when_asked() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let count = |values: Vec<Option<&str>>| -> i64 {
+            let predicate = Pick {
+                column: "x".into(),
+                values: values.into_iter().map(|v| v.map(String::from)).collect(),
+            }
+            .predicate();
+            conn.query_row(
+                &format!(
+                    "SELECT count(*) FROM (VALUES (1), (2), (3), (NULL::INTEGER)) AS t(x) \
+                     WHERE {predicate}"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(count(vec![Some("1"), Some("3")]), 2);
+        assert_eq!(count(vec![Some("1"), None]), 2);
+        assert_eq!(count(vec![Some("1"), Some("2"), None]), 3);
+    }
+
     /// The grid shows both as NULL, and they are different rows.
     #[test]
     fn a_picked_null_and_the_text_null_select_their_own_rows() {
@@ -203,7 +279,7 @@ mod tests {
         let count = |value: Option<&str>| -> i64 {
             let predicate = Pick {
                 column: "x".into(),
-                value: value.map(String::from),
+                values: vec![value.map(String::from)],
             }
             .predicate();
             conn.query_row(

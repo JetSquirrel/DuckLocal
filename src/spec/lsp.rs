@@ -410,7 +410,7 @@ fn hover_at(source: &str, position: Position) -> Option<Hover> {
             "plot" => format!("**plot \"{name}\"**\n\nA named plot: `type`, `query`, `x` and `y`, plus optional `series`, `title` and `width`; a `map` takes `lat`, `lng` and optional `color`, `size`, `size_scale` and `tooltip` instead of `x`, `y` and `series`; a `card` takes an optional `value` instead."),
             "filter" => {
                 let (plot, column) = spec.filters.iter().find(|f| f.name == name).map(|f| (f.plot.clone(), f.column.clone())).unwrap_or_default();
-                format!("**filter \"{name}\"**\n\nA click on plot `{plot}` picks a `{column}`; a query reads it as `${name}` — `(\"{column}\" = <picked>)`, or `TRUE` while nothing is picked. The plot's own query is never narrowed by it.")
+                format!("**filter \"{name}\"**\n\nA click on plot `{plot}` picks a `{column}`; a query reads it as `${name}` — `(\"{column}\" = <picked>)`, or `TRUE` while nothing is picked; with `multiple = true`, `IN` the values clicked. The plot's own query is never narrowed by it.")
             }
             "source" => {
                 let path = spec.sources.iter().find(|s| s.name == name).map(|s| s.path.clone()).unwrap_or_default();
@@ -482,7 +482,7 @@ fn validate(source: &str) -> Option<Spec> {
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {
         "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
-        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `table`, `card`, `text`.",
+        "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `timeline`, `table`, `card`, `text`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
         "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map` or a `card`, and optional for a `table`.",
         "y" => "**y**\n\nThe numeric column the plot draws; a `pie`'s slice sizes. Optional for `table`, not for a `map`.",
@@ -506,6 +506,9 @@ fn attr_doc(name: &str) -> Option<&'static str> {
         "text" => "**text**\n\nFor a `text` panel: the words under its `title`, as a string or heredoc. A text panel takes no query.",
         "plot" => "**plot**\n\nThe plot a click picks a value on: `plot = plot.some_name`, a `bar` or a `table`.",
         "column" => "**column**\n\nOptional for a bar, required for a table: the column whose value the click picks, and that `$name` compares. Default: the bar's `x`.",
+        "multiple" => "**multiple**\n\nOptional, on a filter that picks on a bar: `true` lets clicks collect several values, a second click taking one out; `$name` becomes `IN (...)`.",
+        "caption" => "**caption**\n\nOptional, for a `timeline`: the column that says what each event was, written under its dot where it fits and on hover.",
+        "timezone" => "**timezone**\n\nThe zone this dashboard shows every `TIMESTAMPTZ` in: `\"UTC\"`, `\"local\"` or an offset such as `\"+08:00\"`. A plain `TIMESTAMP` carries no zone and is shown as written, and a column a filter picks keeps its stored value.",
         "path" => "**path**\n\nThe source's data: a `.csv`, `.tsv`, `.parquet` or `.json` file, or a glob of them read as one relation. Relative to this `.dash` file.",
         _ => return None,
     })

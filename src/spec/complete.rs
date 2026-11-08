@@ -13,8 +13,9 @@
 use super::model;
 
 /// Every attribute a plot block may hold, in the order completion offers
-/// them: the common ones first, a map's, a card's and a text panel's own after.
-pub(crate) const PLOT_ATTRS: [&str; 22] = [
+/// them: the common ones first, a map's, a card's, a text panel's and a
+/// timeline's own after.
+pub(crate) const PLOT_ATTRS: [&str; 23] = [
     "type",
     "query",
     "x",
@@ -37,10 +38,11 @@ pub(crate) const PLOT_ATTRS: [&str; 22] = [
     "delta_format",
     "down_is_good",
     "text",
+    "caption",
 ];
 
 /// The block kinds, in the order completion offers them at the top level.
-const BLOCKS: [&str; 4] = ["query", "plot", "source", "filter"];
+const BLOCKS: [&str; 5] = ["query", "plot", "source", "filter", "dashboard"];
 
 /// One thing that could be inserted at the cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -151,8 +153,13 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
         Some(kind) if kind == "query" => vec![attribute("sql", "query")],
         Some(kind) if kind == "source" => vec![attribute("path", "source")],
         Some(kind) if kind == "filter" => {
-            vec![attribute("plot", "filter"), attribute("column", "filter")]
+            vec![
+                attribute("plot", "filter"),
+                attribute("column", "filter"),
+                attribute("multiple", "filter"),
+            ]
         }
+        Some(kind) if kind == "dashboard" => vec![attribute("timezone", "dashboard")],
         // An unknown block kind has no known attributes to offer.
         Some(_) => Vec::new(),
         None => BLOCKS
@@ -458,7 +465,10 @@ mod tests {
     fn filter_attributes_and_plot_names() {
         let source =
             "plot \"channels\" {\n  type = \"bar\"\n}\nfilter \"c\" {\n  plot = plot.\n}\n";
-        assert_eq!(labels(&complete(source, 5, 3)), ["plot", "column"]);
+        assert_eq!(
+            labels(&complete(source, 5, 3)),
+            ["plot", "column", "multiple"]
+        );
         assert_eq!(labels(&complete(source, 5, 15)), ["channels"]);
     }
 

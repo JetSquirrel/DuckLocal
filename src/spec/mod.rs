@@ -44,9 +44,11 @@ pub mod proposal;
 pub mod source;
 pub mod syntax;
 pub mod tabs;
+pub mod timeline;
 pub mod view;
 pub mod watch;
 mod wheel;
+pub mod zone;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -571,7 +573,7 @@ fn unpickable(
         // only a missing column fails.
         let pick = filter::Pick {
             column: picked.column.clone(),
-            value: None,
+            values: vec![None],
         };
         let sql = filter::apply(
             &query.sql,

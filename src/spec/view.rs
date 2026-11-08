@@ -341,7 +341,9 @@ impl Dashboard {
                         "plot": filter.plot,
                         "column": filter.column,
                         "picked": pick.is_some(),
-                        "value": pick.and_then(|pick| pick.value.clone()),
+                        "multiple": filter.multiple,
+                        "value": pick.and_then(|pick| pick.values.first().cloned().flatten()),
+                        "values": pick.map(|pick| pick.values.clone()),
                     })
                 })
                 .collect()
@@ -977,15 +979,56 @@ impl Dashboard {
             .is_some_and(|spec| spec.filters.iter().any(|f| f.plot == plot))
     }
 
-    /// The band a bar plot shows as picked: the value of a filter that picks
-    /// the plot's own x.
-    fn picked_band(&self, plot: &PreparedPlot) -> Option<SharedString> {
-        let spec = self.spec.as_ref()?;
+    /// The bands a bar plot shows as picked: the values of a filter that
+    /// picks the plot's own x.
+    fn picked_bands(&self, plot: &PreparedPlot) -> Vec<SharedString> {
+        let Some(spec) = self.spec.as_ref() else {
+            return Vec::new();
+        };
         spec.filters
             .iter()
             .filter(|f| f.plot == plot.name && f.column.eq_ignore_ascii_case(&plot.label_name))
             .find_map(|f| self.picks.get(&f.name))
-            .map(|pick| SharedString::from(pick.value.clone().unwrap_or_else(|| "NULL".into())))
+            .map(|pick| {
+                pick.values
+                    .iter()
+                    .map(|value| SharedString::from(pick_text(value)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Pick `value` for `filter`: one that takes several adds it, or takes it
+    /// out when it is in already; another replaces its pick, or with `toggle`
+    /// clears it when `value` is what it has. Whether anything changed.
+    fn pick(&mut self, filter: &model::Filter, value: Option<String>, toggle: bool) -> bool {
+        if filter.multiple {
+            let pick = self
+                .picks
+                .entry(filter.name.clone())
+                .or_insert_with(|| Pick {
+                    column: filter.column.clone(),
+                    values: Vec::new(),
+                });
+            pick.toggle(value);
+            if pick.values.is_empty() {
+                self.picks.remove(&filter.name);
+            }
+            return true;
+        }
+        let pick = Pick {
+            column: filter.column.clone(),
+            values: vec![value],
+        };
+        if self.picks.get(&filter.name) == Some(&pick) {
+            if toggle {
+                self.picks.remove(&filter.name);
+            }
+            toggle
+        } else {
+            self.picks.insert(filter.name.clone(), pick);
+            true
+        }
     }
 
     /// A click on a pickable bar plot: the band under it becomes the pick —
@@ -1045,19 +1088,8 @@ impl Dashboard {
             let Some(cell) = result.rows.get(row).and_then(|r| r.get(column)) else {
                 continue;
             };
-            let pick = Pick {
-                column: filter.column.clone(),
-                value: (!result.is_sql_null(row, column)).then(|| cell.clone()),
-            };
-            if self.picks.get(&filter.name) == Some(&pick) {
-                if toggle {
-                    self.picks.remove(&filter.name);
-                    changed = true;
-                }
-            } else {
-                self.picks.insert(filter.name.clone(), pick);
-                changed = true;
-            }
+            let value = (!result.is_sql_null(row, column)).then(|| cell.clone());
+            changed |= self.pick(filter, value, toggle);
         }
         if changed {
             self.refilter(cx);
@@ -1109,7 +1141,12 @@ impl Dashboard {
             .enumerate()
             .map(|(ix, (filter, pick))| {
                 let name = filter.name.clone();
-                let value = pick.value.clone().unwrap_or_else(|| "NULL".into());
+                let value = pick
+                    .values
+                    .iter()
+                    .map(pick_text)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 Button::new(("dashboard-pick", ix))
                     .outline()
                     .xsmall()
@@ -1530,6 +1567,10 @@ impl Dashboard {
             let plot = &self.plots[ix];
             let is_empty = match plot.kind.as_str() {
                 "map" => plot.geo.as_ref().is_none_or(|geo| geo.point_count() == 0),
+                "timeline" => plot
+                    .timeline
+                    .as_ref()
+                    .is_none_or(|timeline| timeline.events.is_empty()),
                 "pie" => plot.pie.is_empty(),
                 _ => plot.points.is_empty(),
             };
@@ -1615,7 +1656,7 @@ impl Dashboard {
         } else if matches!(self.plots[ix].kind.as_str(), "bar" | "stacked_bar")
             && self.is_pickable(&self.plots[ix].name)
         {
-            let picked = self.picked_band(&self.plots[ix]);
+            let picked = self.picked_bands(&self.plots[ix]);
             let chart = GroupedBars::new(
                 (
                     ElementId::from("dashboard-chart"),
@@ -2616,6 +2657,23 @@ impl Dashboard {
         )
     }
 
+    /// The zone the dashboard's times are shown in, when its spec sets one.
+    fn render_zone(&self, cx: &App) -> Option<impl IntoElement> {
+        let timezone = self.spec.as_ref()?.timezone.as_deref()?;
+        let zone = super::zone::Zone::parse(timezone)?;
+        Some(
+            div()
+                .flex_none()
+                .px_3()
+                .py_1()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(trf("dashboard.timezone", &[&zone.label()])),
+        )
+    }
+
     fn render_stale_warning(&self, cx: &App) -> Option<impl IntoElement> {
         let reason = self.stale_reason.clone()?;
         Some(
@@ -2843,7 +2901,8 @@ impl Render for Dashboard {
                 this.children(self.render_removed(cx))
             })
             .when(!self.showing_source, |this| {
-                this.children(self.render_picks(cx))
+                this.children(self.render_zone(cx))
+                    .children(self.render_picks(cx))
             })
             .child(body)
             .children(self.render_presence_names(cx))
@@ -3044,6 +3103,7 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     // Picks go in before the sources, which only read.
     let base = super::source::base_of(path);
     let search_path = super::source::search_path(&base);
+    let zone = spec.timezone.as_deref().and_then(super::zone::Zone::parse);
     let mut outcomes: Outcomes = HashMap::new();
     for query in &spec.queries {
         let sql = super::validate_query_sql(&query.sql).map(|()| {
@@ -3056,7 +3116,12 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
                 Some((ran, outcome)) if *ran == sql => (sql, outcome.clone()),
                 _ => {
                     let outcome = match crate::query::run_searching(search_path.as_deref(), &sql) {
-                        Ok(QueryOutcome::Rows(result)) => Ok(Arc::new(result)),
+                        Ok(QueryOutcome::Rows(result)) => Ok(Arc::new(match zone {
+                            Some(zone) => {
+                                in_zone(result, zone, &picked_columns(&spec, &query.name))
+                            }
+                            None => result,
+                        })),
                         Ok(QueryOutcome::Affected { .. }) => {
                             Err(trf("dashboard.query_not_rows", &[&query.name]))
                         }
@@ -3077,7 +3142,7 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
             let mut prepared = prepare(plot, outcomes.get(&plot.query).map(|(_, outcome)| outcome));
             // A heatmap's series are its rows, an axis the query orders
             // (weekdays, hours): only a key's colours want name order.
-            if plot.series.is_some() && plot.kind != "heatmap" {
+            if plot.series.is_some() && !matches!(plot.kind.as_str(), "heatmap" | "timeline") {
                 sort_series_by_name(&mut prepared);
             }
             prepared
@@ -3104,6 +3169,49 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     }
 }
 
+/// `result` with its `TIMESTAMPTZ` columns moved to `zone`, except the columns
+/// named in `keep`: a filter picks those, and its pick has to match the value
+/// as stored. A `TIMESTAMP` names no zone and stays as it is.
+fn in_zone(mut result: QueryResult, zone: super::zone::Zone, keep: &[String]) -> QueryResult {
+    let columns: Vec<usize> = result
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| {
+            column.duck_type.starts_with("Timestamp(")
+                && !column.duck_type.ends_with("None)")
+                && !keep.iter().any(|k| k.eq_ignore_ascii_case(&column.name))
+        })
+        .map(|(ix, _)| ix)
+        .collect();
+    for row in &mut result.rows {
+        for &ix in &columns {
+            if let Some(moved) = row.get(ix).and_then(|cell| zone.shift(cell)) {
+                row[ix] = moved;
+            }
+        }
+    }
+    result
+}
+
+/// The columns of `query` a filter picks on a plot that draws it.
+fn picked_columns(spec: &Spec, query: &str) -> Vec<String> {
+    spec.filters
+        .iter()
+        .filter(|filter| {
+            spec.plots
+                .iter()
+                .any(|plot| plot.name == filter.plot && plot.query == query)
+        })
+        .map(|filter| filter.column.clone())
+        .collect()
+}
+
+/// A picked cell as the band and the chip read it.
+fn pick_text(value: &Option<String>) -> String {
+    value.clone().unwrap_or_else(|| "NULL".into())
+}
+
 /// The picks a query sees: each filter it reads that has one — except a
 /// filter picked on a plot this very query draws, which would otherwise
 /// narrow the plot down to the one value just clicked.
@@ -3127,7 +3235,7 @@ fn picks_for(
                 filter.name.clone(),
                 Pick {
                     column: filter.column.clone(),
-                    value: pick.value.clone(),
+                    values: pick.values.clone(),
                 },
             ))
         })
@@ -3180,6 +3288,10 @@ fn chart_element(plot_ix: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
         }
         "map" => match &plot.geo {
             Some(geo) => GeoPlot::new(named_id(), geo.clone()).into_any_element(),
+            None => empty_chart(cx),
+        },
+        "timeline" => match &plot.timeline {
+            Some(timeline) => super::timeline::render(&plot.name, timeline, cx),
             None => empty_chart(cx),
         },
         // Every bar draws on the hand-built chart, one series or several: it
@@ -3766,6 +3878,112 @@ mod tests {
     use gpui_kit::component::table::ColumnSort;
     use std::collections::HashMap;
 
+    /// Several picks, a timeline and a time zone in a real window.
+    mod board {
+        use super::super::Dashboard;
+        use super::proposals::{frame, open};
+        use gpui_kit::{Entity, TestAppContext};
+
+        const SPEC: &str = r#"
+dashboard "Ops" { timezone = "+08:00" }
+query "channels" { sql = "SELECT * FROM (VALUES ('web', 1), ('shop', 2), ('app', 3)) AS t(channel, n)" }
+query "total" { sql = "SELECT sum(n) AS total FROM (VALUES ('web', 1), ('shop', 2), ('app', 3)) AS t(channel, n) WHERE $channel" }
+query "steps" {
+  sql = "SELECT * FROM (VALUES (TIMESTAMPTZ '2026-01-01 00:00:00+00', 'alice', 'login'), (TIMESTAMPTZ '2026-01-01 00:05:00+00', 'alice', 'read'), (TIMESTAMPTZ '2026-01-01 01:00:00+00', 'bob', 'write'), (NULL, 'bob', 'lost')) AS t(ts, who, what)"
+}
+plot "channels" { type = "bar" query = query.channels x = channel y = n }
+plot "total" { type = "card" query = query.total }
+plot "steps" { type = "timeline" query = query.steps x = ts series = who caption = what tooltip = [who] }
+filter "channel" { plot = plot.channels multiple = true }
+"#;
+
+        fn settled(cx: &mut TestAppContext, view: &Entity<Dashboard>) {
+            for _ in 0..2000 {
+                cx.run_until_parked();
+                if cx.read(|cx| !view.read(cx).is_running()) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the dashboard never finished running");
+        }
+
+        fn total(cx: &TestAppContext, view: &Entity<Dashboard>) -> String {
+            cx.read(|cx| view.read(cx).results["total"].rows[0][0].clone())
+        }
+
+        /// A click on the bar in `row`, as `bar_clicked` makes it.
+        fn click(cx: &mut TestAppContext, view: &Entity<Dashboard>, row: usize) {
+            cx.update(|cx| {
+                view.update(cx, |this, cx| {
+                    let result = this.results["channels"].clone();
+                    this.pick_row("channels", &result, row, true, cx);
+                })
+            });
+            settled(cx, view);
+        }
+
+        #[gpui_kit::test]
+        fn a_timeline_draws_in_its_zone_and_a_bar_collects_picks(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let _guard = crate::db::connection_guard();
+            crate::history::with_test_history(|| {
+                crate::db::open_memory().unwrap();
+                let dir =
+                    std::env::temp_dir().join(format!("ducklocal_board_{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let spec = dir.join("a.dash");
+                std::fs::write(&spec, SPEC).unwrap();
+
+                let (window, view) = open(cx, &spec);
+                settled(cx, &view);
+                frame(cx, window);
+                cx.read(|cx| {
+                    let this = view.read(cx);
+                    assert_eq!(this.spec_error, None);
+                    let steps = this.plots.iter().find(|p| p.name == "steps").unwrap();
+                    assert_eq!(steps.failure, None);
+                    let timeline = steps.timeline.as_ref().unwrap();
+                    assert_eq!(timeline.lanes, ["alice", "bob"]);
+                    assert_eq!(timeline.events.len(), 3);
+                    assert_eq!(timeline.skipped, 1);
+                    assert_eq!(timeline.events[0].when, "2026-01-01 08:00:00");
+                    assert_eq!(timeline.events[1].since_previous, Some(300.));
+                    assert!(steps.notice.as_deref().is_some());
+                });
+                assert_eq!(total(cx, &view), "6");
+
+                click(cx, &view, 0);
+                assert_eq!(total(cx, &view), "1");
+                click(cx, &view, 2);
+                assert_eq!(total(cx, &view), "4");
+                frame(cx, window);
+                cx.read(|cx| {
+                    let summary = view.read(cx).summary();
+                    let filter = &summary["filters"][0];
+                    assert_eq!(filter["multiple"], true);
+                    assert_eq!(filter["value"], "web");
+                    assert_eq!(filter["values"], serde_json::json!(["web", "app"]));
+                });
+
+                click(cx, &view, 0);
+                assert_eq!(total(cx, &view), "3");
+                click(cx, &view, 2);
+                assert_eq!(
+                    total(cx, &view),
+                    "6",
+                    "the last value out clears the filter"
+                );
+                cx.read(|cx| {
+                    assert_eq!(view.read(cx).summary()["filters"][0]["picked"], false);
+                });
+                frame(cx, window);
+                let _ = std::fs::remove_dir_all(&dir);
+            });
+        }
+    }
+
     /// A proposal in a real dashboard: offered without touching the spec,
     /// reviewed, and decided on. Over a real file, so what the person is
     /// promised is what is on disk.
@@ -3804,7 +4022,10 @@ mod tests {
             proposal::run(&args).unwrap();
         }
 
-        fn open(cx: &mut TestAppContext, spec: &Path) -> (AnyWindowHandle, Entity<Dashboard>) {
+        pub(super) fn open(
+            cx: &mut TestAppContext,
+            spec: &Path,
+        ) -> (AnyWindowHandle, Entity<Dashboard>) {
             cx.update(|cx| {
                 gpui_kit::init(cx);
                 crate::ui::init(cx);
@@ -3827,7 +4048,7 @@ mod tests {
             .expect("open test window")
         }
 
-        fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        pub(super) fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
             cx.update_window(window, |_, window, cx| window.render_frame(cx))
                 .unwrap();
         }
@@ -4078,7 +4299,7 @@ filter "channel" { plot = plot.channels }
             "channel".to_string(),
             Pick {
                 column: "channel".into(),
-                value: Some("web".into()),
+                values: vec![Some("web".into())],
             },
         );
         let narrowed = load(&path, &picks, &fresh.outcomes);
@@ -4094,8 +4315,15 @@ filter "channel" { plot = plot.channels }
         assert_eq!(narrowed.results["by_channel"].rows.len(), 3);
 
         // The grid's NULL picks the rows with no channel.
-        picks.get_mut("channel").unwrap().value = None;
+        picks.get_mut("channel").unwrap().values = vec![None];
         assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "1");
+
+        // Several values read any of them, NULL included.
+        picks.get_mut("channel").unwrap().values = vec![Some("web".into()), Some("shop".into())];
+        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "35");
+        picks.get_mut("channel").unwrap().values = vec![Some("shop".into()), None];
+        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "21");
+        picks.get_mut("channel").unwrap().values = vec![None];
 
         // A reload reuses nothing: every query runs.
         let reloaded = load(&path, &picks, &HashMap::new());
@@ -4103,6 +4331,50 @@ filter "channel" { plot = plot.channels }
             &fresh.results["count"],
             &reloaded.results["count"]
         ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_dashboards_zone_moves_zoned_times_only_and_spares_a_picked_column() {
+        let _guard = crate::db::connection_guard();
+        crate::db::open_memory().unwrap();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/view-tests")
+            .join(format!("zone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("board.dash");
+        std::fs::write(
+            &path,
+            r#"
+dashboard "Ops" { timezone = "+08:00" }
+query "times" {
+  sql = "SELECT TIMESTAMPTZ '2026-01-31 20:15:00.5+00' AS at, TIMESTAMPTZ '2026-01-31 20:15:00+00' AS seen, TIMESTAMP '2026-01-31 20:15:00' AS plain, NULL::TIMESTAMPTZ AS gone, 1 AS n"
+}
+query "others" { sql = "SELECT TIMESTAMPTZ '2026-01-31 20:15:00+00' AS seen" }
+plot "times" { type = "bar" query = query.times x = seen y = n }
+plot "others" { type = "table" query = query.others }
+filter "seen" { plot = plot.times }
+"#,
+        )
+        .unwrap();
+        let run = load(&path, &HashMap::new(), &HashMap::new());
+        assert_eq!(run.spec_error, None);
+        assert_eq!(
+            run.results["times"].rows[0],
+            [
+                "2026-02-01 04:15:00.5",
+                "2026-01-31 20:15:00",
+                "2026-01-31 20:15:00",
+                "NULL",
+                "1"
+            ],
+            "a picked column stays as stored and a plain TIMESTAMP as written"
+        );
+        assert_eq!(
+            run.results["others"].rows[0],
+            ["2026-02-01 04:15:00"],
+            "the same column in a query no filter picks on moves"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
