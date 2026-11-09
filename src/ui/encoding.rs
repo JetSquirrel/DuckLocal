@@ -301,6 +301,7 @@ impl Encoding {
             delta: None,
             delta_format: None,
             down_is_good: false,
+            caption: None,
             text: None,
             width: None,
             line: 0,

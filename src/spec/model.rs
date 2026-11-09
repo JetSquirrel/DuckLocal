@@ -17,12 +17,19 @@
 //!   `tooltip`, a list of the columns its tooltip shows;
 //! * a `card` shows one number: its `value` column (the first column when left
 //!   out) from the query's first row, and takes no `x`, `y` or `series`;
+//! * a `timeline` places one event per row along `x`, a time column, at its
+//!   distance in time from the others, in a swim lane per value of an optional
+//!   `series`; `caption` names the column that says what happened, and
+//!   `tooltip` the columns shown on hover;
 //! * `width` is how many of the dashboard's twelve columns a plot spans —
 //!   plots fill a row left to right and wrap; 12 unless a card, which is 3;
 //! * a `filter` block names a plot a click picks a value on — a `bar` (its
 //!   bars) or a `table` (its rows) — and optionally the `column` whose value
 //!   is picked (a bar's `x` when left out; a table must name one); a query
-//!   reads it as `$name`, a predicate (see `filter.rs`);
+//!   reads it as `$name`, a predicate (see `filter.rs`); on a bar,
+//!   `multiple = true` lets clicks collect several values;
+//! * one optional `dashboard` block holds settings for the whole file:
+//!   `timezone`, the zone every `TIMESTAMPTZ` is shown in (see `zone.rs`);
 //! * `query = query.latency` names a query block that exists;
 //! * `x`, `y`, `series` name result columns — as bare identifiers when the
 //!   column allows it, as strings when it does not (`"Revenue (USD)"`).
@@ -51,10 +58,15 @@ pub(crate) const PLOT_TYPES: &[&str] = &[
     "heatmap",
     "histogram",
     "map",
+    "timeline",
     "table",
     "card",
     "text",
 ];
+
+/// The attributes a `timeline` takes besides type, query, title, description
+/// and width.
+const TIMELINE_ATTRS: &[&str] = &["x", "series", "caption", "tooltip"];
 
 /// The attributes only a `map` takes.
 const MAP_ATTRS: &[&str] = &["lat", "lng", "color", "size", "size_scale", "tooltip"];
@@ -88,6 +100,8 @@ pub(crate) struct Spec {
     pub queries: Vec<Query>,
     pub plots: Vec<Plot>,
     pub filters: Vec<Filter>,
+    /// The `dashboard` block's `timezone`, as written and known to parse.
+    pub timezone: Option<String>,
     /// Where every block and attribute sits in the source, in source order,
     /// for `Spec::locate`.
     sites: Vec<Site>,
@@ -159,6 +173,8 @@ pub(crate) struct Plot {
     pub down_is_good: bool,
     /// A `text` panel's words under its title.
     pub text: Option<String>,
+    /// The column saying what each of a `timeline`'s events was.
+    pub caption: Option<String>,
     /// Grid columns spanned as written; `Plot::width` applies the default.
     pub width: Option<u8>,
     /// Line and column of the block's kind keyword.
@@ -187,6 +203,9 @@ pub(crate) struct Filter {
     /// The column picked and compared: as written, or the bar's `x`. Empty
     /// only while the file has diagnostics.
     pub column: String,
+    /// Each click adds its value to the pick or takes it out, and a query
+    /// reads any of them: `$name` is `IN (...)`.
+    pub multiple: bool,
     pub line: usize,
     pub col: usize,
     pub span: (usize, usize),
@@ -379,6 +398,8 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
     let mut source_names: HashSet<String> = HashSet::new();
     let mut filters = Vec::new();
     let mut filter_names: HashSet<String> = HashSet::new();
+    let mut timezone = None;
+    let mut dashboard_seen = false;
 
     for block in &file.blocks {
         match block.kind.as_str() {
@@ -431,6 +452,16 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
                 sites.push(site(block, f.name_span));
                 filters.push((f, block));
             }
+            "dashboard" => {
+                if std::mem::replace(&mut dashboard_seen, true) {
+                    diagnostics.push(Diagnostic::at_block(
+                        block,
+                        "A file holds one dashboard block",
+                    ));
+                }
+                sites.push(site(block, block.name_span));
+                timezone = dashboard(block, &mut diagnostics);
+            }
             // `card "total" { … }` reads naturally, but a card is a plot.
             other if PLOT_TYPES.contains(&other) => diagnostics.push(Diagnostic::at_block(
                 block,
@@ -442,8 +473,8 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
             other => diagnostics.push(Diagnostic::at_block(
                 block,
                 format!(
-                    "Unknown block: {other:?}; the file holds source, query, plot and filter blocks{}",
-                    did_you_mean(other, ["source", "query", "plot", "filter"])
+                    "Unknown block: {other:?}; the file holds source, query, plot and filter blocks, and one dashboard block{}",
+                    did_you_mean(other, ["source", "query", "plot", "filter", "dashboard"])
                 ),
             )),
         }
@@ -498,6 +529,14 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
             )));
             continue;
         };
+        // A table's selection is one row, and a sort or an arrow key selects
+        // again: a toggle there would drop values nobody clicked.
+        if filter.multiple && plot.kind == "table" {
+            diagnostics.push(at_plot(format!(
+                "filter {:?} takes multiple, and a table selects one row; pick several values on a bar or stacked_bar plot",
+                filter.name
+            )));
+        }
         if !plot.kind.is_empty() && !FILTER_PLOTS.contains(&plot.kind.as_str()) {
             diagnostics.push(at_plot(format!(
                 "filter {:?} picks on plot {:?}, a {}; a value is picked on a {} plot",
@@ -560,6 +599,7 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
             queries,
             plots,
             filters,
+            timezone,
             sites,
         },
         diagnostics,
@@ -668,6 +708,7 @@ fn filter(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Filter {
     }
     let mut plot = None;
     let mut column_name = None;
+    let mut multiple = false;
     let mut seen: HashSet<&str> = HashSet::new();
     for attr in &block.attrs {
         if !seen.insert(attr.name.as_str()) {
@@ -691,11 +732,15 @@ fn filter(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Filter {
                 )),
             },
             "column" => column_name = column(attr, diagnostics),
+            "multiple" => match attr.value {
+                Value::Bool(flag) => multiple = flag,
+                _ => diagnostics.push(Diagnostic::at_attr(attr, "multiple is true or false")),
+            },
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A filter block holds plot and column; unknown attribute: {other}{}",
-                    did_you_mean(other, ["plot", "column"])
+                    "A filter block holds plot, column and multiple; unknown attribute: {other}{}",
+                    did_you_mean(other, ["plot", "column", "multiple"])
                 ),
             )),
         }
@@ -710,11 +755,41 @@ fn filter(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Filter {
         name: block.name.clone(),
         plot: plot.unwrap_or_default(),
         column: column_name.unwrap_or_default(),
+        multiple,
         line: block.line,
         col: block.col,
         span: block.kind_span,
         name_span: block.name_span,
     }
+}
+
+/// The `dashboard` block: settings for the whole file. Its name is a title
+/// for whoever reads the file. Returns the `timezone`.
+fn dashboard(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
+    let mut timezone = None;
+    for attr in &block.attrs {
+        match attr.name.as_str() {
+            "timezone" => match string(attr, diagnostics) {
+                Some(zone) if super::zone::Zone::parse(&zone).is_some() => timezone = Some(zone),
+                Some(zone) => diagnostics.push(Diagnostic::at_attr(
+                    attr,
+                    format!(
+                        "Unknown timezone {zone:?}: one of {}",
+                        super::zone::ZONES_HELP
+                    ),
+                )),
+                None => {}
+            },
+            other => diagnostics.push(Diagnostic::at_attr(
+                attr,
+                format!(
+                    "A dashboard block holds timezone; unknown attribute: {other}{}",
+                    did_you_mean(other, ["timezone"])
+                ),
+            )),
+        }
+    }
+    timezone
 }
 
 fn query(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Query> {
@@ -781,6 +856,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let mut delta_format = None;
     let mut down_is_good = false;
     let mut text = None;
+    let mut caption = None;
     let mut width = None;
     let mut seen: HashSet<&str> = HashSet::new();
     for attr in &block.attrs {
@@ -872,6 +948,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
                 Value::Heredoc(words) => text = Some(words.trim().to_string()),
                 _ => text = string(attr, diagnostics),
             },
+            "caption" => caption = column(attr, diagnostics),
             "width" => width = grid_width(attr, diagnostics),
             "description" => match &attr.value {
                 Value::Heredoc(words) => description = Some(words.trim().to_string()),
@@ -880,7 +957,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
             other => diagnostics.push(Diagnostic::at_attr(
                 attr,
                 format!(
-                    "A plot block holds type, query, x, y, series, title, description, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, delta, delta_format, down_is_good, and for a text panel text; unknown attribute: {other}{}",
+                    "A plot block holds type, query, x, y, series, title, description, width, format, for a map lat, lng, color, size, size_scale, tooltip, for a card value, note, tone, delta, delta_format, down_is_good, for a timeline caption, and for a text panel text; unknown attribute: {other}{}",
                     did_you_mean(other, super::complete::PLOT_ATTRS)
                 ),
             )),
@@ -890,6 +967,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     let is_map = kind_name == "map";
     let is_card = kind_name == "card";
     let is_text = kind_name == "text";
+    let is_timeline = kind_name == "timeline";
     // Attributes the type has no use for are mistakes, not no-ops: a map's
     // `x` or a line's `lat` says the author expects something that will not
     // happen.
@@ -904,6 +982,18 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         } else if name == "text" && !kind_name.is_empty() {
             Some(format!(
                 "text is for text panels; this plot is a {kind_name} (its label is title)"
+            ))
+        } else if is_timeline {
+            (!matches!(name, "type" | "query" | "title" | "description" | "width")
+                && !TIMELINE_ATTRS.contains(&name))
+            .then(|| {
+                format!(
+                    "A timeline places events by x (a time column), in lanes by series, captioned by caption, with tooltip columns; it takes no {name}"
+                )
+            })
+        } else if name == "caption" && !kind_name.is_empty() {
+            Some(format!(
+                "caption is for timeline plots; this plot is a {kind_name}"
             ))
         } else if name == "format" && matches!(kind_name.as_str(), "map" | "table") {
             Some(format!(
@@ -981,7 +1071,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
     if !kind.is_empty()
         && !matches!(
             kind.as_str(),
-            "table" | "map" | "card" | "text" | "histogram"
+            "table" | "map" | "card" | "text" | "histogram" | "timeline"
         )
         && y.is_none()
     {
@@ -1013,6 +1103,7 @@ fn plot(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Plot> {
         delta_format,
         down_is_good,
         text,
+        caption,
         width,
         line: block.line,
         col: block.col,
@@ -1287,6 +1378,7 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
             ("size", plot.size.as_deref()),
             ("value", plot.value.as_deref()),
             ("delta", plot.delta.as_deref()),
+            ("caption", plot.caption.as_deref()),
             (
                 "note",
                 match &plot.note {
@@ -1376,6 +1468,25 @@ pub(crate) fn check_columns(spec: &Spec, columns: &ColumnLookup) -> Vec<Diagnost
                         span: plot.span,
                         message: format!(
                             "histogram {:?} bins x = {:?} ({ty}), which is not numeric",
+                            plot.name, plot.x
+                        ),
+                    });
+                }
+            }
+        }
+        // A number is not a time, and every row would be left off the track.
+        if plot.kind == "timeline" {
+            if let Some((_, ty)) = available
+                .iter()
+                .find(|(column, _)| column.eq_ignore_ascii_case(&plot.x))
+            {
+                if is_numeric(ty) {
+                    diagnostics.push(Diagnostic {
+                        line: plot.line,
+                        col: plot.col,
+                        span: plot.span,
+                        message: format!(
+                            "timeline {:?} places events by x = {:?} ({ty}), a number; x is a date, a time, or text holding one",
                             plot.name, plot.x
                         ),
                     });
@@ -1520,7 +1631,7 @@ filter "picked" {
         for wanted in [
             "unknown attribute: pth; did you mean \"path\"?",
             "unknown attribute: titel; did you mean \"title\"?",
-            "Unknown block: \"plt\"; the file holds source, query, plot and filter blocks; did you mean \"plot\"?",
+            "Unknown block: \"plt\"; the file holds source, query, plot and filter blocks, and one dashboard block; did you mean \"plot\"?",
             "which the file does not define; did you mean \"by_day\"?",
             "which the file does not define; did you mean \"daily\"?",
         ] {
@@ -1754,6 +1865,118 @@ plot "raw" {
   x     = timestamp
 }
 "#;
+
+    #[test]
+    fn a_timeline_takes_a_time_lanes_a_caption_and_a_tooltip() {
+        let source = r#"
+query "steps" { sql = "SELECT at, actor, what, amount FROM t" }
+plot "flow" {
+  type    = "timeline"
+  query   = query.steps
+  x       = at
+  series  = actor
+  caption = what
+  tooltip = [amount]
+  description = "Each step"
+  width   = 6
+}
+"#;
+        let spec = validate_ok(source);
+        let plot = &spec.plots[0];
+        assert_eq!(
+            (
+                plot.x.as_str(),
+                plot.series.as_deref(),
+                plot.caption.as_deref()
+            ),
+            ("at", Some("actor"), Some("what"))
+        );
+        assert_eq!(plot.tooltip.as_deref(), Some(&["amount".to_string()][..]));
+        let no_x = validate_err(&source.replace("  x       = at\n", ""));
+        assert!(
+            no_x.iter().any(|d| d.message.contains("requires x")),
+            "{no_x:?}"
+        );
+        let y = validate_err(
+            &source.replace("  x       = at\n", "  x       = at\n  y       = amount\n"),
+        );
+        assert!(
+            y.iter()
+                .any(|d| d.message.contains("A timeline places events")),
+            "{y:?}"
+        );
+        let misplaced = validate_err(
+            &source
+                .replace("\"timeline\"", "\"map\"")
+                .replace("  x       = at\n", "")
+                .replace("  series  = actor\n", ""),
+        );
+        assert!(
+            misplaced
+                .iter()
+                .any(|d| d.message.contains("caption is for timeline plots")),
+            "{misplaced:?}"
+        );
+    }
+
+    #[test]
+    fn a_dashboard_block_sets_the_time_zone() {
+        let source = r#"
+dashboard "Operations" { timezone = "+08:00" }
+query "q" { sql = "SELECT 1 AS n" }
+plot "t" { type = "table" query = query.q }
+"#;
+        assert_eq!(validate_ok(source).timezone.as_deref(), Some("+08:00"));
+        let unknown = validate_err(&source.replace("+08:00", "HKT"));
+        assert!(
+            unknown
+                .iter()
+                .any(|d| d.message.contains("Unknown timezone \"HKT\"")),
+            "{unknown:?}"
+        );
+        let twice = validate_err(&format!(
+            "{source}\ndashboard \"again\" {{ timezone = \"UTC\" }}"
+        ));
+        assert!(
+            twice
+                .iter()
+                .any(|d| d.message.contains("one dashboard block")),
+            "{twice:?}"
+        );
+        let other = validate_err(&source.replace("timezone", "zone"));
+        assert!(
+            other
+                .iter()
+                .any(|d| d.message.contains("A dashboard block holds timezone")),
+            "{other:?}"
+        );
+    }
+
+    #[test]
+    fn a_filter_takes_several_values_on_a_bar_and_not_on_a_table() {
+        let source = r#"
+query "q" { sql = "SELECT 'a' AS c, 1 AS n" }
+plot "bars" { type = "bar" query = query.q x = c y = n }
+plot "rows" { type = "table" query = query.q }
+filter "c" { plot = plot.bars multiple = true }
+"#;
+        assert!(validate_ok(source).filters[0].multiple);
+        let table =
+            validate_err(&source.replace("plot = plot.bars", "plot = plot.rows column = c"));
+        assert!(
+            table
+                .iter()
+                .any(|d| d.message.contains("a table selects one row")),
+            "{table:?}"
+        );
+        let not_a_flag = validate_err(&source.replace("multiple = true", "multiple = \"yes\""));
+        assert!(
+            not_a_flag
+                .iter()
+                .any(|d| d.message.contains("multiple is true or false")),
+            "{not_a_flag:?}"
+        );
+    }
 
     #[test]
     fn a_good_spec_validates() {

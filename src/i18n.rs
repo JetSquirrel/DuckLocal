@@ -1114,6 +1114,23 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("dashboard.filter.label", "筛选", "Filtered by"),
     ("dashboard.filter.clear", "清除此筛选", "Clear this filter"),
     ("dashboard.filter.clear_all", "全部清除", "Clear all"),
+    (
+        "dashboard.timezone",
+        "带时区的时间按 {} 显示",
+        "Times with a zone are shown in {}",
+    ),
+    ("timeline.after", "距上一事件 {}", "{} after the previous event"),
+    ("timeline.offset", "+{}", "+{}"),
+    (
+        "timeline.skipped",
+        "{} 行的时间无法识别，未绘制",
+        "{} rows have a time that can't be read and are not drawn",
+    ),
+    (
+        "timeline.thinned",
+        "事件过多，按时间均匀显示 {} 个（共 {} 个）",
+        "Too many events: {} of {} shown, evenly over the time",
+    ),
     ("dashboard.sql.show_tooltip", "查看这张图的 SQL", "Show this plot's SQL"),
     ("dashboard.sql.hide_tooltip", "回到图表", "Back to the plot"),
     ("dashboard.maximize.tooltip", "放大这张图", "Enlarge this plot"),

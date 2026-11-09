@@ -118,6 +118,8 @@ pub struct PreparedPlot {
     pub pie: Vec<Arc<PieSlice>>,
     /// A `map`'s points.
     pub geo: Option<Arc<GeoData>>,
+    /// A `timeline`'s events.
+    pub timeline: Option<Arc<super::timeline::Timeline>>,
     /// A `card`'s value, ready to show.
     pub card: Option<SharedString>,
     /// A `card`'s change, when it names a `delta` and its row holds a number.
@@ -188,6 +190,68 @@ fn histogram(result: &QueryResult, x_ix: usize, base: PreparedPlot) -> PreparedP
         label_name: column.name.clone(),
         series_names: vec![crate::i18n::tr("chart.histogram.rows").to_string()],
         points,
+        notice: crate::i18n::join_all(&notices),
+        ..base
+    }
+}
+
+/// A timeline of the query's rows, and what was left out of it to keep it
+/// honest and drawable.
+fn timeline_plot(plot: &Plot, result: &QueryResult, base: PreparedPlot) -> PreparedPlot {
+    let find = |name: &str| {
+        result
+            .columns
+            .iter()
+            .position(|column| column.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| missing_column(name, result))
+    };
+    let columns = (|| -> Result<_, String> {
+        let time = find(&plot.x)?;
+        let lane = plot.series.as_deref().map(find).transpose()?;
+        let caption = plot.caption.as_deref().map(find).transpose()?;
+        let tooltip = plot
+            .tooltip
+            .iter()
+            .flatten()
+            .map(|name| find(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((time, lane, caption, tooltip))
+    })();
+    let (time, lane, caption, tooltip) = match columns {
+        Ok(columns) => columns,
+        Err(message) => {
+            return PreparedPlot {
+                failure: Some(message),
+                ..base
+            }
+        }
+    };
+    let timeline = super::timeline::build(result, time, lane, caption, &tooltip);
+    let mut notices = Vec::new();
+    if result.truncated {
+        notices.push(truncated_notice(result));
+    }
+    if timeline.skipped > 0 {
+        notices.push(trf("timeline.skipped", &[&timeline.skipped.to_string()]));
+    }
+    if timeline.lanes_left_out > 0 {
+        notices.push(trf(
+            "chart.notice.series_left_out",
+            &[
+                &MAX_SERIES.to_string(),
+                &(timeline.lanes.len() + timeline.lanes_left_out).to_string(),
+            ],
+        ));
+    }
+    if let Some(total) = timeline.thinned_from {
+        notices.push(trf(
+            "timeline.thinned",
+            &[&timeline.events.len().to_string(), &total.to_string()],
+        ));
+    }
+    PreparedPlot {
+        label_name: result.columns[time].name.clone(),
+        timeline: Some(Arc::new(timeline)),
         notice: crate::i18n::join_all(&notices),
         ..base
     }
@@ -318,6 +382,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         points: Vec::new(),
         pie: Vec::new(),
         geo: None,
+        timeline: None,
         card: None,
         delta: None,
         note: None,
@@ -358,6 +423,9 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
             .iter()
             .position(|column| column.name.eq_ignore_ascii_case(name))
     };
+    if plot.kind == "timeline" {
+        return timeline_plot(plot, result, base(None));
+    }
     if plot.kind == "card" {
         let ix = match plot.value.as_deref() {
             Some(name) => match column(name) {
@@ -772,6 +840,7 @@ pub(crate) fn prepare<R: std::borrow::Borrow<QueryResult>>(
         points,
         pie,
         geo: None,
+        timeline: None,
         card: None,
         delta: None,
         note: None,
@@ -1569,6 +1638,7 @@ mod tests {
             delta: None,
             delta_format: None,
             down_is_good: false,
+            caption: None,
             text: None,
             width: None,
             line: 1,
