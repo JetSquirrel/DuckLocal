@@ -58,7 +58,7 @@ cargo tree --locked -e normal | grep -E " (ureq|reqwest|hyper) "
 
 ```bash
 git clone https://github.com/JetSquirrel/DuckLocal && cd DuckLocal
-git checkout v0.4.0   # the release you want
+git checkout v0.4.1   # the release you want
 cargo build --release --locked
 ```
 
