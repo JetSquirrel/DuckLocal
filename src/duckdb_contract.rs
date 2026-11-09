@@ -883,8 +883,8 @@ fn a_new_database_file_opens_in_duckdb_1() {
 /// The bundled DuckDB names itself a release, so INSTALL looks for
 /// extensions under `v2.0.0/` rather than under its commit, which
 /// extensions.duckdb.org does not serve. duckdb-rs 1.20000.0 packaged the
-/// v2.0.0 tag as `v2.0.0-dev88614`; `.cargo/config.toml` defines the version
-/// back. A newer bundled commit fails here: drop that override, or move it.
+/// v2.0.0 tag as `v2.0.0-dev88614`; 1.20000.1 reports `v2.0.0` itself
+/// (duckdb-rs#918). A newer bundled commit fails here on purpose.
 #[test]
 fn bundled_duckdb_is_v2_0_0() {
     let (version, source_id, codename): (String, String, String) = mem()
