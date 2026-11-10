@@ -43,7 +43,9 @@ use std::time::Instant;
 use super::presence::{self, Presence};
 use super::proposal::{self, ApplyError, Change, DiffLine, Proposal, Verdict};
 use gpui_kit::assets::IconName as AssetIcon;
-use gpui_kit::base::{ResizeHandleContext, ResizeHandleState};
+use gpui_kit::base::{
+    InteractiveElementExt as _, ResizeHandleContext, ResizeHandleState, ScrollBounce,
+};
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::chart::AreaChart;
@@ -1931,9 +1933,6 @@ impl Dashboard {
         // rows of nothing rather than as the end of the data.
         let overflows = rows.max_offset().y > px(0.);
         let wheel = self.wheel.clone();
-        // Where the table sits, for the wheel to tell whether it is on screen.
-        let bounds: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
-        let record = bounds.clone();
         v_flex()
             .size_full()
             .when(truncated, |this| {
@@ -1951,13 +1950,6 @@ impl Dashboard {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    // Runs after the table's own scrolling and before the
-                    // stack's, so it decides whether the stack moves too.
-                    .on_scroll(move |event, window, cx| {
-                        if wheel.table_scrolled(ix, &rows, bounds.get(), event, window) {
-                            cx.stop_propagation();
-                        }
-                    })
                     .child(
                         DataTable::new(&table)
                             .small()
@@ -1965,12 +1957,21 @@ impl Dashboard {
                             .scrollbar_visible(true, false),
                     )
                     .child(crate::ui::results::horizontal_scrollbar(&table, cx))
+                    // Where the table sits, and a hitbox over it, for the
+                    // wheel to tell whether it is on screen and under the
+                    // pointer (see `wheel`).
                     .child(
-                        canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full(),
+                        canvas(
+                            move |b, window, _| {
+                                let hitbox = window.insert_hitbox(b, HitboxBehavior::Normal);
+                                wheel.table_laid_out(ix, hitbox.id, b, rows.clone());
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
                     ),
             )
             .into_any_element()
@@ -2830,18 +2831,49 @@ impl Render for Dashboard {
             let painted = self.painted.clone();
             // The canvas sits outside the scrolling div, so its bounds are
             // the viewport's, not the scrolled content's.
+            let frame = self.wheel.clone();
+            let scroll = self.wheel.stack().clone();
             div()
                 .size_full()
                 .relative()
+                // Painted first, so its listener hears a wheel event before
+                // the stack or any table in it: GPUI Kit's scroll areas take
+                // an event whole in the capture phase, the innermost first,
+                // and a table would keep every one from the dashboard.
                 .child(
+                    canvas(
+                        move |_, _, _| frame.begin_frame(),
+                        move |_, _, window, _| {
+                            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Capture && wheel.route(event, window) {
+                                    cx.stop_propagation();
+                                    window.refresh();
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .child(ScrollBounce::new(
+                    ("dashboard-bounce", self.id as usize),
+                    &scroll,
                     div()
                         .id(format!("dashboard-scroll-{}", self.id))
                         .size_full()
-                        .on_scroll(move |event, window, _| wheel.stack_scrolled(event, window))
-                        .overflow_y_scrollbar()
+                        .flex()
+                        .flex_col()
+                        .track_scroll(&scroll)
+                        .overflow_y_scroll()
+                        // A sideways swipe would otherwise be read as a
+                        // vertical one.
+                        .lock_scroll_axis()
                         .child(
                             v_flex()
                                 .w_full()
+                                .flex_none()
                                 .child(
                                     div().w_full().h(stack).child(
                                         v_resizable(format!("dashboard-{}", self.id))
@@ -2868,7 +2900,8 @@ impl Render for Dashboard {
                                 )
                                 .children(self.render_adding(cx)),
                         ),
-                )
+                ))
+                .vertical_scrollbar(&scroll)
                 .child(
                     canvas(
                         move |b, _, _| viewport.set(Some(b)),
