@@ -36,7 +36,7 @@ export DUCKLOCAL_SESSION=investigation.session.jsonl
 ducklocal schema data/cloudtrail.json.gz --stats
 ```
 
-The whole log is one row with one column, `Records`, so these statistics say little. The queries unnest it first.
+The whole log is one row with one column, `Records`, so these statistics say little. The output's `hint` gives the SQL that reads the events as rows, and the queries unnest it first.
 
 **2. Investigate, under limits.** SQL read from a log is SQL someone else may have influenced, so these run restricted.
 
@@ -118,7 +118,7 @@ One real run of the commands above, written by an agent as it worked.
 | # | What happened | Cost | Outcome |
 |---|---|---|---|
 | 1 | `schema` on `.json.gz`, CloudTrail's own format, failed with "This file is not a DuckDB database" | Blocking and misleading | **Fixed here:** `.json.gz`, `.csv.gz` and similar now count as data files in `schema` and `source` blocks. The window's file attach shares that check, but wasn't run |
-| 2 | `schema --stats` reports one row and one `Records` column, so it says nothing about 795 events | One extra query to see the shape | Open |
+| 2 | `schema --stats` reports one row and one `Records` column, so it says nothing about 795 events | One extra query to see the shape | **Fixed since:** `schema` adds a `hint` with the SQL that reads the list's records as rows. The statistics themselves still describe the wrapper |
 | 3 | `eventTime` reads as a time-zone-aware timestamp, shown in the machine's zone, and ICU isn't always installed to convert it | A day could differ between machines | Worked round with `make_timestamp(epoch_us(...))` |
 | 4 | A `.dash` file has no shared view, so each of 5 queries repeats the same 13-line flattening | About 65 repeated lines | Open |
 | 5 | Used `tone = "bad"`; the error listed the valid tones | One retry | Fine as it is |
