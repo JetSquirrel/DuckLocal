@@ -985,6 +985,72 @@ plot "c" { type = "card" query = query.q x = a }
     );
 }
 
+/// A `view` is shaping written once: every query that names it reads it, a
+/// view reads the views above it, and its SQL is held to what a query's is.
+#[test]
+fn check_runs_views_in_front_of_the_queries_that_name_them() {
+    let s = Sandbox::new();
+    std::fs::write(
+        s.0.join("orders.csv"),
+        "channel,amount\nweb,10\nshop,20\nweb,5\n",
+    )
+    .unwrap();
+    std::fs::write(
+        s.0.join("board.dash"),
+        r#"
+source "orders" { path = "orders.csv" }
+view "sales" {
+  sql = <<SQL
+    -- named once, read twice
+    SELECT channel, amount * 2 AS doubled FROM orders;
+  SQL
+}
+view "web" { sql = "FROM sales WHERE channel = 'web'" }
+query "total" { sql = "SELECT sum(doubled) AS total FROM sales" }
+query "web_total" { sql = "WITH w AS (FROM web) SELECT sum(doubled) AS total FROM w" }
+query "plain" { sql = "SELECT 1 AS one" }
+plot "total" { type = "card" query = query.total value = total }
+plot "web" { type = "card" query = query.web_total value = total }
+plot "plain" { type = "card" query = query.plain }
+"#,
+    )
+    .unwrap();
+    let check = |args: &[&str]| check_report(s.run(args, None));
+    let out = check(&["check", "board.dash"]);
+    assert_eq!(out["views"][0]["name"], "sales");
+    assert_eq!(out["views"][1]["line"], 9);
+    assert_eq!(out["queries"][0]["columns"][0]["name"], "total");
+    assert_eq!(out["queries"][0]["rows"], 1);
+    assert_eq!(out["queries"][1]["rows"], 1);
+    let summary = check(&["check", "board.dash", "--summary"]);
+    assert_eq!(summary["views"], 2);
+    assert_eq!(summary["unresolved"], serde_json::json!([]));
+
+    // Under limits the view's reads count as the query's own.
+    s.error(&["check", "board.dash", "--restricted"], 1, "policy_denied");
+    check(&["check", "board.dash", "--restricted", "--allow-read", "."]);
+
+    // A view that writes, or that closes its own parentheses to smuggle a
+    // second statement in, is refused where it is written, and nothing that
+    // names it runs.
+    for sql in [
+        "COPY (SELECT 1) TO 'out.csv'",
+        "SELECT 1) SELECT * FROM (SELECT 2",
+    ] {
+        std::fs::write(
+            s.0.join("bad.dash"),
+            format!(
+                "view \"v\" {{ sql = \"{sql}\" }}\nquery \"q\" {{ sql = \"FROM v\" }}\nplot \"p\" {{ type = \"table\" query = query.q }}\n"
+            ),
+        )
+        .unwrap();
+        let error = s.error(&["check", "bad.dash"], 2, "spec");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("bad.dash:1: view \"v\""), "{message}");
+        assert!(!s.0.join("out.csv").exists());
+    }
+}
+
 /// `check` validates a dashboard spec the way the CLI validates everything:
 /// statically first — no database, nothing executes — and, when `--database`
 /// is given, against the columns the queries really return.
@@ -2289,6 +2355,13 @@ fn a_project_check_reports_what_will_not_travel_or_is_not_here() {
         "query \"q\" {\n  sql = \"SELECT * FROM 'https://example.com/x.csv'\"\n}\n",
     )
     .unwrap();
+    // The address is in a view: the query that would fetch it names only that.
+    std::fs::write(
+        s.0.join("p/remote_view.dash"),
+        "view \"v\" {\n  sql = \"SELECT * FROM 'https://example.com/x.csv'\"\n}\n\
+         query \"q\" {\n  sql = \"FROM v\"\n}\n",
+    )
+    .unwrap();
     std::fs::write(s.0.join("p/broken.dash"), "query \"q\" {").unwrap();
     std::fs::write(
         s.0.join("p/ducklocal-project.json"),
@@ -2296,8 +2369,8 @@ fn a_project_check_reports_what_will_not_travel_or_is_not_here() {
             "version": 1,
             "name": "t",
             "dashboards": [
-                "absolute.dash", "above.dash", "remote.dash", "broken.dash",
-                "absent.dash", "../escape.dash",
+                "absolute.dash", "above.dash", "remote.dash", "remote_view.dash",
+                "broken.dash", "absent.dash", "../escape.dash",
             ],
             "data": [
                 {"name": "here", "path": "a.csv"},
@@ -2328,6 +2401,8 @@ fn a_project_check_reports_what_will_not_travel_or_is_not_here() {
     // Left unrun rather than reaching out, which would hang here anyway.
     assert_eq!(status("remote.dash")["status"], "remote");
     assert_eq!(status("remote.dash")["checked"], false);
+    assert_eq!(status("remote_view.dash")["status"], "remote");
+    assert_eq!(status("remote_view.dash")["checked"], false);
     assert_eq!(status("broken.dash")["status"], "failed");
     assert_eq!(status("absent.dash")["status"], "missing");
     assert_eq!(status("../escape.dash")["status"], "outside");
@@ -2397,6 +2472,9 @@ fn a_project_starts_from_what_is_in_the_folder() {
     std::fs::write(s.0.join("p/top.dash"), spec).unwrap();
     std::fs::write(s.0.join("p/reports/sub.dash"), spec).unwrap();
     std::fs::write(s.0.join("p/.hidden/no.dash"), spec).unwrap();
+    // A change offered to a dashboard is not a second dashboard.
+    std::fs::create_dir_all(s.0.join("p/reports/proposals/v2")).unwrap();
+    std::fs::write(s.0.join("p/reports/proposals/v2/sub.dash"), spec).unwrap();
 
     let made = s.run(&["project", "init", "p", "--name", "mine"], None);
     assert!(
@@ -2404,6 +2482,8 @@ fn a_project_starts_from_what_is_in_the_folder() {
         "{}",
         String::from_utf8_lossy(&made.stderr)
     );
+    let said: Value = serde_json::from_slice(&made.stdout).unwrap();
+    assert_eq!(said["drafts"], json!(["reports/proposals/v2/sub.dash"]));
     let manifest: Value = serde_json::from_str(
         &std::fs::read_to_string(s.0.join("p/ducklocal-project.json")).unwrap(),
     )

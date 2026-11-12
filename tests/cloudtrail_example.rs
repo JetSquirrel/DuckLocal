@@ -106,6 +106,17 @@ fn the_investigation_finds_what_the_readme_says() {
     let schema = copy.json(&["schema", "data/cloudtrail.json.gz", "--stats"]);
     assert_eq!(schema["row_count"], 1);
     assert_eq!(schema["columns"][0]["name"], "Records");
+    // One row, one column: the schema says how to get at the 795 events.
+    let hint = schema["hint"].as_str().unwrap();
+    assert!(
+        hint.contains("SELECT unnest(\"Records\", max_depth := 2) FROM"),
+        "{hint}"
+    );
+    let flat = hint.split("with: ").nth(1).unwrap();
+    // In a copy of its own, so the session below holds only the investigation.
+    let aside = Copy::new("hint");
+    let events = aside.json(&["query", "--sql", flat, "--limit", "1"]);
+    assert_eq!(events["total_rows"], 795);
 
     let who = copy.step("01_who.sql");
     assert_eq!(who["row_count"], 5);

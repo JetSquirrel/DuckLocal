@@ -20,10 +20,24 @@
 //! nothing outside the query can see it. The rewrite adds only a
 //! `SELECT * FROM reader('path')`, which reads; the read-only check runs on
 //! the query as written.
+//!
+//! A `view` block is the same idea one step on: a SELECT under a name, for
+//! the shaping several queries would otherwise each repeat.
+//!
+//! ```text
+//! source "trail" { path = "cloudtrail.json.gz" }
+//! view "events" { sql = "SELECT r.eventName AS name FROM (SELECT unnest(Records) AS r FROM trail)" }
+//! query "names" { sql = "SELECT name, count(*) FROM events GROUP BY 1" }
+//! ```
+//!
+//! It too is a CTE in front of each query that names it, after the sources
+//! and in the order the file defines them: a view reads the sources and the
+//! views above it. Its SQL is someone's SQL, so it passes the same read-only
+//! check a query does before anything that names it runs (`unsound_view`).
 
 use std::path::{Path, PathBuf};
 
-use super::model::Source;
+use super::model::{Source, View};
 
 /// Why a path cannot be a source, judged by its extension: the readers a
 /// source can use are DuckDB's own table functions. `None` when it can.
@@ -80,19 +94,31 @@ pub(crate) fn search_path(base: &Path) -> Option<String> {
     (!path.contains(',')).then_some(path)
 }
 
-/// `sql` with every source it names defined in front of it, as CTEs. A query
-/// that names none comes back as written.
+/// `sql` with every source and view it names defined in front of it, as
+/// CTEs. A query that names none comes back as written.
 ///
-/// Which sources a query names is a word match, case-insensitive like SQL
+/// Which of them a query names is a word match, case-insensitive like SQL
 /// names: a false match — the word inside a string literal — only adds a CTE
-/// nothing reads, and DuckDB does not scan a CTE nothing reads.
-pub(crate) fn expand(sql: &str, sources: &[Source], base: &Path) -> String {
-    let words = words(sql);
+/// nothing reads, and DuckDB does not scan a CTE nothing reads. What a named
+/// view names counts too, so a view brings its own sources along.
+pub(crate) fn expand(sql: &str, sources: &[Source], views: &[View], base: &Path) -> String {
+    let mut named = words(sql);
+    let names = |named: &[&str], name: &str| named.iter().any(|w| w.eq_ignore_ascii_case(name));
+    // Last first: a view reads only what is defined above it, so by the time
+    // one is passed over, everything that could name it has been seen.
+    let mut used_views: Vec<&View> = Vec::new();
+    for view in views.iter().rev() {
+        if names(&named, &view.name) {
+            named.extend(words(&view.sql));
+            used_views.push(view);
+        }
+    }
+    used_views.reverse();
     let used: Vec<&Source> = sources
         .iter()
-        .filter(|source| words.iter().any(|w| w.eq_ignore_ascii_case(&source.name)))
+        .filter(|source| names(&named, &source.name))
         .collect();
-    if used.is_empty() {
+    if used.is_empty() && used_views.is_empty() {
         return sql.to_string();
     }
     let ctes = used
@@ -107,6 +133,17 @@ pub(crate) fn expand(sql: &str, sources: &[Source], base: &Path) -> String {
                 path.replace('\'', "''")
             )
         })
+        .chain(used_views.iter().map(|view| {
+            let inner = view.sql.trim().trim_end_matches(';');
+            let (keyword, _) = leading_word(skip_comments(inner));
+            // The newline before the parenthesis keeps a trailing `--`
+            // comment from swallowing it.
+            match keyword.to_ascii_lowercase().as_str() {
+                "with" | "select" | "from" => format!("\"{}\" AS (\n{inner}\n)", view.name),
+                // As below: what a CTE cannot hold, a subquery can.
+                _ => format!("\"{}\" AS (SELECT * FROM (\n{inner}\n))", view.name),
+            }
+        }))
         .collect::<Vec<_>>()
         .join(",\n");
 
@@ -132,6 +169,16 @@ pub(crate) fn expand(sql: &str, sources: &[Source], base: &Path) -> String {
             format!("WITH {ctes}\nSELECT * FROM (\n{inner}\n)")
         }
     }
+}
+
+/// The first view whose SQL is not a single read-only statement, and why.
+/// A view's SQL runs inside every query that names it, so it is held to what
+/// a query is, and judged on its own: SQL that only parses once it is inside
+/// the parentheses of a CTE, or that closes them early, does not pass.
+pub(crate) fn unsound_view(views: &[View]) -> Option<(&View, String)> {
+    views
+        .iter()
+        .find_map(|view| Some((view, super::validate_query_sql(&view.sql).err()?)))
 }
 
 /// The identifier-shaped words of `sql`, for matching source names.
@@ -200,10 +247,10 @@ mod tests {
     fn a_query_that_names_no_source_runs_as_written() {
         let sources = [source("orders", "orders.csv")];
         let sql = "SELECT * FROM customers";
-        assert_eq!(expand(sql, &sources, &root().join("data")), sql);
+        assert_eq!(expand(sql, &sources, &[], &root().join("data")), sql);
         // Part of a longer word is not the name.
         let sql = "SELECT * FROM orders_2026";
-        assert_eq!(expand(sql, &sources, &root().join("data")), sql);
+        assert_eq!(expand(sql, &sources, &[], &root().join("data")), sql);
     }
 
     #[test]
@@ -214,12 +261,74 @@ mod tests {
             source("orders", "exports/o*.csv"),
             source("unused", "u.parquet"),
         ];
-        let sql = expand("SELECT channel FROM ORDERS GROUP BY 1", &sources, &base);
+        let sql = expand(
+            "SELECT channel FROM ORDERS GROUP BY 1",
+            &sources,
+            &[],
+            &base,
+        );
         assert_eq!(
             sql,
             format!("WITH \"orders\" AS (SELECT * FROM read_csv_auto('{}'))\nSELECT channel FROM ORDERS GROUP BY 1", path.display())
         );
         assert!(!sql.contains("unused"), "{sql}");
+    }
+
+    fn view(name: &str, sql: &str) -> View {
+        View {
+            name: name.into(),
+            sql: sql.into(),
+            line: 1,
+            col: 1,
+            span: (0, 4),
+            name_span: (5, 8),
+        }
+    }
+
+    #[test]
+    fn a_named_view_follows_the_sources_it_reads() {
+        let base = root().join("d");
+        let path = base.join("t.json");
+        let sources = [source("trail", "t.json"), source("unused", "u.csv")];
+        let views = [
+            view("events", "SELECT unnest(Records) AS r FROM trail;\n"),
+            view("denied", "FROM events WHERE r.errorCode IS NOT NULL"),
+            view("spare", "SUMMARIZE unused"),
+        ];
+        // Naming the second view brings the first, and the first its source.
+        assert_eq!(
+            expand("SELECT count(*) FROM Denied", &sources, &views, &base),
+            format!(
+                "WITH \"trail\" AS (SELECT * FROM read_json_auto('{}')),\n\
+                 \"events\" AS (\nSELECT unnest(Records) AS r FROM trail\n),\n\
+                 \"denied\" AS (\nFROM events WHERE r.errorCode IS NOT NULL\n)\n\
+                 SELECT count(*) FROM Denied",
+                path.display()
+            )
+        );
+        // A query that names no view gets none.
+        let plain = expand("FROM trail", &sources, &views, &base);
+        assert!(!plain.contains("events"), "{plain}");
+        // A statement a CTE cannot hold sits in a subquery.
+        let wrapped = expand("FROM spare", &sources, &views, &base);
+        assert!(
+            wrapped.contains("\"spare\" AS (SELECT * FROM (\nSUMMARIZE unused\n))"),
+            "{wrapped}"
+        );
+    }
+
+    #[test]
+    fn a_view_is_held_to_what_a_query_is() {
+        assert!(unsound_view(&[view("v", "SELECT 1")]).is_none());
+        for sql in [
+            "DROP TABLE t",
+            "SELECT 1; DROP TABLE t",
+            "SELECT 1) SELECT * FROM (SELECT 2",
+        ] {
+            let views = [view("ok", "FROM t"), view("bad", sql)];
+            let (found, _) = unsound_view(&views).expect(sql);
+            assert_eq!(found.name, "bad");
+        }
     }
 
     #[test]
@@ -228,11 +337,11 @@ mod tests {
         let sources = [source("orders", &path.to_string_lossy())];
         let base = root().join("ignored");
         assert_eq!(
-            expand("-- note\nWITH t AS (FROM orders) SELECT * FROM t", &sources, &base),
+            expand("-- note\nWITH t AS (FROM orders) SELECT * FROM t", &sources, &[], &base),
             format!("WITH \"orders\" AS (SELECT * FROM read_parquet('{}')),\nt AS (FROM orders) SELECT * FROM t", path.display())
         );
         assert_eq!(
-            expand("with recursive t AS (FROM orders) FROM t", &sources, &base),
+            expand("with recursive t AS (FROM orders) FROM t", &sources, &[], &base),
             format!("WITH RECURSIVE \"orders\" AS (SELECT * FROM read_parquet('{}')),\nt AS (FROM orders) FROM t", path.display())
         );
     }
@@ -242,7 +351,7 @@ mod tests {
         let path = root().join("abs").join("o.json");
         let sources = [source("orders", &path.to_string_lossy())];
         assert_eq!(
-            expand("SUMMARIZE orders; -- all of it", &sources, root()),
+            expand("SUMMARIZE orders; -- all of it", &sources, &[], root()),
             format!("WITH \"orders\" AS (SELECT * FROM read_json_auto('{}'))\nSELECT * FROM (\nSUMMARIZE orders; -- all of it\n)", path.display())
         );
     }
@@ -251,7 +360,7 @@ mod tests {
     fn quotes_in_a_path_stay_inside_the_literal() {
         let sources = [source("o", "it's.csv")];
         let base = root().join("d");
-        let sql = expand("FROM o", &sources, &base);
+        let sql = expand("FROM o", &sources, &[], &base);
         let escaped = base.join("it''s.csv");
         assert_eq!(
             sql,

@@ -55,7 +55,9 @@ Output: {detail, relations: [{name, kind, from, rows, column_count, columns?}],
 without_columns, hint?}. `from` is the SQL that reads the relation. `rows` is
 an estimate for tables, exact for Parquet, and null where it would need a scan.
 With --stats: {target, row_count,
-columns: [{name, type, nulls, distinct, ...}]}.
+columns: [{name, type, nulls, distinct, ...}]}. A file whose records sit in
+one list, such as {\"Records\": [...]}, carries a hint with the SQL that reads
+them as rows.
 ";
 
 const SPEC: &[FlagSpec] = &[
@@ -206,7 +208,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
         let found = relations.swap_remove(index);
         if stats {
             drop(connection);
-            return crate::cli::profile_target(&found.target, database);
+            return profile(&found, database);
         }
         return Ok(json!({
             "detail": "full",
@@ -236,9 +238,8 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
                 format!("Add --table NAME to pick one: {}", names.join(", "))
             }));
         };
-        let target = only.target.clone();
         drop(connection);
-        return crate::cli::profile_target(&target, database);
+        return profile(only, database);
     }
 
     let total_columns: usize = relations.iter().map(|r| r.columns.len()).sum();
@@ -267,6 +268,40 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     Ok(output.to_string())
 }
 
+/// `--stats` for one relation, with what its shape hides said beside it.
+fn profile(relation: &Relation, database: Option<PathBuf>) -> Result<String, CliError> {
+    let output = crate::cli::profile_target(&relation.target, database)?;
+    let Some(hint) = wrapped_records(relation) else {
+        return Ok(output);
+    };
+    match serde_json::from_str::<Value>(&output) {
+        Ok(mut value) if value.is_object() => {
+            value["hint"] = json!(hint);
+            Ok(value.to_string())
+        }
+        _ => Ok(output),
+    }
+}
+
+/// How to read a file whose records sit in one list, as CloudTrail's
+/// `{"Records": [...]}` does: its one row and one column describe the
+/// wrapper, and say nothing about what an analysis is after.
+fn wrapped_records(relation: &Relation) -> Option<String> {
+    let [(name, ty)] = relation.columns.as_slice() else {
+        return None;
+    };
+    if relation.kind != "file" || !(ty.starts_with("STRUCT(") && ty.ends_with("[]")) {
+        return None;
+    }
+    let column = quote(name);
+    Some(format!(
+        "{column} is one list holding every record, so the rows and statistics here describe \
+         the wrapper. Read the records as rows with: \
+         SELECT unnest({column}, max_depth := 2) FROM {}",
+        relation.from
+    ))
+}
+
 /// A relation as output: everything, or everything but the column list.
 fn entry(relation: &Relation, with_columns: bool) -> Value {
     let mut value = json!({
@@ -287,6 +322,9 @@ fn entry(relation: &Relation, with_columns: bool) -> Value {
     }
     if let Some(files) = relation.files {
         value["files"] = json!(files);
+    }
+    if let Some(hint) = wrapped_records(relation) {
+        value["hint"] = json!(hint);
     }
     if with_columns {
         value["columns"] = json!(relation

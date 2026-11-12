@@ -2955,6 +2955,7 @@ fn plot_prints(spec: &Spec, source: &str) -> HashMap<String, String> {
         // A source keeps only its name's place, a word into the block:
         // near enough to end the block before it.
         .map(|block| block.name_span.0)
+        .chain(spec.views.iter().map(|block| block.span.0))
         .chain(spec.queries.iter().map(|block| block.span.0))
         .chain(spec.plots.iter().map(|block| block.span.0))
         .chain(spec.filters.iter().map(|block| block.span.0))
@@ -2978,6 +2979,9 @@ fn plot_prints(spec: &Spec, source: &str) -> HashMap<String, String> {
                 .unwrap_or_default();
             // Whitespace aside: an editor that rewrites line endings or
             // re-indents the file has changed no plot.
+            // With the views it reads: an edit to one changes what every
+            // plot over it shows.
+            let sql = super::source::expand(sql, &[], &spec.views, Path::new(""));
             let text = format!("{block}\n{sql}");
             let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
             (plot.name.clone(), text)
@@ -3138,11 +3142,20 @@ fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
     let search_path = super::source::search_path(&base);
     let zone = spec.timezone.as_deref().and_then(super::zone::Zone::parse);
     let mut outcomes: Outcomes = HashMap::new();
+    // A view's SQL goes in front of the queries that name it, so it is held
+    // to the same check first; a file with a view that fails it runs nothing.
+    let views_sound = match super::source::unsound_view(&spec.views) {
+        Some((view, error)) => Err(format!("view {:?}: {error}", view.name)),
+        None => Ok(()),
+    };
     for query in &spec.queries {
-        let sql = super::validate_query_sql(&query.sql).map(|()| {
-            let narrowed = super::filter::apply(&query.sql, &picks_for(&spec, query, picks));
-            super::source::expand(&narrowed, &spec.sources, &base)
-        });
+        let sql = views_sound
+            .clone()
+            .and_then(|()| super::validate_query_sql(&query.sql))
+            .map(|()| {
+                let narrowed = super::filter::apply(&query.sql, &picks_for(&spec, query, picks));
+                super::source::expand(&narrowed, &spec.sources, &spec.views, &base)
+            });
         let entry = match sql {
             Err(error) => (String::new(), Err(error)),
             Ok(sql) => match reuse.get(&query.name) {
