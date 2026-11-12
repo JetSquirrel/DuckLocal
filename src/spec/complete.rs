@@ -42,7 +42,7 @@ pub(crate) const PLOT_ATTRS: [&str; 23] = [
 ];
 
 /// The block kinds, in the order completion offers them at the top level.
-const BLOCKS: [&str; 5] = ["query", "plot", "source", "filter", "dashboard"];
+const BLOCKS: [&str; 6] = ["query", "plot", "source", "view", "filter", "dashboard"];
 
 /// One thing that could be inserted at the cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +152,7 @@ pub(crate) fn complete(source: &str, line: usize, col: usize) -> Vec<Completion>
             .collect(),
         Some(kind) if kind == "query" => vec![attribute("sql", "query")],
         Some(kind) if kind == "source" => vec![attribute("path", "source")],
+        Some(kind) if kind == "view" => vec![attribute("sql", "view")],
         Some(kind) if kind == "filter" => {
             vec![
                 attribute("plot", "filter"),

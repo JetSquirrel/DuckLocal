@@ -265,17 +265,24 @@ fn check_dashboard(
             }
             sources.push(json!({"name": named.name, "path": named.path, "status": status}));
         }
-        for query in &spec.queries {
-            for literal in paths_in_sql(&query.sql) {
+        // A view's SQL is part of every query that names it.
+        let written = spec
+            .queries
+            .iter()
+            .map(|query| ("Query", &query.name, &query.sql))
+            .chain(
+                spec.views
+                    .iter()
+                    .map(|view| ("View", &view.name, &view.sql)),
+            );
+        for (kind, name, sql) in written {
+            for literal in paths_in_sql(sql) {
                 if is_remote(&literal) {
                     remote = true;
                 } else {
                     problems.push(problem(
                         "not_portable",
-                        format!(
-                            "Query {:?} in {relative} names {literal} directly",
-                            query.name
-                        ),
+                        format!("{kind} {name:?} in {relative} names {literal} directly"),
                         "Name it in a source block with a relative path, so it moves with the \
                          project"
                             .to_string(),

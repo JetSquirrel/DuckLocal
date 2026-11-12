@@ -97,6 +97,7 @@ pub(crate) const FILTER_PLOTS: &[&str] = &["bar", "stacked_bar", "table"];
 #[derive(Debug, Clone)]
 pub(crate) struct Spec {
     pub sources: Vec<Source>,
+    pub views: Vec<View>,
     pub queries: Vec<Query>,
     pub plots: Vec<Plot>,
     pub filters: Vec<Filter>,
@@ -115,6 +116,21 @@ pub(crate) struct Source {
     /// unless absolute or `~`-led. `source::resolve` makes it a real path.
     pub path: String,
     pub line: usize,
+    /// The quoted name's span, quotes included: the definition target.
+    pub name_span: (usize, usize),
+}
+
+/// A SELECT under a name the queries read, written once:
+/// `view "events" { sql = ... }`. See `source::expand`.
+#[derive(Debug, Clone)]
+pub(crate) struct View {
+    pub name: String,
+    pub sql: String,
+    /// Line and column of the block's kind keyword.
+    pub line: usize,
+    pub col: usize,
+    /// The kind keyword's span: where the block starts.
+    pub span: (usize, usize),
     /// The quoted name's span, quotes included: the definition target.
     pub name_span: (usize, usize),
 }
@@ -392,6 +408,7 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
     let mut queries = Vec::new();
     let mut plots = Vec::new();
     let mut sources = Vec::new();
+    let mut views = Vec::new();
     let mut sites = Vec::new();
     let mut query_names: HashSet<String> = HashSet::new();
     let mut plot_names: HashSet<String> = HashSet::new();
@@ -409,13 +426,36 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
                 if !source_names.insert(block.name.to_ascii_lowercase()) {
                     diagnostics.push(Diagnostic::at_block(
                         block,
-                        format!("Duplicate source name: {:?}", block.name),
+                        if views.iter().any(|v: &View| v.name.eq_ignore_ascii_case(&block.name)) {
+                            format!(
+                                "Duplicate name: {:?}; sources and views share their names",
+                                block.name
+                            )
+                        } else {
+                            format!("Duplicate source name: {:?}", block.name)
+                        },
                     ));
                 }
                 if let Some(s) = source(block, &mut diagnostics) {
                     sites.push(site(block, s.name_span));
                     sources.push(s);
                 }
+            }
+            "view" => {
+                // A view and a source are both relations a query reads by
+                // name, so the two share one set of names.
+                if !source_names.insert(block.name.to_ascii_lowercase()) {
+                    diagnostics.push(Diagnostic::at_block(
+                        block,
+                        format!(
+                            "Duplicate name: {:?}; sources and views share their names",
+                            block.name
+                        ),
+                    ));
+                }
+                let v = view(block, &mut diagnostics);
+                sites.push(site(block, v.name_span));
+                views.push(v);
             }
             "query" => {
                 if !query_names.insert(block.name.clone()) {
@@ -473,8 +513,8 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
             other => diagnostics.push(Diagnostic::at_block(
                 block,
                 format!(
-                    "Unknown block: {other:?}; the file holds source, query, plot and filter blocks, and one dashboard block{}",
-                    did_you_mean(other, ["source", "query", "plot", "filter", "dashboard"])
+                    "Unknown block: {other:?}; the file holds source, view, query, plot and filter blocks, and one dashboard block{}",
+                    did_you_mean(other, ["source", "view", "query", "plot", "filter", "dashboard"])
                 ),
             )),
         }
@@ -596,6 +636,7 @@ pub(crate) fn validate_partial(file: &File) -> (Spec, Vec<Diagnostic>) {
     (
         Spec {
             sources,
+            views,
             queries,
             plots,
             filters,
@@ -629,12 +670,7 @@ fn site(block: &Block, name_span: (usize, usize)) -> Site {
 
 fn source(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Source> {
     // The name is written into SQL bare, so it must read as one identifier.
-    let mut chars = block.name.chars();
-    let identifier = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !identifier {
+    if !is_identifier(&block.name) {
         diagnostics.push(Diagnostic::at_block(
             block,
             format!(
@@ -692,12 +728,7 @@ fn source(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Source> {
 fn filter(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Filter {
     // `$name` in SQL ends at the first character that is not a letter, digit
     // or underscore, so the name must be made of nothing else.
-    let mut chars = block.name.chars();
-    let identifier = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !identifier {
+    if !is_identifier(&block.name) {
         diagnostics.push(Diagnostic::at_block(
             block,
             format!(
@@ -790,6 +821,82 @@ fn dashboard(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<String>
         }
     }
     timezone
+}
+
+/// Whether `name` can be written bare into SQL as one identifier.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn view(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> View {
+    if !is_identifier(&block.name) {
+        diagnostics.push(Diagnostic::at_block(
+            block,
+            format!(
+                "view {:?}: a view's name is how SQL reads it, so it is letters, digits and _, not starting with a digit",
+                block.name
+            ),
+        ));
+    }
+    let mut sql = None;
+    let mut seen = false;
+    for attr in &block.attrs {
+        match attr.name.as_str() {
+            "sql" if seen => {
+                diagnostics.push(Diagnostic::at_attr(attr, "Duplicate attribute: sql"))
+            }
+            "sql" => {
+                seen = true;
+                match &attr.value {
+                    Value::Heredoc(text) | Value::Str(text) => {
+                        // A pick narrows what one query shows. A view is
+                        // shared, and which of its readers a pick should
+                        // reach is not the view's to say.
+                        if let Some(placeholder) = super::filter::placeholders(text).first() {
+                            diagnostics.push(Diagnostic::at_attr(
+                                attr,
+                                format!(
+                                    "view {:?} reads ${}, and a view takes no filter; read ${} in the queries that read the view",
+                                    block.name, placeholder.name, placeholder.name
+                                ),
+                            ));
+                        }
+                        sql = Some(text.clone());
+                    }
+                    _ => {
+                        diagnostics.push(Diagnostic::at_attr(attr, "sql is a heredoc or a string"))
+                    }
+                }
+            }
+            other => diagnostics.push(Diagnostic::at_attr(
+                attr,
+                format!(
+                    "A view block holds only sql; unknown attribute: {other}{}",
+                    did_you_mean(other, ["sql"])
+                ),
+            )),
+        }
+    }
+    if !seen {
+        diagnostics.push(Diagnostic::at_block(
+            block,
+            format!("view block {:?} requires sql", block.name),
+        ));
+    }
+    // As a flawed query does, a flawed view still joins the model: nothing
+    // runs while diagnostics are pending.
+    View {
+        name: block.name.clone(),
+        sql: sql.unwrap_or_default(),
+        line: block.line,
+        col: block.col,
+        span: block.kind_span,
+        name_span: block.name_span,
+    }
 }
 
 fn query(block: &Block, diagnostics: &mut Vec<Diagnostic>) -> Option<Query> {
@@ -1631,7 +1738,7 @@ filter "picked" {
         for wanted in [
             "unknown attribute: pth; did you mean \"path\"?",
             "unknown attribute: titel; did you mean \"title\"?",
-            "Unknown block: \"plt\"; the file holds source, query, plot and filter blocks, and one dashboard block; did you mean \"plot\"?",
+            "Unknown block: \"plt\"; the file holds source, view, query, plot and filter blocks, and one dashboard block; did you mean \"plot\"?",
             "which the file does not define; did you mean \"by_day\"?",
             "which the file does not define; did you mean \"daily\"?",
         ] {
@@ -2594,6 +2701,56 @@ plot "e" { type = "bar" query = query.q x = n y = n text = "words" }
         );
         assert!(has("text panel \"d\" shows nothing"), "{messages:?}");
         assert!(has("text is for text panels"), "{messages:?}");
+    }
+
+    #[test]
+    fn a_view_is_a_named_select_sharing_names_with_sources() {
+        let spec = validate_ok(
+            r#"
+source "trail" { path = "t.json" }
+view "events" { sql = "SELECT unnest(Records) AS r FROM trail" }
+query "q" { sql = "SELECT count(*) AS n FROM events" }
+plot "p" { type = "card" query = query.q }
+"#,
+        );
+        assert_eq!(spec.views.len(), 1);
+        assert_eq!(spec.views[0].name, "events");
+        assert_eq!(spec.views[0].line, 3);
+
+        let diagnostics = validate_err(
+            r#"
+source "events" { path = "t.json" }
+view "Events" { sql = "SELECT 1" }
+view "2nd" { sql = "SELECT 1" }
+view "picked" { sql = "SELECT * FROM t WHERE $channel" }
+view "bare" { }
+view "extra" { sql = "SELECT 1" path = "x.csv" }
+source "extra" { path = "x.csv" }
+"#,
+        );
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        let has = |text: &str| messages.iter().any(|m| m.contains(text));
+        assert!(
+            has("Duplicate name: \"Events\"; sources and views share"),
+            "{messages:?}"
+        );
+        assert!(
+            has("view \"2nd\": a view's name is how SQL reads it"),
+            "{messages:?}"
+        );
+        assert!(
+            has("view \"picked\" reads $channel, and a view takes no filter"),
+            "{messages:?}"
+        );
+        assert!(has("view block \"bare\" requires sql"), "{messages:?}");
+        assert!(
+            has("A view block holds only sql; unknown attribute: path"),
+            "{messages:?}"
+        );
+        assert!(
+            has("Duplicate name: \"extra\"; sources and views share"),
+            "{messages:?}"
+        );
     }
 
     #[test]

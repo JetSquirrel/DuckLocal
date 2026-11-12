@@ -82,13 +82,13 @@ in memory otherwise; in memory, a query that reads a table no source defines
 is listed under \"unresolved\" instead of failing. Relative file paths, in
 source blocks and in the SQL alike, start from the spec's folder.
 
-On success the output describes every source, query, filter and plot;
+On success the output describes every source, view, query, filter and plot;
 each query that ran has its rows (with nothing picked), and truncated: true
 when the dashboard's row budget cut it off. \"empty\" lists the queries that
 ran and returned no rows: not a failure, but usually a pattern or join that
 matched nothing. --summary prints one line instead: {file, ok, sources,
-queries, filters, plots, unresolved, empty}, with unresolved the names of the
-queries not run and empty those that returned no rows. Failures print the
+views, queries, filters, plots, unresolved, empty}, with unresolved the names
+of the queries not run and empty those that returned no rows. Failures print the
 same either way.
 
 Exit 2 for spec mistakes, 1 for database or I/O failures.

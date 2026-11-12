@@ -416,6 +416,7 @@ fn hover_at(source: &str, position: Position) -> Option<Hover> {
                 let path = spec.sources.iter().find(|s| s.name == name).map(|s| s.path.clone()).unwrap_or_default();
                 format!("**source \"{name}\"**\n\n`{path}`, read as `{name}` by every query that names it. The path is relative to this file.")
             }
+            "view" => format!("**view \"{name}\"**\n\nOne `sql` statement, read as `{name}` by every query that names it. It reads the sources and the views above it, and takes no `$filter`."),
             _ => return None,
         },
         Hit::Ref { segments, .. } => {
@@ -481,7 +482,7 @@ fn validate(source: &str) -> Option<Spec> {
 /// vocabulary, not sentences.
 fn attr_doc(name: &str) -> Option<&'static str> {
     Some(match name {
-        "sql" => "**sql**\n\nThe query's one statement, as a heredoc or a string. A query block holds only this.",
+        "sql" => "**sql**\n\nOne statement, as a heredoc or a string. A query or view block holds only this.",
         "type" => "**type**\n\nThe plot's kind: one of `line`, `bar`, `area`, `scatter`, `pie`, `map`, `timeline`, `table`, `card`, `text`.",
         "query" => "**query**\n\nThe query block this plot draws: `query = query.some_name`.",
         "x" => "**x**\n\nA column of the query's result, as a bare identifier or a quoted string; a `pie`'s slices. Not for a `map` or a `card`, and optional for a `table`.",

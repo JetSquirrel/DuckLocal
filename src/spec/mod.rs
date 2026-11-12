@@ -180,6 +180,20 @@ pub fn check_source(
             }
         });
 
+    // A view's SQL runs inside every query that names it, so it is checked
+    // as a query's is; one that fails takes the queries that name it with it,
+    // since what they would run is not what was written.
+    while let Some((view, message)) = source::unsound_view(&spec.views) {
+        let name = view.name.clone();
+        diagnostics.push(model::Diagnostic {
+            line: view.line,
+            col: view.col,
+            span: view.span,
+            message: format!("view {name:?}: {message}"),
+        });
+        spec.views.retain(|view| view.name != name);
+    }
+
     // Every query is described — its result columns, for the column check —
     // and then run, the way opening the dashboard runs it: on the database
     // when one is named, on an in-memory one otherwise, which is all a
@@ -248,7 +262,12 @@ pub fn check_source(
         };
         // What runs is the query with the sources it names in front of
         // it — the same SQL the dashboard runs, with nothing picked.
-        let sql = source::expand(&filter::neutral(&query.sql), &spec.sources, &base);
+        let sql = source::expand(
+            &filter::neutral(&query.sql),
+            &spec.sources,
+            &spec.views,
+            &base,
+        );
         if let Some(policy) = policy {
             if let Err(mut error) = policy.admit(&connection, &sql) {
                 error.message = located(error.message);
@@ -314,8 +333,13 @@ pub fn check_source(
         if query_columns[index].is_none() {
             continue;
         }
-        let bind =
-            |sql: &str| describe(&connection, &source::expand(sql, &spec.sources, &base)).map(drop);
+        let bind = |sql: &str| {
+            describe(
+                &connection,
+                &source::expand(sql, &spec.sources, &spec.views, &base),
+            )
+            .map(drop)
+        };
         for message in unpickable(&spec, query, returns, bind) {
             failures.push(format!(
                 "{}:{}: query {:?}: {message}",
@@ -396,6 +420,7 @@ pub fn check_source(
             "file": path_display,
             "ok": true,
             "sources": spec.sources.len(),
+            "views": spec.views.len(),
             "queries": spec.queries.len(),
             "filters": spec.filters.len(),
             "plots": spec.plots.len(),
@@ -420,6 +445,7 @@ pub fn check_source(
             "resolved": source::resolve(&s.path, &base).display().to_string(),
             "line": s.line,
         })).collect::<Vec<_>>(),
+        "views": spec.views.iter().map(|v| json!({"name": v.name, "line": v.line})).collect::<Vec<_>>(),
         "queries": spec.queries.iter().enumerate().map(|(index, q)| {
             let mut entry = json!({"name": q.name, "line": q.line});
             if let Some(columns) = &query_columns[index] {

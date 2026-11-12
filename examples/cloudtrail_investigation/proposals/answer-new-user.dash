@@ -2,21 +2,26 @@
 
 source "trail" { path = "../data/cloudtrail.json.gz" }
 
+# The log is one row holding every event: flattened once, here, for every
+# query below.
+view "events" {
+  sql = <<SQL
+    SELECT
+      r.eventName AS event_name,
+      -- Epoch, so a day means the same day in every time zone.
+      make_timestamp(epoch_us(r.eventTime)) AS event_time,
+      r.eventSource AS service,
+      r.sourceIPAddress AS ip,
+      r.userIdentity.userName AS user_name,
+      r.errorCode AS error_code,
+      r.readOnly AS read_only,
+      r.requestParameters AS params
+    FROM (SELECT unnest(Records) AS r FROM trail)
+  SQL
+}
+
 query "totals" {
   sql = <<SQL
-    WITH events AS (
-      SELECT
-        r.eventName AS event_name,
-        -- Epoch, so a day means the same day in every time zone.
-        make_timestamp(epoch_us(r.eventTime)) AS event_time,
-        r.eventSource AS service,
-        r.sourceIPAddress AS ip,
-        r.userIdentity.userName AS user_name,
-        r.errorCode AS error_code,
-        r.readOnly AS read_only,
-        r.requestParameters AS params
-      FROM (SELECT unnest(Records) AS r FROM trail)
-    )
     SELECT
       count(*) FILTER (ip = '203.0.113.77') AS from_new_address,
       count(error_code) FILTER (ip = '203.0.113.77') AS denied,
@@ -27,19 +32,6 @@ query "totals" {
 
 query "by_address" {
   sql = <<SQL
-    WITH events AS (
-      SELECT
-        r.eventName AS event_name,
-        -- Epoch, so a day means the same day in every time zone.
-        make_timestamp(epoch_us(r.eventTime)) AS event_time,
-        r.eventSource AS service,
-        r.sourceIPAddress AS ip,
-        r.userIdentity.userName AS user_name,
-        r.errorCode AS error_code,
-        r.readOnly AS read_only,
-        r.requestParameters AS params
-      FROM (SELECT unnest(Records) AS r FROM trail)
-    )
     SELECT ip, count(*) AS events, count(error_code) AS denied
     FROM events
     WHERE user_name = 'ci-deploy'
@@ -50,19 +42,6 @@ query "by_address" {
 
 query "changes" {
   sql = <<SQL
-    WITH events AS (
-      SELECT
-        r.eventName AS event_name,
-        -- Epoch, so a day means the same day in every time zone.
-        make_timestamp(epoch_us(r.eventTime)) AS event_time,
-        r.eventSource AS service,
-        r.sourceIPAddress AS ip,
-        r.userIdentity.userName AS user_name,
-        r.errorCode AS error_code,
-        r.readOnly AS read_only,
-        r.requestParameters AS params
-      FROM (SELECT unnest(Records) AS r FROM trail)
-    )
     SELECT event_time, ip, event_name, params.userName AS target_user, params.policyArn AS policy
     FROM events
     WHERE service = 'iam.amazonaws.com' AND NOT read_only AND error_code IS NULL
@@ -78,19 +57,6 @@ plot "changes" { type = "table" query = query.changes title = "Changes to access
 
 query "new_user" {
   sql = <<SQL
-    WITH events AS (
-      SELECT
-        r.eventName AS event_name,
-        -- Epoch, so a day means the same day in every time zone.
-        make_timestamp(epoch_us(r.eventTime)) AS event_time,
-        r.eventSource AS service,
-        r.sourceIPAddress AS ip,
-        r.userIdentity.userName AS user_name,
-        r.errorCode AS error_code,
-        r.readOnly AS read_only,
-        r.requestParameters AS params
-      FROM (SELECT unnest(Records) AS r FROM trail)
-    )
     SELECT
       event_name,
       params.bucketName AS bucket,
@@ -107,19 +73,6 @@ query "new_user" {
 
 query "objects_read" {
   sql = <<SQL
-    WITH events AS (
-      SELECT
-        r.eventName AS event_name,
-        -- Epoch, so a day means the same day in every time zone.
-        make_timestamp(epoch_us(r.eventTime)) AS event_time,
-        r.eventSource AS service,
-        r.sourceIPAddress AS ip,
-        r.userIdentity.userName AS user_name,
-        r.errorCode AS error_code,
-        r.readOnly AS read_only,
-        r.requestParameters AS params
-      FROM (SELECT unnest(Records) AS r FROM trail)
-    )
     SELECT count(*) AS objects
     FROM events
     WHERE user_name = 'svc-backup' AND event_name = 'GetObject' AND error_code IS NULL
