@@ -2472,6 +2472,9 @@ fn a_session_records_the_lineage_and_says_what_no_longer_holds() {
         s.0.join("orders.csv"),
         "region,amount\nEU,SENSITIVEVALUE\nUS,20\n",
     )
+    // A change offered to a dashboard is not a second dashboard.
+    std::fs::create_dir_all(s.0.join("p/reports/proposals/v2")).unwrap();
+    std::fs::write(s.0.join("p/reports/proposals/v2/sub.dash"), spec).unwrap();
     .unwrap();
     std::fs::write(s.0.join("big.csv"), "n\n1\n2\n3\n").unwrap();
 
@@ -2479,6 +2482,8 @@ fn a_session_records_the_lineage_and_says_what_no_longer_holds() {
     s.success(&["query", "--sql", "SELECT * FROM 'big.csv'"]);
     assert!(!session.exists());
 
+    let said: Value = serde_json::from_slice(&made.stdout).unwrap();
+    assert_eq!(said["drafts"], json!(["reports/proposals/v2/sub.dash"]));
     json(run(&[
         "query",
         "--sql",

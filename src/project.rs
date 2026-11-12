@@ -473,7 +473,21 @@ fn check_project(manifest_path: &Path) -> Result<Value, CliError> {
     }))
 }
 
-fn find_dashboards(dir: &Path, root: &Path, depth: usize, found: &mut Vec<String>) {
+/// The folder a project keeps drafts for `ducklocal propose --from` in. What
+/// is in it is a change someone offered to a dashboard, not a dashboard: once
+/// applied it is a second copy, and until then a report nobody approved.
+const DRAFTS: &str = "proposals";
+
+/// The spec files under `dir`, as paths from `root`: `found` the dashboards,
+/// `drafts` the ones in a [`DRAFTS`] folder.
+fn find_dashboards(
+    dir: &Path,
+    root: &Path,
+    depth: usize,
+    draft: bool,
+    found: &mut Vec<String>,
+    drafts: &mut Vec<String>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -486,11 +500,13 @@ fn find_dashboards(dir: &Path, root: &Path, depth: usize, found: &mut Vec<String
         }
         if path.is_dir() {
             if depth < MAX_DEPTH {
-                find_dashboards(&path, root, depth + 1, found);
+                let draft = draft || name == DRAFTS;
+                find_dashboards(&path, root, depth + 1, draft, found, drafts);
             }
         } else if crate::spec::tabs::is_spec(&path) {
             if let Ok(relative) = path.strip_prefix(root) {
-                found.push(relative.to_string_lossy().replace('\\', "/"));
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if draft { &mut *drafts } else { &mut *found }.push(relative);
             }
         }
     }
@@ -511,7 +527,8 @@ fn init(dir: &Path, name: Option<String>) -> Result<Value, CliError> {
         );
     }
     let mut dashboards = Vec::new();
-    find_dashboards(dir, dir, 0, &mut dashboards);
+    let mut drafts = Vec::new();
+    find_dashboards(dir, dir, 0, false, &mut dashboards, &mut drafts);
     let folder = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let manifest = Manifest {
         version: VERSION,
@@ -529,7 +546,9 @@ fn init(dir: &Path, name: Option<String>) -> Result<Value, CliError> {
         },
     };
     write_manifest(&path, &manifest)?;
-    Ok(json!({"manifest": path.to_string_lossy(), "project": manifest}))
+    // Said, not dropped in silence: a report kept in a folder of that name
+    // by chance is one line in the manifest away.
+    Ok(json!({"manifest": path.to_string_lossy(), "project": manifest, "drafts": drafts}))
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> Result<(), CliError> {
@@ -679,7 +698,9 @@ in the window opens its dashboards. PATH is the folder or the manifest, by
 default the current folder.
 
   init    Write a manifest listing the dashboards found under DIR, and this
-          DuckDB's version. Refuses to replace one (kind exists).
+          DuckDB's version. Refuses to replace one (kind exists). A .dash file
+          in a folder named proposals is a draft for `ducklocal propose`, so it
+          is left out of the manifest and listed under \"drafts\".
   check   Run `ducklocal check` over each dashboard and report what a move would
           break. Never reaches the network: a dashboard reading remote data is
           left unrun, and says so. Installs nothing.

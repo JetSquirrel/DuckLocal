@@ -122,7 +122,7 @@ One real run of the commands above, written by an agent as it worked.
 | 3 | `eventTime` reads as a time-zone-aware timestamp, shown in the machine's zone, and ICU isn't always installed to convert it | A day could differ between machines | Worked round with `make_timestamp(epoch_us(...))` |
 | 4 | A `.dash` file has no shared view, so each of 5 queries repeats the same 13-line flattening | About 65 repeated lines | Open |
 | 5 | Used `tone = "bad"`; the error listed the valid tones | One retry | Fine as it is |
-| 6 | `project init` listed the proposal draft as a second dashboard | Edited the manifest by hand | Open |
+| 6 | `project init` listed the proposal draft as a second dashboard | Edited the manifest by hand | **Fixed since:** `init` leaves out what is in a `proposals` folder and lists it under `drafts` |
 | 7 | A column aliased `access_key` made the session drop the query's SQL, as it does for anything that may hold credentials, and it then blamed the SQL for its unknown sources | A misleading doubt on every step | **Doubt fixed here** to give the real reason. The alias is gone from this example. The word list still costs provenance on any log with a column by that name |
 
 No query was denied with `--allow-read data`, so this run never had to ask for more access.
