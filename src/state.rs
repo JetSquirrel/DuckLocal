@@ -1315,7 +1315,13 @@ mod tests {
             .unwrap();
 
             // No extension asked for: it is a DuckDB file all the same.
-            let asked = dir.join("nested/model").to_string_lossy().to_string();
+            // Joined a part at a time: the separator is the platform's, as it
+            // is in the path that comes back.
+            let asked = dir
+                .join("nested")
+                .join("model")
+                .to_string_lossy()
+                .to_string();
             let saved = format!("{asked}.duckdb");
             let OpenOutcome::Connected(connected) = save_memory_as(&asked).unwrap() else {
                 panic!("saving moves the window onto the file");
