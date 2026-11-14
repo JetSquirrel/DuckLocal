@@ -9,6 +9,7 @@ pub mod geo;
 mod language_toggle_tests;
 pub mod palette;
 pub mod results;
+pub mod save_database;
 pub mod scale;
 #[cfg(feature = "scroll-bench")]
 pub mod scroll_bench;
@@ -33,7 +34,7 @@ use serde::Deserialize;
 
 use crate::i18n::{tr, trf};
 use crate::sources::MAX_FILES;
-use crate::state::{self, AppState, AttachOutcome, OpenOutcome, RequestReport};
+use crate::state::{self, AppState, AttachOutcome, OpenOutcome, OpenRequest, RequestReport};
 
 gpui_kit::actions!(
     ducklocal,
@@ -41,6 +42,7 @@ gpui_kit::actions!(
         RunQuery,
         StopQuery,
         SaveSpec,
+        SaveDatabase,
         ZoomIn,
         ZoomOut,
         ZoomReset,
@@ -75,6 +77,7 @@ pub const WORKSPACE_KEY_CONTEXT: &str = "DuckLocal";
 // the Windows key there, which left every shortcut unreachable.
 pub const RUN_QUERY_KEYSTROKE: &str = "secondary-enter";
 pub const SAVE_SPEC_KEYSTROKE: &str = "secondary-s";
+const SAVE_DATABASE_KEYSTROKE: &str = "secondary-shift-s";
 pub const TOGGLE_SIDEBAR_KEYSTROKE: &str = "secondary-b";
 
 /// A binding whose `secondary-` resolves for this host. Only `KeyBinding::load`
@@ -116,6 +119,7 @@ pub fn init(cx: &mut App) {
         bind("ctrl-tab", NextTab, None, cx),
         bind("ctrl-shift-tab", PreviousTab, None, cx),
         bind("secondary-o", OpenData, None, cx),
+        bind(SAVE_DATABASE_KEYSTROKE, SaveDatabase, None, cx),
         bind("secondary-.", StopQuery, None, cx),
         bind("secondary-q", Quit, None, cx),
     ];
@@ -131,7 +135,9 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &ZoomOut, cx| scale::set(scale::current().smaller(), cx));
     cx.on_action(|_: &ZoomReset, cx| scale::set(scale::UiSize::Default, cx));
     cx.on_action(|_: &StopQuery, _| crate::db::interrupt());
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    // Quit asks first when it would lose tables or views held only in memory.
+    cx.on_action(|_: &Quit, cx| save_database::quit(cx));
+    cx.on_action(|_: &SaveDatabase, cx| save_database::save_from_menu(cx));
     cx.on_action(|_: &ToggleBaseMap, cx| {
         tiles::toggle(cx);
         if tiles::enabled(cx) {
@@ -210,6 +216,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("title_bar.open_data"), OpenData),
                 MenuItem::Separator,
                 MenuItem::action(tr("dashboard.save"), SaveSpec),
+                MenuItem::action(tr("menu.save_database"), SaveDatabase),
                 MenuItem::action(tr("menu.close_tab"), CloseTab),
                 MenuItem::action(tr("menu.next_tab"), NextTab),
                 MenuItem::action(tr("menu.previous_tab"), PreviousTab),
@@ -257,16 +264,11 @@ pub fn open_paths(state: Entity<AppState>, paths: Vec<String>, window: &mut Wind
     if paths.is_empty() {
         return;
     }
-    run_open_request(
-        state,
-        move || state::open_request(&paths, false),
-        window,
-        cx,
-    );
+    run_open_request(state, OpenRequest::Paths(paths), false, window, cx);
 }
 
 pub fn open_dialog_path(state: Entity<AppState>, path: String, window: &mut Window, cx: &mut App) {
-    run_open_request(state, move || state::open_dialog_path(&path), window, cx);
+    run_open_request(state, OpenRequest::DialogPath(path), false, window, cx);
 }
 
 /// Attach the database at `path` beside the open one, then reload the catalog.
@@ -340,27 +342,45 @@ fn change_databases(
 }
 
 /// Open the in-memory connection, re-attaching the registered files: the way
-/// back from a database connection that is no longer wanted.
+/// back from a database connection that is no longer wanted. The next launch
+/// starts in memory too.
 pub fn open_memory(state: Entity<AppState>, window: &mut Window, cx: &mut App) {
-    run_open_request(state, || state::open_request(&[], true), window, cx);
+    run_open_request(state, OpenRequest::Memory, false, window, cx);
 }
 
-fn run_open_request(
+/// Carry out `request` off the UI thread and apply what it produced. One
+/// that would leave tables or views behind in the in-memory database is not
+/// carried out: the window asks, and the answer runs it again, with
+/// `discard_unsaved` when the answer was to let them go.
+pub(crate) fn run_open_request(
     state: Entity<AppState>,
-    request: impl FnOnce() -> anyhow::Result<OpenOutcome> + Send + 'static,
+    request: OpenRequest,
+    discard_unsaved: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
     state.update(cx, |state, cx| state.begin_open(cx));
     window
         .spawn(cx, async move |cx| {
-            let result = smol::unblock(request).await;
+            let asked = request.clone();
+            let result = smol::unblock(move || state::open(&asked, discard_unsaved)).await;
             cx.update(move |window, cx| {
                 state.update(cx, |state, cx| state.end_open(cx));
                 match result {
                     Ok(outcome) => apply_open_outcome(state, outcome, window, cx),
                     Err(e) => {
+                        // Whoever sent the request (an agent's `ducklocal
+                        // open`, say) reads it as not done, which it is not.
                         state.update(cx, |state, _| state.note_open_failure(e.to_string()));
+                        if let Some(unsaved) = e.downcast_ref::<state::UnsavedWork>() {
+                            return save_database::confirm_open(
+                                state,
+                                unsaved.count,
+                                request,
+                                window,
+                                cx,
+                            );
+                        }
                         window.push_notification(
                             Notification::error(trf("notify.open.failed", &[&e.to_string()])),
                             cx,

@@ -160,6 +160,13 @@ impl AppState {
         !self.attached_files.is_empty() || self.catalog_has_content()
     }
 
+    /// How many tables and views would be lost by quitting now: the ones the
+    /// user made in the in-memory database. Read from what the sidebar
+    /// already holds, so asking never waits for a running query.
+    pub fn unsaved_objects(&self) -> usize {
+        unsaved_objects_of(self.target.as_ref(), &self.catalog, &self.attached_files)
+    }
+
     /// Whether the catalog shows anything: a table or view anywhere, or a
     /// database attached beside the open one. The open database is always
     /// listed, so an empty catalog is never literally empty.
@@ -274,6 +281,34 @@ impl AppState {
         cx.emit(QueryStatsChanged);
         cx.notify();
     }
+}
+
+/// The tables and views that live only in the in-memory database and that
+/// nothing brings back at the next launch. A view over a registered file is
+/// not one of them: it is made again from the file every time. Attached
+/// databases are files, and keep what they hold.
+fn unsaved_objects_of(
+    target: Option<&DatabaseTarget>,
+    catalog: &[DatabaseInfo],
+    attached: &[AttachedFileView],
+) -> usize {
+    if target != Some(&DatabaseTarget::Memory) {
+        return 0;
+    }
+    // The open database is listed first.
+    let Some(memory) = catalog.first().filter(|database| database.path.is_none()) else {
+        return 0;
+    };
+    memory
+        .tables
+        .iter()
+        .filter(|table| {
+            !(table.schema == "main"
+                && attached
+                    .iter()
+                    .any(|file| file.view_name.eq_ignore_ascii_case(&table.name)))
+        })
+        .count()
 }
 
 /// Blocking helper: load catalog + history together off the UI thread.
@@ -563,21 +598,176 @@ pub enum OpenOutcome {
 /// one. In a running app it is false, so a request carrying only data files
 /// attaches them to the current connection instead of discarding the tables it
 /// already holds.
+#[cfg(test)]
 pub fn open_request(paths: &[String], connect_default: bool) -> anyhow::Result<OpenOutcome> {
-    open_sources(crate::sources::resolve(paths), connect_default)
+    open_sources(crate::sources::resolve(paths), connect_default, false)
 }
 
+#[cfg(test)]
 pub fn open_dialog_path(path: &str) -> anyhow::Result<OpenOutcome> {
-    open_sources(crate::sources::resolve_dialog_path(path), false)
+    open_sources(crate::sources::resolve_dialog_path(path), false, false)
+}
+
+/// Something the window was asked to open, kept whole so it can be asked
+/// again once the person has said what becomes of unsaved work.
+#[derive(Clone, Debug)]
+pub enum OpenRequest {
+    /// Paths dropped on the window, picked, or sent by `ducklocal open`.
+    Paths(Vec<String>),
+    /// What was typed into the "Open data" dialog, which may name a database
+    /// to create.
+    DialogPath(String),
+    /// A new in-memory database.
+    Memory,
+}
+
+/// Blocking: carry out `request`. Unless `discard_unsaved`, a request that
+/// would move the window off an in-memory database holding the user's own
+/// tables or views is refused with [`UnsavedWork`], for the window to ask.
+pub fn open(request: &OpenRequest, discard_unsaved: bool) -> anyhow::Result<OpenOutcome> {
+    match request {
+        OpenRequest::Paths(paths) => {
+            open_sources(crate::sources::resolve(paths), false, discard_unsaved)
+        }
+        OpenRequest::DialogPath(path) => open_sources(
+            crate::sources::resolve_dialog_path(path),
+            false,
+            discard_unsaved,
+        ),
+        OpenRequest::Memory => open_memory_database(discard_unsaved),
+    }
+}
+
+/// Opening another database would end the in-memory one, and with it `count`
+/// tables and views that exist nowhere else.
+#[derive(Debug)]
+pub struct UnsavedWork {
+    pub count: usize,
+}
+
+impl std::fmt::Display for UnsavedWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&trf("error.unsaved_work", &[&self.count.to_string()]))
+    }
+}
+
+impl std::error::Error for UnsavedWork {}
+
+/// Refuse to leave the current connection while it holds unsaved work. No
+/// connection, or one that cannot be asked, holds none.
+fn keep_unsaved_work(discard_unsaved: bool) -> anyhow::Result<()> {
+    if discard_unsaved {
+        return Ok(());
+    }
+    match crate::db::with_connection(crate::db::unsaved_objects_of) {
+        Ok(count) if count > 0 => Err(UnsavedWork { count }.into()),
+        _ => Ok(()),
+    }
+}
+
+/// The `settings` key holding the database file that was open last.
+const LAST_DATABASE: &str = "last_database";
+
+/// Blocking: the launch's own open request. With no database among `paths`
+/// it goes back to the database file that was open last, the way the query
+/// tabs and the registered files come back; a file that has since gone is
+/// passed over for the in-memory database, and one that cannot be opened
+/// falls back to it with the error said.
+pub fn open_at_launch(paths: &[String]) -> anyhow::Result<OpenOutcome> {
+    let mut sources = crate::sources::resolve(paths);
+    if sources.database.is_none() {
+        sources.database = last_database();
+    }
+    // A launch has no earlier connection to lose anything from.
+    open_sources(sources, true, true)
+}
+
+/// Blocking: go to a new in-memory database because the user asked for one,
+/// so the next launch starts there too.
+pub fn open_memory_database(discard_unsaved: bool) -> anyhow::Result<OpenOutcome> {
+    keep_unsaved_work(discard_unsaved)?;
+    let _ = crate::history::set_setting(LAST_DATABASE, "");
+    open_sources(crate::sources::resolve(&[]), true, true)
+}
+
+fn last_database() -> Option<String> {
+    crate::history::get_setting(LAST_DATABASE)
+        .ok()
+        .flatten()
+        .filter(|path| std::path::Path::new(path).is_file())
+}
+
+/// Absolute, so the next launch means the same file from any directory.
+fn remember_database(path: &str) {
+    let expanded = crate::db::expand_tilde(path);
+    let absolute = crate::sources::canonical_file_path(&expanded)
+        .or_else(|_| std::path::absolute(&expanded).map(|p| p.to_string_lossy().into_owned()));
+    if let Ok(absolute) = absolute {
+        let _ = crate::history::set_setting(LAST_DATABASE, &absolute);
+    }
+}
+
+/// Blocking: write the in-memory database to a database file at `path` and
+/// move the window onto it, so what was built in memory outlives the window
+/// and later changes go to the file. A path with no extension gets
+/// `.duckdb`.
+///
+/// A file already at `path` is replaced: the save panel asked first. It is
+/// replaced only once the copy is whole, so a save that fails leaves it as it
+/// was.
+pub fn save_memory_as(path: &str) -> anyhow::Result<OpenOutcome> {
+    let mut file = std::path::PathBuf::from(crate::db::expand_tilde(path.trim()));
+    if file.extension().is_none() {
+        file.set_extension("duckdb");
+    }
+    let file = std::path::absolute(&file)?;
+    let target = file.to_string_lossy().into_owned();
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staging = format!("{target}.saving");
+    let discard_staging = || {
+        std::fs::remove_file(&staging).ok();
+        std::fs::remove_file(format!("{staging}.wal")).ok();
+    };
+    // Left by a save that was cut short.
+    discard_staging();
+    crate::db::with_connection(|conn| {
+        // Replacing a file this connection has open would pull it out from
+        // under its own attachment.
+        if let Some(alias) = database_at(conn, &target)? {
+            anyhow::bail!(trf("error.database_already_attached", &[&alias]));
+        }
+        crate::db::copy_memory_database_of(conn, &staging)
+    })?;
+    // The log of the database being replaced must not be replayed into the
+    // new one.
+    std::fs::remove_file(format!("{target}.wal")).ok();
+    if let Err(error) = std::fs::rename(&staging, &target) {
+        discard_staging();
+        return Err(error.into());
+    }
+    open_sources(
+        crate::sources::Sources {
+            database: Some(target),
+            ..Default::default()
+        },
+        false,
+        // The in-memory database is in the file now.
+        true,
+    )
 }
 
 fn open_sources(
     sources: crate::sources::Sources,
     connect_default: bool,
+    discard_unsaved: bool,
 ) -> anyhow::Result<OpenOutcome> {
     if sources.database.is_none() && !connect_default {
         return Ok(OpenOutcome::Attached(attach_outcome(&sources)));
     }
+    // From here on the connection is replaced.
+    keep_unsaved_work(discard_unsaved)?;
 
     let mut target = match &sources.database {
         Some(path) => DatabaseTarget::File(path.clone()),
@@ -596,6 +786,11 @@ fn open_sources(
         }
         Err(e) => return Err(e),
     };
+    // Only a database that opened: one that failed this once (held by
+    // another process, say) is still the one to come back to.
+    if let (DatabaseTarget::File(path), None) = (&target, &database_error) {
+        remember_database(path);
+    }
 
     let mut problems = reattach_registered_databases();
     problems.extend(reattach_registered_files());
@@ -1040,6 +1235,178 @@ mod tests {
         .unwrap();
         assert_eq!(total, 30);
         crate::db::close().unwrap();
+    }
+
+    #[test]
+    fn only_what_the_user_made_in_memory_counts_as_unsaved() {
+        let table = |schema: &str, name: &str| crate::schema::TableInfo {
+            database: "memory".into(),
+            schema: schema.into(),
+            name: name.into(),
+            kind: crate::schema::NodeKind::View,
+            estimated_rows: None,
+            columns: Vec::new(),
+        };
+        let database = |path: Option<&str>, tables| DatabaseInfo {
+            name: "memory".into(),
+            path: path.map(Into::into),
+            kind: "duckdb".into(),
+            read_only: false,
+            tables,
+        };
+        let attached = [AttachedFileView {
+            id: 1,
+            path: "/data/orders.csv".into(),
+            view_name: "orders".into(),
+            row_count: None,
+        }];
+        let memory = DatabaseTarget::Memory;
+        let catalog = [
+            database(
+                None,
+                vec![
+                    // The file's own view: made again at every launch.
+                    table("main", "Orders"),
+                    table("main", "silver_orders"),
+                    // Same name as the file's view, but another schema: the
+                    // user's.
+                    table("gold", "orders"),
+                ],
+            ),
+            // An attached database is a file, and keeps what it holds.
+            database(Some("/data/side.duckdb"), vec![table("main", "kept")]),
+        ];
+        assert_eq!(unsaved_objects_of(Some(&memory), &catalog, &attached), 2);
+        assert_eq!(
+            unsaved_objects_of(Some(&memory), &catalog[..0], &attached),
+            0
+        );
+        let file = DatabaseTarget::File("/data/work.duckdb".into());
+        assert_eq!(unsaved_objects_of(Some(&file), &catalog, &attached), 0);
+        assert_eq!(unsaved_objects_of(None, &catalog, &attached), 0);
+    }
+
+    #[test]
+    fn work_built_in_memory_is_saved_and_comes_back_at_the_next_launch() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let dir =
+                std::env::temp_dir().join(format!("ducklocal_save_as_{}", std::process::id()));
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::create_dir_all(&dir).unwrap();
+            let csv = dir.join("bronze.csv");
+            std::fs::write(&csv, "id,amount\n1,10\n2,20\n").unwrap();
+            let csv = csv.to_string_lossy().to_string();
+
+            // A plain launch with nothing remembered is in memory.
+            let OpenOutcome::Connected(launch) = open_at_launch(&[]).unwrap() else {
+                panic!("a launch connects");
+            };
+            assert_eq!(launch.target, DatabaseTarget::Memory);
+            open_request(std::slice::from_ref(&csv), false).unwrap();
+            crate::db::with_connection(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE silver AS SELECT id, amount * 2 AS amount FROM bronze;
+                     CREATE SCHEMA gold;
+                     CREATE VIEW gold.total AS SELECT sum(amount) AS total FROM silver;",
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+
+            // No extension asked for: it is a DuckDB file all the same.
+            let asked = dir.join("nested/model").to_string_lossy().to_string();
+            let saved = format!("{asked}.duckdb");
+            let OpenOutcome::Connected(connected) = save_memory_as(&asked).unwrap() else {
+                panic!("saving moves the window onto the file");
+            };
+            assert_eq!(connected.target, DatabaseTarget::File(saved.clone()));
+            let names = catalog_names(&connected.attach.catalog);
+            for name in ["bronze", "silver", "total"] {
+                assert!(names.contains(&name.to_string()), "{names:?}");
+            }
+            assert!(!std::path::Path::new(&format!("{saved}.saving")).exists());
+            // The file is the database now: there is nothing left to save.
+            let again = dir.join("again.duckdb").to_string_lossy().to_string();
+            assert!(save_memory_as(&again).is_err());
+            assert!(!std::path::Path::new(&again).exists());
+
+            // Quit, and launch again with nothing on the command line.
+            crate::db::close().unwrap();
+            let OpenOutcome::Connected(relaunch) = open_at_launch(&[]).unwrap() else {
+                panic!("a launch connects");
+            };
+            assert_eq!(
+                std::fs::canonicalize(match &relaunch.target {
+                    DatabaseTarget::File(path) => path.clone(),
+                    DatabaseTarget::Memory => panic!("the saved database comes back"),
+                })
+                .unwrap(),
+                std::fs::canonicalize(&saved).unwrap()
+            );
+            assert!(relaunch.database_error.is_none());
+            let total: i64 = crate::db::with_connection(|conn| {
+                conn.query_row("SELECT total FROM gold.total", [], |r| r.get(0))
+                    .map_err(Into::into)
+            })
+            .unwrap();
+            assert_eq!(total, 60);
+
+            // Asking for the in-memory database is remembered too.
+            let OpenOutcome::Connected(memory) = open_memory_database(false).unwrap() else {
+                panic!("the in-memory database connects");
+            };
+            assert_eq!(memory.target, DatabaseTarget::Memory);
+            let OpenOutcome::Connected(relaunch) = open_at_launch(&[]).unwrap() else {
+                panic!("a launch connects");
+            };
+            assert_eq!(relaunch.target, DatabaseTarget::Memory);
+
+            // Saving over a file replaces it whole.
+            crate::db::with_connection(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE fresh AS SELECT 1 AS n; CREATE TEMP TABLE t AS SELECT 1",
+                )
+                .map_err(Into::into)
+            })
+            .unwrap();
+            // With a table of the user's own in memory, nothing moves the
+            // window off it unasked: not another database, not a new
+            // in-memory one. Adding a data file is not leaving.
+            let other = dir.join("other.duckdb").to_string_lossy().to_string();
+            for request in [OpenRequest::DialogPath(other.clone()), OpenRequest::Memory] {
+                let refused = open(&request, false).err().expect("unsaved work is kept");
+                assert_eq!(refused.downcast_ref::<UnsavedWork>().unwrap().count, 1);
+            }
+            assert!(!std::path::Path::new(&other).exists());
+            assert!(matches!(
+                open(&OpenRequest::Paths(vec![csv.clone()]), false).unwrap(),
+                OpenOutcome::Attached(_)
+            ));
+            let kept: i64 = crate::db::with_connection(|conn| {
+                conn.query_row("SELECT n FROM fresh", [], |r| r.get(0))
+                    .map_err(Into::into)
+            })
+            .unwrap();
+            assert_eq!(kept, 1);
+            let OpenOutcome::Connected(replaced) = save_memory_as(&saved).unwrap() else {
+                panic!("saving moves the window onto the file");
+            };
+            let names = catalog_names(&replaced.attach.catalog);
+            assert!(names.contains(&"fresh".to_string()), "{names:?}");
+            assert!(!names.contains(&"silver".to_string()), "{names:?}");
+
+            // A remembered database that has gone is passed over quietly.
+            crate::db::close().unwrap();
+            std::fs::remove_file(&saved).unwrap();
+            let OpenOutcome::Connected(relaunch) = open_at_launch(&[]).unwrap() else {
+                panic!("a launch connects");
+            };
+            assert_eq!(relaunch.target, DatabaseTarget::Memory);
+            assert!(relaunch.database_error.is_none());
+            crate::db::close().unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+        });
     }
 
     /// Create a real, seeded database file and return its path.

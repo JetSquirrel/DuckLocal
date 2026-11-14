@@ -486,8 +486,8 @@ impl TitleBarView {
             .loading(opening)
             .disabled(opening)
             .dropdown_menu(move |menu, _, _| {
-                let (files_state, folder_state, memory_state) =
-                    (state.clone(), state.clone(), state.clone());
+                let (files_state, folder_state, memory_state, save_state) =
+                    (state.clone(), state.clone(), state.clone(), state.clone());
                 let (path_view, s3_view, attach_view) = (view.clone(), view.clone(), view.clone());
                 menu.item(
                     PopupMenuItem::new(tr("title_bar.open.files"))
@@ -548,6 +548,19 @@ impl TitleBarView {
                         .icon(IconName::HardDrive)
                         .on_click(move |_, window, cx| {
                             crate::ui::open_memory(memory_state.clone(), window, cx);
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(tr("menu.save_database"))
+                        .icon(gpui_kit::assets::IconName::Download)
+                        .on_click(move |_, window, cx| {
+                            crate::ui::save_database::save(
+                                save_state.clone(),
+                                crate::ui::save_database::After::Stay,
+                                window,
+                                cx,
+                            );
                         }),
                 )
             })
