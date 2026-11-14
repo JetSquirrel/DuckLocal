@@ -198,6 +198,82 @@ pub fn close() -> Result<()> {
     replace(None)
 }
 
+/// The open database (the one the connection was opened on, whatever `USE`
+/// says now): its name, and its file when it has one.
+fn open_database_of(conn: &Connection) -> Result<(String, Option<String>)> {
+    let (name, file): (String, Option<String>) = conn.query_row(
+        "SELECT database_name, path FROM duckdb_databases() \
+         WHERE NOT internal ORDER BY database_oid LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((name, file.filter(|file| !file.is_empty())))
+}
+
+/// How many tables and views end with this connection: the ones made in the
+/// in-memory database, apart from the views DuckLocal makes from attached
+/// files, which the next connection gets again. Nothing when the open
+/// database is a file. Temporary ones are not counted: they were asked to
+/// end.
+pub fn unsaved_objects_of(conn: &Connection) -> Result<usize> {
+    let (name, file) = open_database_of(conn)?;
+    if file.is_some() {
+        return Ok(0);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM (
+             SELECT comment FROM duckdb_tables()
+             WHERE database_name = ?1 AND NOT internal AND NOT temporary
+             UNION ALL
+             SELECT comment FROM duckdb_views()
+             WHERE database_name = ?1 AND NOT internal AND NOT temporary
+         ) WHERE comment IS DISTINCT FROM ?2",
+        duckdb::params![name, OWNED_COMMENT],
+        |r| r.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+/// The alias the file being written is attached under while
+/// [`copy_memory_database_of`] fills it.
+const SAVE_ALIAS: &str = "__ducklocal_save";
+
+/// Copy everything the in-memory database holds (schemas, tables with their
+/// rows, views, macros, sequences, comments) into a new database file at
+/// `path`. The connection stays on the in-memory database; the caller opens
+/// the file afterwards.
+///
+/// Refused when the open database is a file already, where there is nothing
+/// to save. A copy that fails leaves no file behind.
+pub fn copy_memory_database_of(conn: &Connection, path: &str) -> Result<()> {
+    let (name, file) = open_database_of(conn)?;
+    if let Some(file) = file {
+        return Err(anyhow!(trf("error.save_database.not_memory", &[&file])));
+    }
+    attach_database_of(
+        conn,
+        &DatabaseAttachment {
+            path: path.to_string(),
+            alias: SAVE_ALIAS.to_string(),
+            read_only: false,
+        },
+    )?;
+    let copied = conn.execute_batch(&format!(
+        "COPY FROM DATABASE \"{}\" TO \"{SAVE_ALIAS}\"",
+        name.replace('"', "\"\"")
+    ));
+    // Detached either way: the file must not stay open under this instance
+    // when it is opened as the main database next, or removed after a failure.
+    let detached = conn.execute_batch(&format!("DETACH \"{SAVE_ALIAS}\""));
+    if copied.is_err() || detached.is_err() {
+        std::fs::remove_file(path).ok();
+        std::fs::remove_file(format!("{path}.wal")).ok();
+    }
+    copied?;
+    detached?;
+    Ok(())
+}
+
 /// Load ICU up front, when it is installed. DuckDB otherwise autoloads it
 /// in the middle of binding the first statement that needs it (`AT TIME
 /// ZONE`, a TIMESTAMPTZ), and the rest of that statement then finds none of
