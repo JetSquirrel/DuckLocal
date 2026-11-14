@@ -144,6 +144,7 @@ fn the_page_names_what_the_code_reaches() {
         "tile.openstreetmap.org",
         "map_tile_url",
         "extensions.duckdb.org",
+        "community-extensions.duckdb.org",
         "httpfs",
         "127.0.0.1",
     ] {

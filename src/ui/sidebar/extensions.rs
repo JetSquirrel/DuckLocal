@@ -1,5 +1,7 @@
 //! The sidebar's 扩展 page: every extension DuckDB knows of, whether it is
 //! built in, installed or loaded, and buttons to install, load or update it.
+//! A few community extensions are listed before they are installed; any
+//! other installs by name from the box at the top.
 //!
 //! The list is read on demand — when the page is shown, after each action,
 //! and on a new connection while the page is open — never cached past that:
@@ -8,6 +10,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::Input;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, Sizable, WindowExt};
@@ -53,10 +56,32 @@ impl Sidebar {
         .detach();
     }
 
+    /// Install the community extension named in the box.
+    pub(super) fn install_typed_extension(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self
+            .community_name
+            .read(cx)
+            .value()
+            .trim()
+            .to_ascii_lowercase();
+        if name.is_empty() {
+            return;
+        }
+        if !crate::extensions::is_extension_name(&name) {
+            window.push_notification(
+                Notification::error(trf("sidebar.extensions.bad_name", &[&name])),
+                cx,
+            );
+            return;
+        }
+        self.run_extension_action(name, ExtensionAction::Install, true, window, cx);
+    }
+
     fn run_extension_action(
         &mut self,
         name: String,
         action: ExtensionAction,
+        typed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -69,7 +94,11 @@ impl Sidebar {
             let target = name.clone();
             let result = smol::unblock(move || {
                 crate::db::with_connection(|conn| {
-                    crate::extensions::apply_of(conn, &target, action)
+                    if typed {
+                        crate::extensions::install_community_of(conn, &target)
+                    } else {
+                        crate::extensions::apply_of(conn, &target, action)
+                    }
                 })
             })
             .await;
@@ -80,6 +109,10 @@ impl Sidebar {
                     ExtensionAction::Load => "sidebar.extensions.loaded_notice",
                     ExtensionAction::Update => "sidebar.extensions.updated_notice",
                 };
+                if typed && result.is_ok() {
+                    this.community_name
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                }
                 match result {
                     Ok(()) => window.push_notification(trf(key, &[&name]), cx),
                     Err(e) => window.push_notification(
@@ -125,14 +158,44 @@ impl Sidebar {
             ExtensionList::Loaded(list) => list.clone(),
         };
         let busy = self.extension_busy.clone();
+        let typed_busy = busy.is_some();
         v_flex()
-            .id("extension-list")
             .size_full()
-            .overflow_y_scroll()
-            .children(list.iter().enumerate().map(|(ix, ext)| {
-                let is_last = ix + 1 == list.len();
-                self.render_extension(ix, ext, is_last, busy.as_deref(), cx)
-            }))
+            .child(
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.community_name).xsmall()),
+                    )
+                    .child(
+                        Button::new("extension-install-typed")
+                            .outline()
+                            .xsmall()
+                            .label(tr("sidebar.extensions.install"))
+                            .tooltip(tr("sidebar.extensions.install.community_tooltip"))
+                            .disabled(typed_busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.install_typed_extension(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("extension-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(list.iter().enumerate().map(|(ix, ext)| {
+                        let is_last = ix + 1 == list.len();
+                        self.render_extension(ix, ext, is_last, busy.as_deref(), cx)
+                    })),
+            )
             .into_any_element()
     }
 
@@ -154,6 +217,7 @@ impl Sidebar {
         let origin = match ext.origin {
             Origin::Builtin => Some(tr("sidebar.extensions.origin.builtin").to_string()),
             Origin::Repository | Origin::Other => ext.installed_from.clone(),
+            Origin::NotInstalled if ext.community => Some("community".to_string()),
             Origin::NotInstalled => None,
         };
         let meta = [ext.version.clone(), origin]
@@ -169,18 +233,23 @@ impl Sidebar {
                              action: ExtensionAction,
                              cx: &mut Context<Self>| {
             let name = ext.name.clone();
+            let install_tooltip = if ext.community {
+                "sidebar.extensions.install.community_tooltip"
+            } else {
+                "sidebar.extensions.install.tooltip"
+            };
             Button::new((id, ix))
                 .outline()
                 .xsmall()
                 .label(tr(label))
                 // Installing is a download: say so before it is one.
                 .when(matches!(action, ExtensionAction::Install), |button| {
-                    button.tooltip(tr("sidebar.extensions.install.tooltip"))
+                    button.tooltip(tr(install_tooltip))
                 })
                 .loading(this_busy)
                 .disabled(any_busy)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.run_extension_action(name.clone(), action, window, cx);
+                    this.run_extension_action(name.clone(), action, false, window, cx);
                 }))
         };
 
@@ -204,6 +273,13 @@ impl Sidebar {
                             .child(ext.name.clone()),
                     )
                     .child(status.xsmall())
+                    .when(ext.community, |row| {
+                        row.child(
+                            Tag::warning()
+                                .xsmall()
+                                .child(tr("sidebar.extensions.community")),
+                        )
+                    })
                     .child(div().flex_1())
                     .when(ext.can_install(), |row| {
                         row.child(action_button(
