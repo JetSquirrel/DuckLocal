@@ -17,7 +17,7 @@ jobs:
   build-macos:
     # bundle.sh ships a .app and package-macos.sh turns it into a signed,
     # notarized dmg: the one platform with an installer and a signature.
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout code
