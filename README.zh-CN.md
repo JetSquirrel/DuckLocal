@@ -91,7 +91,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 
 ### 🧩 内置 DuckDB
 - 在已打开的数据库旁附加更多 DuckDB 或 SQLite 数据库
-- 在扩展标签页安装、加载和更新扩展
+- 在扩展标签页安装、加载和更新扩展，包括 `mssql`（SQL Server）等社区扩展
 - 通过 httpfs 支持 S3（凭据只在当前会话有效）
 - 数据库文件打不开时会说明原因：需要更新版本的 DuckDB、存储格式过旧，或者文件其实是 SQLite
 
