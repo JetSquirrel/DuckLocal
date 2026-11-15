@@ -91,7 +91,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 
 ### 🧩 DuckDB inside
 - Attach other DuckDB or SQLite databases next to the ones you have open
-- Install, load and update extensions from the Extensions tab
+- Install, load and update extensions from the Extensions tab, including community ones such as `mssql` (SQL Server)
 - S3 support through httpfs (credentials last only for the session)
 - When a database file won't open, DuckDB explains why: the file needs a newer version, uses an old format, or is SQLite
 

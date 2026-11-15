@@ -90,6 +90,8 @@ pub struct Sidebar {
     /// The extension an install, load or update is running for; every
     /// extension button waits while one is.
     extension_busy: Option<String>,
+    /// A community extension's name, to install one the page doesn't list.
+    community_name: Entity<InputState>,
     /// The language the tree's group labels were built in. Nothing notifies
     /// on a language switch beyond `cx.refresh_windows()`, so render compares
     /// and rebuilds the tree when it no longer matches.
@@ -107,7 +109,19 @@ impl Sidebar {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr("sidebar.search.placeholder")));
+        let community_name = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr("sidebar.extensions.community_placeholder"))
+        });
         let subscriptions = vec![
+            cx.subscribe_in(
+                &community_name,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        this.install_typed_extension(window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&search, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.rebuild_tree(cx);
@@ -174,6 +188,7 @@ impl Sidebar {
             search,
             extensions: ExtensionList::NotLoaded,
             extension_busy: None,
+            community_name,
             tree_language: crate::i18n::current(),
             _subscriptions: subscriptions,
         }

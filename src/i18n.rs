@@ -200,6 +200,22 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "每次启动时会向 dl.ducklocal.app 查询新版本，并下载较新的版本。",
         "DuckLocal will now ask dl.ducklocal.app for a new version at each launch, and download any it finds.",
     ),
+    (
+        "sidebar.extensions.install.community_tooltip",
+        "从 DuckDB 社区扩展仓库下载。社区扩展由第三方编写，DuckDB 只签名、不审查代码",
+        "Downloads it from DuckDB's community repository. Community extensions are third-party code that DuckDB signs but does not review",
+    ),
+    ("sidebar.extensions.community", "社区", "Community"),
+    (
+        "sidebar.extensions.community_placeholder",
+        "按名字安装社区扩展",
+        "Community extension name",
+    ),
+    (
+        "sidebar.extensions.bad_name",
+        "{} 不是扩展名：只能用小写字母、数字和下划线",
+        "{} is not an extension name: use lowercase letters, digits and _",
+    ),
     ("sidebar.extensions.load", "加载", "Load"),
     ("sidebar.extensions.update", "更新", "Update"),
     ("sidebar.extensions.installed_notice", "已安装 {}", "Installed {}"),
