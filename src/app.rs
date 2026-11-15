@@ -91,6 +91,13 @@ impl DuckLocalApp {
     /// `.dash` spec to open as a tab.
     pub fn new(paths: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(AppState::new);
+        crate::ui::save_database::register_state(state.clone(), cx);
+        // The close button leaves the way Quit does: not without asking, when
+        // tables or views would go with the window.
+        let closing = state.clone();
+        window.on_window_should_close(cx, move |window, cx| {
+            crate::ui::save_database::may_close(closing.clone(), window, cx)
+        });
         let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), workspace.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBarView::new(state.clone(), cx));
@@ -122,7 +129,7 @@ impl DuckLocalApp {
                 let crashed = crate::crash::take_pending();
                 let show_tour = crate::ui::tour::offer_at_launch();
                 let result = (|| {
-                    let outcome = state::open_request(&data, true)?;
+                    let outcome = state::open_at_launch(&data)?;
                     // One invitation at a time: with the guide open, the setup
                     // offer waits for the next launch, still unspent.
                     let offer_setup = !show_tour && crate::setup::offer_once();
