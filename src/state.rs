@@ -670,16 +670,33 @@ const LAST_DATABASE: &str = "last_database";
 
 /// Blocking: the launch's own open request. With no database among `paths`
 /// it goes back to the database file that was open last, the way the query
-/// tabs and the registered files come back; a file that has since gone is
-/// passed over for the in-memory database, and one that cannot be opened
-/// falls back to it with the error said.
+/// tabs and the registered files come back. A file that has since gone is
+/// named and then forgotten, so the window does not look as it was left
+/// while holding none of it; the launch goes on in memory. One that cannot
+/// be opened falls back to memory with the error said.
 pub fn open_at_launch(paths: &[String]) -> anyhow::Result<OpenOutcome> {
     let mut sources = crate::sources::resolve(paths);
+    let mut gone = None;
     if sources.database.is_none() {
-        sources.database = last_database();
+        match last_database() {
+            Some(path) if std::path::Path::new(&path).is_file() => sources.database = Some(path),
+            Some(path) => {
+                // Said once: the next launch is in memory without a word.
+                let _ = crate::history::set_setting(LAST_DATABASE, "");
+                gone = Some(trf(
+                    "notify.last_database.missing",
+                    &[&crate::db::compact_home(&path)],
+                ));
+            }
+            None => {}
+        }
     }
     // A launch has no earlier connection to lose anything from.
-    open_sources(sources, true, true)
+    let mut outcome = open_sources(sources, true, true)?;
+    if let (Some(problem), OpenOutcome::Connected(connected)) = (gone, &mut outcome) {
+        connected.attach.report.problems.insert(0, problem);
+    }
+    Ok(outcome)
 }
 
 /// Blocking: go to a new in-memory database because the user asked for one,
@@ -690,11 +707,13 @@ pub fn open_memory_database(discard_unsaved: bool) -> anyhow::Result<OpenOutcome
     open_sources(crate::sources::resolve(&[]), true, true)
 }
 
+/// The remembered database file, whether or not it is still there. Empty is
+/// the in-memory database, asked for: nothing to go back to.
 fn last_database() -> Option<String> {
     crate::history::get_setting(LAST_DATABASE)
         .ok()
         .flatten()
-        .filter(|path| std::path::Path::new(path).is_file())
+        .filter(|path| !path.is_empty())
 }
 
 /// Absolute, so the next launch means the same file from any directory.
@@ -1402,7 +1421,8 @@ mod tests {
             assert!(names.contains(&"fresh".to_string()), "{names:?}");
             assert!(!names.contains(&"silver".to_string()), "{names:?}");
 
-            // A remembered database that has gone is passed over quietly.
+            // A remembered database that has gone is named, once, and the
+            // launch goes on in memory.
             crate::db::close().unwrap();
             std::fs::remove_file(&saved).unwrap();
             let OpenOutcome::Connected(relaunch) = open_at_launch(&[]).unwrap() else {
@@ -1410,6 +1430,15 @@ mod tests {
             };
             assert_eq!(relaunch.target, DatabaseTarget::Memory);
             assert!(relaunch.database_error.is_none());
+            let problems = &relaunch.attach.report.problems;
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains("model.duckdb"), "{problems:?}");
+            crate::db::close().unwrap();
+            let OpenOutcome::Connected(relaunch) = open_at_launch(&[]).unwrap() else {
+                panic!("a launch connects");
+            };
+            assert_eq!(relaunch.target, DatabaseTarget::Memory);
+            assert!(relaunch.attach.report.problems.is_empty());
             crate::db::close().unwrap();
             std::fs::remove_dir_all(&dir).ok();
         });
