@@ -899,12 +899,17 @@ fn profile(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     }
-    profile_target(target, database)
+    profile_target(target, database, None)
 }
 
 /// Exact per-column statistics of one relation: a data file, a workbook's
-/// first sheet, or — with a database — a table or view name.
-pub(crate) fn profile_target(target: &str, database: Option<PathBuf>) -> Result<String, CliError> {
+/// first sheet, or — with a database — a table or view name. `only` names the
+/// columns to profile, when not all of them.
+pub(crate) fn profile_target(
+    target: &str,
+    database: Option<PathBuf>,
+    only: Option<&[String]>,
+) -> Result<String, CliError> {
     let conn = open(database, false)?;
     // A target that names nothing is a mistake in the arguments, and reporting
     // it as a SQL failure would send a caller looking at their data instead of
@@ -913,8 +918,56 @@ pub(crate) fn profile_target(target: &str, database: Option<PathBuf>) -> Result<
     // so its first sheet is imported into the connection to be profiled.
     let relation = crate::profile::relation_of(&conn, target)
         .map_err(|error| CliError::argument(error.to_string()))?;
-    let profile = crate::profile::run(&conn, target, &relation)
+    let all = crate::profile::describe(&conn, &relation)
         .map_err(|error| CliError::failure("sql", error))?;
+    let (columns, of) = match only {
+        None => (all, None),
+        Some(wanted) => {
+            let mut picked = Vec::with_capacity(wanted.len());
+            for name in wanted {
+                let found = all.iter().find(|(column, _)| column == name).or_else(|| {
+                    all.iter()
+                        .find(|(column, _)| column.eq_ignore_ascii_case(name))
+                });
+                let Some(found) = found else {
+                    let error = CliError::argument(format!("{target} has no column {name:?}"));
+                    let wanted = name.to_lowercase();
+                    let closest = all
+                        .iter()
+                        .map(|(column, _)| (edit_distance(&wanted, &column.to_lowercase()), column))
+                        .filter(|(distance, _)| {
+                            *distance <= 2 && *distance * 2 < wanted.chars().count()
+                        })
+                        .min_by_key(|(distance, _)| *distance);
+                    return Err(match closest {
+                        Some((_, column)) => error.with_hint(format!("Did you mean {column:?}?")),
+                        None => error.with_hint(format!(
+                            "Run ducklocal schema {target} to list its columns"
+                        )),
+                    });
+                };
+                if !picked.contains(found) {
+                    picked.push(found.clone());
+                }
+            }
+            let of = all.len();
+            (picked, Some(of))
+        }
+    };
+    let profile = crate::profile::run(&conn, target, &relation, &columns, of).map_err(|error| {
+        let failure = CliError::failure("sql", &error);
+        // Exact distinct counts and medians hold state in proportion to the
+        // values they see. Batching bounds that for typical columns; a relation
+        // whose columns are each huge (long text, millions of distinct values)
+        // can still exceed the limit, and the way out is fewer columns at once.
+        if error.to_string().contains("Out of Memory") {
+            failure.with_hint(
+                "Profile fewer columns at once: add --columns NAME,NAME to the same command",
+            )
+        } else {
+            failure
+        }
+    })?;
     serde_json::to_string(&profile).map_err(|e| CliError::failure("output", e))
 }
 

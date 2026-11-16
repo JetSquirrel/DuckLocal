@@ -13,9 +13,13 @@
 //! - **How many decimals does the column really use?** A `DECIMAL(38,10)`
 //!   holding two-decimal money prints ten unless someone decides otherwise.
 //!
-//! Every statistic is one aggregate over the relation, and the whole profile is
-//! three statements: `DESCRIBE`, a row count, and one `UNION ALL` of per-column
-//! aggregates.
+//! Every statistic is one aggregate over the relation. The profile is a
+//! `DESCRIBE`, a row count, and one `SELECT` of aggregates per batch of
+//! columns: each batch is a single scan that reads only its own columns, and
+//! batches are sized by the row count, so a wide or tall relation costs time
+//! rather than memory. (One branch per column joined by `UNION ALL` scanned the
+//! relation once per column and held every column's distinct and quantile
+//! state at once: 5,000 columns of a million rows ran out of memory.)
 
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
@@ -99,15 +103,17 @@ pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
     Ok(target.split('.').map(quote).collect::<Vec<_>>().join("."))
 }
 
-/// One column's aggregates, as one branch of the union.
+/// How many statistics [`aggregates`] gives each column.
+const STATISTICS: usize = 11;
+
+/// One column's aggregates, as SQL expressions over the relation.
 ///
-/// Every branch selects the same twelve columns in the same types so the branches
-/// can be read back as one result; a statistic a shape does not support is a
-/// typed `NULL` rather than a missing column.
-fn branch(name: &str, data_type: &str, relation: &str) -> String {
+/// Every column gives the same eleven expressions in the same types, so a
+/// batch reads back by position; a statistic a shape does not support is a
+/// typed `NULL` rather than a missing expression.
+fn aggregates(name: &str, data_type: &str) -> [String; STATISTICS] {
     let shape = shape_of(data_type);
     let column = quote(name);
-    let literal = format!("'{}'", name.replace('\'', "''"));
 
     let (distinct, min, max) = match shape {
         Shape::Nested => (
@@ -179,21 +185,19 @@ fn branch(name: &str, data_type: &str, relation: &str) -> String {
         )
     };
 
-    format!(
-        "SELECT {literal} AS name, \
-         CAST(count(*) - count({column}) AS BIGINT) AS nulls, \
-         {distinct} AS distinct_values, \
-         {min} AS min_value, \
-         {max} AS max_value, \
-         {decimals} AS decimals, \
-         {median} AS median, \
-         {covered} AS covered_days, \
-         {span} AS span_days, \
-         {marker} AS marker, \
-         {marker_rows} AS marker_rows, \
-         {numbers} AS numbers \
-         FROM {relation}"
-    )
+    [
+        format!("CAST(count(*) - count({column}) AS BIGINT)"),
+        distinct,
+        min,
+        max,
+        decimals,
+        median,
+        covered,
+        span,
+        marker,
+        marker_rows,
+        numbers,
+    ]
 }
 
 fn is_text(data_type: &str) -> bool {
@@ -251,22 +255,51 @@ fn marker_hint(relation: &str, found: &[(&str, &str)]) -> String {
     }
 }
 
-/// Profile `relation` on `conn`, as the JSON the CLI prints.
+/// The relation's columns and their types, in its own order.
+pub fn describe(conn: &Connection, relation: &str) -> Result<Vec<(String, String)>> {
+    let mut describe = conn.prepare(&format!("DESCRIBE SELECT * FROM {relation}"))?;
+    let columns = describe
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(columns)
+}
+
+/// Rows times columns one statement aggregates at most. Exact distinct counts
+/// and medians hold state in proportion to the values they see, so a batch's
+/// memory follows the cells it reads; this keeps it in the hundreds of
+/// megabytes for integer columns whatever the relation's shape.
+const CELLS_PER_STATEMENT: i64 = 16_000_000;
+/// …and columns, however few the rows: past this a statement's width costs
+/// more in planning than another scan of a short relation does.
+const COLUMNS_PER_STATEMENT: usize = 64;
+
+/// How many columns of a `row_count`-row relation one statement profiles.
+fn batch_size(row_count: i64) -> usize {
+    let by_rows = CELLS_PER_STATEMENT / row_count.max(1);
+    usize::try_from(by_rows)
+        .unwrap_or(1)
+        .clamp(1, COLUMNS_PER_STATEMENT)
+}
+
+/// Profile `columns` of `relation` on `conn`, as the JSON the CLI prints.
 ///
 /// `target` is what the caller asked for and is echoed back; `relation` is what
 /// [`relation_of`] made of it. They are separate arguments because resolving a
 /// target is an argument question — a path that is not there is not a SQL
 /// error — and the caller answers that one before opening a connection.
+/// `columns` come from [`describe`], all of them or the ones asked for; when
+/// they are a part, `of` is how many the relation has, and the output says so.
 #[hotpath::measure]
-pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
+pub fn run(
+    conn: &Connection,
+    target: &str,
+    relation: &str,
+    columns: &[(String, String)],
+    of: Option<usize>,
+) -> Result<Value> {
     let started = std::time::Instant::now();
-
-    let mut describe = conn.prepare(&format!("DESCRIBE SELECT * FROM {relation}"))?;
-    let columns: Vec<(String, String)> = describe
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<std::result::Result<_, _>>()?;
     if columns.is_empty() {
         return Err(anyhow!("{target} has no columns"));
     }
@@ -276,47 +309,73 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
             row.get(0)
         })?;
 
-    let union = columns
-        .iter()
-        .map(|(name, data_type)| branch(name, data_type, relation))
-        .collect::<Vec<_>>()
-        .join(" UNION ALL ");
-    let mut statistics = conn.prepare(&union)?;
-    let rows: Vec<Statistics> = statistics
-        .query_map([], |row| {
-            Ok(Statistics {
-                name: row.get(0)?,
-                nulls: row.get(1)?,
-                distinct_values: row.get(2)?,
-                min_value: row.get(3)?,
-                max_value: row.get(4)?,
-                decimals: row.get(5)?,
-                median: row.get(6)?,
-                covered_days: row.get(7)?,
-                span_days: row.get(8)?,
-                marker: row.get(9)?,
-                marker_rows: row.get(10)?,
-                numbers: row.get(11)?,
-            })
-        })?
-        .collect::<std::result::Result<_, _>>()?;
+    // Every batch reads the relation again, and a Parquet file's footer
+    // describes all its columns however few a batch reads: 5,000 columns of
+    // footer cost a third of a second per statement before a value is read.
+    // Read it once. Nothing else on this connection needs it fresh, and the
+    // cache checks the file's modification time anyway.
+    let _ = conn.execute_batch("SET parquet_metadata_cache = true");
+    let size = batch_size(row_count);
+    let mut found: Vec<Statistics> = Vec::with_capacity(columns.len());
+    for (index, batch) in columns.chunks(size).enumerate() {
+        let expressions = batch
+            .iter()
+            .flat_map(|(name, data_type)| aggregates(name, data_type))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT {expressions} FROM {relation}");
+        let read = conn.query_row(&sql, [], |row| {
+            (0..batch.len())
+                .map(|i| {
+                    let at = i * STATISTICS;
+                    Ok(Statistics {
+                        nulls: row.get(at)?,
+                        distinct_values: row.get(at + 1)?,
+                        min_value: row.get(at + 2)?,
+                        max_value: row.get(at + 3)?,
+                        decimals: row.get(at + 4)?,
+                        median: row.get(at + 5)?,
+                        covered_days: row.get(at + 6)?,
+                        span_days: row.get(at + 7)?,
+                        marker: row.get(at + 8)?,
+                        marker_rows: row.get(at + 9)?,
+                        numbers: row.get(at + 10)?,
+                    })
+                })
+                .collect::<duckdb::Result<Vec<_>>>()
+        });
+        let first = index * size;
+        let names = |batch: &[(String, String)]| {
+            let quoted = |(name, _): &(String, String)| format!("{name:?}");
+            match batch {
+                [one] => quoted(one),
+                [head, .., tail] => format!("{} … {}", quoted(head), quoted(tail)),
+                [] => String::new(),
+            }
+        };
+        found.extend(read.map_err(|error| {
+            anyhow!(
+                "{error} (profiling columns {}–{} of {}: {})",
+                first + 1,
+                first + batch.len(),
+                columns.len(),
+                names(batch)
+            )
+        })?);
+    }
 
-    // `UNION ALL` does not promise an order, and a profile read next to a
-    // `DESCRIBE` should be in the table's own column order.
     let described: Vec<Value> = columns
         .iter()
-        .map(|(name, data_type)| {
-            let found = rows.iter().find(|row| &row.name == name);
-            column_value(name, data_type, found, row_count)
+        .zip(&found)
+        .map(|((name, data_type), statistics)| {
+            column_value(name, data_type, Some(statistics), row_count)
         })
         .collect();
 
     let marked: Vec<(&str, &str)> = columns
         .iter()
-        .filter_map(|(name, _)| {
-            let found = rows.iter().find(|row| &row.name == name)?;
-            Some((name.as_str(), null_marker(found)?))
-        })
+        .zip(&found)
+        .filter_map(|((name, _), statistics)| Some((name.as_str(), null_marker(statistics)?)))
         .collect();
 
     let mut profile = json!({
@@ -326,6 +385,9 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
         "columns": described,
         "elapsed_ms": started.elapsed().as_millis() as u64,
     });
+    if let Some(of) = of {
+        profile["column_count"] = json!(of);
+    }
     if !marked.is_empty() {
         profile["hint"] = json!(marker_hint(relation, &marked));
     }
@@ -333,7 +395,6 @@ pub fn run(conn: &Connection, target: &str, relation: &str) -> Result<Value> {
 }
 
 struct Statistics {
-    name: String,
     nulls: i64,
     distinct_values: Option<i64>,
     min_value: Option<String>,
