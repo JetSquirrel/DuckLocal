@@ -761,6 +761,42 @@ fn markdown_format_renders_a_table_a_reader_can_trust() {
     s.error(&["query", "--sql", "SELECT 1", "--format"], 2, "argument");
 }
 
+/// The HTML format is a page to open or publish: the values are the ones the
+/// Markdown format shows, a cell cannot become markup, and a cut result says so.
+#[test]
+fn html_format_renders_a_page_that_stands_alone() {
+    let s = Sandbox::new();
+    let sql = "SELECT '<i>x</i>' AS a, NULL AS b, DATE '2024-03-05' AS d, \
+               CAST(1.25 AS DECIMAL(5,2)) AS e";
+    let page = s.text(&["query", "--sql", sql, "--format", "HTML"]);
+    assert!(page.starts_with("<!doctype html>"), "{page}");
+    assert!(page.ends_with("</html>\n"), "{page:?}");
+    assert!(page.contains("<td>&lt;i&gt;x&lt;/i&gt;</td>"), "{page}");
+    assert!(page.contains("<td class=\"num null\">NULL</td>"), "{page}");
+    assert!(page.contains("<td>2024-03-05</td>"), "{page}");
+    assert!(page.contains("<td class=\"num\">1.25</td>"), "{page}");
+    assert!(
+        page.contains("<pre>SELECT '&lt;i&gt;x&lt;/i&gt;' AS a"),
+        "{page}"
+    );
+    assert!(!page.contains("https://"), "{page}");
+
+    let truncated = s.text(&[
+        "query",
+        "--sql",
+        "SELECT * FROM range(5) t(n)",
+        "--limit",
+        "2",
+        "--format",
+        "html",
+    ]);
+    assert!(
+        truncated.contains("Truncated at 2 of 5 rows"),
+        "{truncated}"
+    );
+    assert_eq!(truncated.matches("<tr><td").count(), 2, "{truncated}");
+}
+
 /// A path written straight into a query's SQL starts from the spec's folder,
 /// like a `source` path, so a folder of spec and data checks from anywhere;
 /// `--summary` answers in one line; a keyword alias says what to write.

@@ -37,7 +37,9 @@ Options:
   --database PATH    Existing database file, opened read-only
   --read-write       Allow writes (requires --database)
   --limit N          Maximum rows, default 1000
-  --format FORMAT    json (default) or md, a Markdown table for reading
+  --format FORMAT    json (default); md, a Markdown table for reading; or
+                     html, a self-contained page that sorts and filters,
+                     to save (> result.html), send or publish
   --restricted       Run one SELECT that can reach nothing else (see below)
   --allow-read PATH  With --restricted: a file or folder it may read; repeatable
   --timeout SECONDS  With --restricted: stop after this long, default 60
@@ -496,11 +498,13 @@ struct Options {
 ///
 /// `Json` is the contract a caller parses; `Markdown` is the same result
 /// rendered to be read — by a person, or by an agent writing it into a
-/// document. The values are the same values; only the framing differs.
+/// document. `Html` is a page to open, send or publish. The values are the
+/// same values; only the framing differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Json,
     Markdown,
+    Html,
 }
 
 const QUERY_SPEC: &[FlagSpec] = &[
@@ -587,9 +591,10 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                 options.format = match text.as_str() {
                     "json" => Format::Json,
                     "md" | "markdown" => Format::Markdown,
+                    "html" => Format::Html,
                     _ => {
                         return Err(CliError::argument(format!(
-                            "--format must be json or md; got {:?}",
+                            "--format must be json, md or html; got {:?}",
                             value.to_string_lossy()
                         )))
                     }
@@ -797,6 +802,7 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
         Format::Markdown => Ok(crate::query::format_markdown(&result)
             .trim_end()
             .to_string()),
+        Format::Html => Ok(crate::html_page::format_html(&result, &sql)),
         Format::Json => {
             hotpath::measure_block!("cli::serialize_json", serde_json::to_string(&result))
                 .map_err(|e| CliError::failure("output", e))

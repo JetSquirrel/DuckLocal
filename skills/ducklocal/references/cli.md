@@ -8,12 +8,13 @@ ducklocal --version
 ducklocal query --help
 ducklocal query --sql "SELECT 1 AS n"
 ducklocal query --sql "SELECT 1 AS n" --format md
+ducklocal query --sql "SELECT * FROM 'sales.csv'" --format html > sales.html
 ducklocal query --sql-file analysis.sql --limit 100
 ducklocal query --sql-file - < analysis.sql
 ducklocal query --database warehouse.duckdb --sql "SHOW TABLES"
 ```
 
-`--format json` (default) is the contract below; `--format md` renders the same result as a Markdown table to read or quote: dates and timestamps in ISO form, DECIMALs with their digits, `NULL` as `NULL`, `|` escaped and newlines as `<br>` so a cell cannot break the table, `_0 rows._` after an empty result and `_Truncated at N of M rows…_` (`of at least M` when the count stopped) when a limit cut it short. Use JSON whenever a program parses the value; the counts and digits are the same either way.
+`--format json` (default) is the contract below; `--format md` renders the same result as a Markdown table to read or quote: dates and timestamps in ISO form, DECIMALs with their digits, `NULL` as `NULL`, `|` escaped and newlines as `<br>` so a cell cannot break the table, `_0 rows._` after an empty result and `_Truncated at N of M rows…_` (`of at least M` when the count stopped) when a limit cut it short. `--format html` renders the same values as one self-contained page (inline style and script, nothing fetched) with the row and column counts, the SQL behind it, sortable columns, a row filter and the same truncation note; it opens from disk and can be published as is, for example on GitHub Pages. Use JSON whenever a program parses the value; the counts and digits are the same either way.
 
 Use exactly one `--sql`/`--sql-file`. A file is UTF-8, `-` means stdin. Exactly one SQL statement is accepted using DuckDB's real parser; comment/quoted semicolons work and scripts are rejected before execution. Flags cannot repeat. Unknown flags, missing values, and invalid limits fail. Use separate option values, not `--flag=value`.
 
