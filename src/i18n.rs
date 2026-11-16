@@ -397,6 +397,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "{} tables or views in the in-memory database are unsaved; the window is asking what to do with them.",
     ),
     ("quit_unsaved.save", "保存为数据库…", "Save as database…"),
+    (
+        "notify.last_database.missing",
+        "找不到上次打开的数据库 {}，它可能已被移动或删除。本次在内存数据库中启动。",
+        "The database open last time, {}, could not be found; it may have been moved or deleted. Starting in the in-memory database.",
+    ),
     ("title_bar.configure_s3", "配置 S3 数据源（httpfs）", "Configure S3 source (httpfs)"),
     ("title_bar.toggle_theme", "切换明暗主题", "Toggle light/dark theme"),
     ("title_bar.toggle_language", "切换语言", "Switch language"),
