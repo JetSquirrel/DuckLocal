@@ -2836,6 +2836,7 @@ fn schema_stats_profiles_a_wide_relation_in_batches() {
         assert_eq!(column["max"], (i * 10 + 2).to_string(), "{column}");
         assert_eq!(column["median"], (i * 10 + 1).to_string(), "{column}");
         assert_eq!(column["distinct"], 3, "{column}");
+        assert_eq!(column["decimals"], 0, "{column}");
     }
     assert_eq!(columns[WIDE]["name"], "day");
     assert_eq!(columns[WIDE]["missing_days"], 0);

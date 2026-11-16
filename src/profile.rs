@@ -131,7 +131,14 @@ fn aggregates(name: &str, data_type: &str) -> [String; STATISTICS] {
     let (decimals, median) = match shape {
         // The digits after the point that the data actually uses, which is not
         // what the declared scale says. `split_part` of a value with no point
-        // is the empty string, so an integer column answers 0.
+        // is the empty string, so an integer column answers 0 — and since it
+        // can answer nothing else, it does so without casting every value to
+        // text, which costs as much as the median does. NULL when the column
+        // holds no values, as `max` over none would be.
+        Shape::Numeric if is_integer(data_type) => (
+            format!("CASE WHEN count({column}) > 0 THEN CAST(0 AS BIGINT) END"),
+            format!("CAST(quantile_disc({column}, 0.5) AS VARCHAR)"),
+        ),
         Shape::Numeric => (
             format!("CAST(max(length(split_part(CAST({column} AS VARCHAR), '.', 2))) AS BIGINT)"),
             // `quantile_disc`, not `quantile_cont`: the middle value the column
@@ -200,6 +207,23 @@ fn aggregates(name: &str, data_type: &str) -> [String; STATISTICS] {
     ]
 }
 
+/// Whole-number types, whose values never have digits after a point.
+fn is_integer(data_type: &str) -> bool {
+    matches!(
+        data_type.to_uppercase().as_str(),
+        "TINYINT"
+            | "SMALLINT"
+            | "INTEGER"
+            | "BIGINT"
+            | "HUGEINT"
+            | "UTINYINT"
+            | "USMALLINT"
+            | "UINTEGER"
+            | "UBIGINT"
+            | "UHUGEINT"
+    )
+}
+
 fn is_text(data_type: &str) -> bool {
     matches!(
         data_type.to_uppercase().as_str(),
@@ -266,18 +290,25 @@ pub fn describe(conn: &Connection, relation: &str) -> Result<Vec<(String, String
     Ok(columns)
 }
 
-/// Rows times columns one statement aggregates at most. Exact distinct counts
-/// and medians hold state in proportion to the values they see, so a batch's
-/// memory follows the cells it reads; this keeps it in the hundreds of
-/// megabytes for integer columns whatever the relation's shape.
-const CELLS_PER_STATEMENT: i64 = 16_000_000;
-/// …and columns, however few the rows: past this a statement's width costs
-/// more in planning than another scan of a short relation does.
+/// Rows times columns the statements running at once aggregate at most. Exact
+/// distinct counts and medians hold state in proportion to the values they
+/// see, so memory follows the cells in flight; this keeps it in the hundreds
+/// of megabytes for integer columns whatever the relation's shape.
+const CELLS_IN_FLIGHT: i64 = 16_000_000;
+/// …and columns per statement, however few the rows: past this a statement's
+/// width costs more in planning than another scan of a short relation does.
 const COLUMNS_PER_STATEMENT: usize = 64;
+/// Statements run at once, each on its own connection to the same database.
+/// One ungrouped aggregate leaves threads idle — a median is finished on one —
+/// and the connections share DuckDB's one thread pool, so running a few side
+/// by side fills it rather than oversubscribing the machine. Four profiled
+/// 320 columns of a million rows 2.5 times as fast as one.
+const WORKERS: usize = 4;
 
-/// How many columns of a `row_count`-row relation one statement profiles.
-fn batch_size(row_count: i64) -> usize {
-    let by_rows = CELLS_PER_STATEMENT / row_count.max(1);
+/// How many columns of a `row_count`-row relation one statement profiles
+/// when `workers` statements run at once.
+fn batch_size(row_count: i64, workers: usize) -> usize {
+    let by_rows = CELLS_IN_FLIGHT / row_count.max(1) / workers.max(1) as i64;
     usize::try_from(by_rows)
         .unwrap_or(1)
         .clamp(1, COLUMNS_PER_STATEMENT)
@@ -314,55 +345,15 @@ pub fn run(
     // footer cost a third of a second per statement before a value is read.
     // Read it once. Nothing else on this connection needs it fresh, and the
     // cache checks the file's modification time anyway.
-    let _ = conn.execute_batch("SET parquet_metadata_cache = true");
-    let size = batch_size(row_count);
-    let mut found: Vec<Statistics> = Vec::with_capacity(columns.len());
-    for (index, batch) in columns.chunks(size).enumerate() {
-        let expressions = batch
-            .iter()
-            .flat_map(|(name, data_type)| aggregates(name, data_type))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("SELECT {expressions} FROM {relation}");
-        let read = conn.query_row(&sql, [], |row| {
-            (0..batch.len())
-                .map(|i| {
-                    let at = i * STATISTICS;
-                    Ok(Statistics {
-                        nulls: row.get(at)?,
-                        distinct_values: row.get(at + 1)?,
-                        min_value: row.get(at + 2)?,
-                        max_value: row.get(at + 3)?,
-                        decimals: row.get(at + 4)?,
-                        median: row.get(at + 5)?,
-                        covered_days: row.get(at + 6)?,
-                        span_days: row.get(at + 7)?,
-                        marker: row.get(at + 8)?,
-                        marker_rows: row.get(at + 9)?,
-                        numbers: row.get(at + 10)?,
-                    })
-                })
-                .collect::<duckdb::Result<Vec<_>>>()
-        });
-        let first = index * size;
-        let names = |batch: &[(String, String)]| {
-            let quoted = |(name, _): &(String, String)| format!("{name:?}");
-            match batch {
-                [one] => quoted(one),
-                [head, .., tail] => format!("{} … {}", quoted(head), quoted(tail)),
-                [] => String::new(),
-            }
-        };
-        found.extend(read.map_err(|error| {
-            anyhow!(
-                "{error} (profiling columns {}–{} of {}: {})",
-                first + 1,
-                first + batch.len(),
-                columns.len(),
-                names(batch)
-            )
-        })?);
-    }
+    let _ = conn.execute_batch(CACHE_FOOTERS);
+    let helpers = if columns.len() > 1 {
+        helpers_for(conn, relation)
+    } else {
+        Vec::new()
+    };
+    let size = batch_size(row_count, helpers.len() + 1);
+    let batches: Vec<&[(String, String)]> = columns.chunks(size).collect();
+    let found = profile_batches(conn, helpers, relation, &batches, size, columns.len())?;
 
     let described: Vec<Value> = columns
         .iter()
@@ -392,6 +383,135 @@ pub fn run(
         profile["hint"] = json!(marker_hint(relation, &marked));
     }
     Ok(profile)
+}
+
+const CACHE_FOOTERS: &str = "SET parquet_metadata_cache = true";
+
+/// Up to [`WORKERS`]` - 1` more connections to `conn`'s database that can
+/// read `relation`. A workbook's sheet is a TEMP table, which only the
+/// connection that made it sees; then there are none, and the profile runs
+/// on `conn` alone.
+fn helpers_for(conn: &Connection, relation: &str) -> Vec<Connection> {
+    let mut helpers = Vec::new();
+    for _ in 1..WORKERS {
+        let Ok(helper) = conn.try_clone() else {
+            break;
+        };
+        if helper
+            .prepare(&format!("SELECT 1 FROM {relation} LIMIT 0"))
+            .is_err()
+        {
+            break;
+        }
+        let _ = helper.execute_batch(CACHE_FOOTERS);
+        helpers.push(helper);
+    }
+    helpers
+}
+
+/// Every batch's statistics, in batch order: `conn` and each of `helpers`
+/// take the next batch not yet taken until none are left. The first error
+/// stops the rest and is the one returned. `size` and `total` only word it.
+fn profile_batches(
+    conn: &Connection,
+    helpers: Vec<Connection>,
+    relation: &str,
+    batches: &[&[(String, String)]],
+    size: usize,
+    total: usize,
+) -> Result<Vec<Statistics>> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let done: Mutex<Vec<Option<Result<Vec<Statistics>>>>> =
+        Mutex::new(batches.iter().map(|_| None).collect());
+    let work = |conn: &Connection| {
+        while !failed.load(Ordering::Relaxed) {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(batch) = batches.get(index) else {
+                break;
+            };
+            let read = profile_batch(conn, relation, batch, index * size, total);
+            if read.is_err() {
+                failed.store(true, Ordering::Relaxed);
+            }
+            done.lock().unwrap_or_else(|e| e.into_inner())[index] = Some(read);
+        }
+    };
+    std::thread::scope(|scope| {
+        for helper in helpers {
+            let work = &work;
+            scope.spawn(move || work(&helper));
+        }
+        work(conn);
+    });
+
+    let mut found = Vec::with_capacity(total);
+    // A batch left unrun means an error stopped the rest; keep looking for it.
+    for read in done
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner())
+        .into_iter()
+        .flatten()
+    {
+        found.extend(read?);
+    }
+    if found.len() != total {
+        return Err(anyhow!("the profile stopped before every column was read"));
+    }
+    Ok(found)
+}
+
+/// One batch's statistics: a single `SELECT` of every column's aggregates.
+/// `first` is the batch's first column's index among `total`, for the error.
+fn profile_batch(
+    conn: &Connection,
+    relation: &str,
+    batch: &[(String, String)],
+    first: usize,
+    total: usize,
+) -> Result<Vec<Statistics>> {
+    let expressions = batch
+        .iter()
+        .flat_map(|(name, data_type)| aggregates(name, data_type))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!("SELECT {expressions} FROM {relation}");
+    let read = conn.query_row(&sql, [], |row| {
+        (0..batch.len())
+            .map(|i| {
+                let at = i * STATISTICS;
+                Ok(Statistics {
+                    nulls: row.get(at)?,
+                    distinct_values: row.get(at + 1)?,
+                    min_value: row.get(at + 2)?,
+                    max_value: row.get(at + 3)?,
+                    decimals: row.get(at + 4)?,
+                    median: row.get(at + 5)?,
+                    covered_days: row.get(at + 6)?,
+                    span_days: row.get(at + 7)?,
+                    marker: row.get(at + 8)?,
+                    marker_rows: row.get(at + 9)?,
+                    numbers: row.get(at + 10)?,
+                })
+            })
+            .collect::<duckdb::Result<Vec<_>>>()
+    });
+    read.map_err(|error| {
+        let quoted = |(name, _): &(String, String)| format!("{name:?}");
+        let names = match batch {
+            [one] => quoted(one),
+            [head, .., tail] => format!("{} … {}", quoted(head), quoted(tail)),
+            [] => String::new(),
+        };
+        anyhow!(
+            "{error} (profiling columns {}–{} of {total}: {names})",
+            first + 1,
+            first + batch.len(),
+        )
+    })
 }
 
 struct Statistics {
