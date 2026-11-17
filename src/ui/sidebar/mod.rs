@@ -87,6 +87,8 @@ pub struct Sidebar {
     /// Narrows the schema tree to rows whose name holds the text.
     search: Entity<InputState>,
     extensions: ExtensionList,
+    /// The extensions loaded on every new connection, read with the list.
+    extensions_at_launch: std::collections::BTreeSet<String>,
     /// The extension an install, load or update is running for; every
     /// extension button waits while one is.
     extension_busy: Option<String>,
@@ -187,6 +189,7 @@ impl Sidebar {
             column_pick: ColumnPick::default(),
             search,
             extensions: ExtensionList::NotLoaded,
+            extensions_at_launch: Default::default(),
             extension_busy: None,
             community_name,
             tree_language: crate::i18n::current(),

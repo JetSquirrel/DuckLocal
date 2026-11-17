@@ -811,7 +811,12 @@ fn open_sources(
         remember_database(path);
     }
 
-    let mut problems = reattach_registered_databases();
+    // A new connection has none of the last one's LOADs. First, because a
+    // database or a file can need an extension to attach.
+    let mut problems =
+        crate::db::with_connection(|conn| Ok(crate::extensions::load_at_launch_of(conn)))
+            .unwrap_or_default();
+    problems.extend(reattach_registered_databases());
     problems.extend(reattach_registered_files());
     let server = crate::db::server_info()?;
     let mut attach = attach_outcome(&sources);

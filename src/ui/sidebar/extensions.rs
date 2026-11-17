@@ -1,7 +1,8 @@
 //! The sidebar's 扩展 page: every extension DuckDB knows of, whether it is
 //! built in, installed or loaded, and buttons to install, load or update it.
 //! A few community extensions are listed before they are installed; any
-//! other installs by name from the box at the top.
+//! other installs by name from the box at the top. One DuckDB will not load
+//! on its own has a Load automatically box, ticked once it is loaded.
 //!
 //! The list is read on demand — when the page is shown, after each action,
 //! and on a new connection while the page is open — never cached past that:
@@ -10,6 +11,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tag::Tag;
@@ -42,9 +44,15 @@ impl Sidebar {
         }
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result =
-                smol::unblock(|| crate::db::with_connection(crate::extensions::list_of)).await;
+            let (result, at_launch) = smol::unblock(|| {
+                (
+                    crate::db::with_connection(crate::extensions::list_of),
+                    crate::extensions::at_launch(),
+                )
+            })
+            .await;
             this.update(cx, |this, cx| {
+                this.extensions_at_launch = at_launch;
                 this.extensions = match result {
                     Ok(list) => ExtensionList::Loaded(Rc::new(list)),
                     Err(e) => ExtensionList::Failed(e.to_string()),
@@ -97,7 +105,12 @@ impl Sidebar {
                     if typed {
                         crate::extensions::install_community_of(conn, &target)
                     } else {
-                        crate::extensions::apply_of(conn, &target, action)
+                        crate::extensions::apply_of(conn, &target, action)?;
+                        if action == ExtensionAction::Load {
+                            // Loaded, whatever remembering it does.
+                            let _ = crate::extensions::remember_loaded_of(conn);
+                        }
+                        Ok(())
                     }
                 })
             })
@@ -130,6 +143,22 @@ impl Sidebar {
                 this.reload_extensions(cx);
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// Tick or untick an extension's Load automatically.
+    fn toggle_at_launch(&mut self, name: String, on: bool, cx: &mut Context<Self>) {
+        // Shown at once; the list is read back once it is written.
+        if on {
+            self.extensions_at_launch.insert(name.clone());
+        } else {
+            self.extensions_at_launch.remove(&name);
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let _ = smol::unblock(move || crate::extensions::set_at_launch(&name, on)).await;
+            this.update(cx, |this, cx| this.reload_extensions(cx)).ok();
         })
         .detach();
     }
@@ -323,6 +352,25 @@ impl Sidebar {
                         .font_family(cx.theme().mono_font_family.clone())
                         .truncate()
                         .child(meta),
+                )
+            })
+            // Only where DuckDB would not load it on its own: a builtin
+            // always is, and a core extension autoloads.
+            .when(crate::extensions::needs_loading(ext), |this| {
+                let sidebar = cx.entity().downgrade();
+                let name = ext.name.clone();
+                this.child(
+                    Checkbox::new(("extension-at-launch", ix))
+                        .xsmall()
+                        .label(tr("sidebar.extensions.load_automatically"))
+                        .tooltip(tr("sidebar.extensions.load_automatically.tooltip"))
+                        .checked(self.extensions_at_launch.contains(&ext.name))
+                        .on_click(move |checked, _, cx| {
+                            let on = *checked;
+                            sidebar
+                                .update(cx, |this, cx| this.toggle_at_launch(name.clone(), on, cx))
+                                .ok();
+                        }),
                 )
             })
     }
