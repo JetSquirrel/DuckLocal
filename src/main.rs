@@ -13,6 +13,7 @@ mod excel;
 mod extensions;
 mod handoff;
 mod history;
+mod html_page;
 mod i18n;
 mod overview;
 #[cfg(test)]

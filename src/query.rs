@@ -495,7 +495,7 @@ pub fn format_markdown(result: &CliResult) -> String {
 
 /// Whether a [`CliColumn`]'s Arrow type name is a number: `Int64`,
 /// `UInt8`, `Float64`, `Decimal128(18, 2)`.
-fn is_numeric_arrow(name: &str) -> bool {
+pub(crate) fn is_numeric_arrow(name: &str) -> bool {
     ["Int", "UInt", "Float", "Decimal"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
