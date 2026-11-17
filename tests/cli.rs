@@ -2803,6 +2803,78 @@ fn schema_stats_profiles_one_relation() {
     }
 }
 
+/// A relation wider than one profiling statement is profiled in batches, and
+/// the batches line up: every column comes back in the relation's order with
+/// its own statistics, whatever its type and wherever a batch boundary falls.
+/// `--columns` profiles part of it.
+#[test]
+fn schema_stats_profiles_a_wide_relation_in_batches() {
+    let s = Sandbox::new();
+    const WIDE: usize = 150;
+    let mut csv = (0..WIDE)
+        .map(|i| format!("c{i}"))
+        .chain(["day".into(), "label".into()])
+        .collect::<Vec<_>>()
+        .join(",");
+    csv.push('\n');
+    for row in 0..3 {
+        let values = (0..WIDE).map(|i| (i * 10 + row).to_string());
+        let tail = [format!("2026-01-0{}", row + 1), format!("x{row}")];
+        csv.push_str(&values.chain(tail).collect::<Vec<_>>().join(","));
+        csv.push('\n');
+    }
+    std::fs::write(s.0.join("wide.csv"), csv).unwrap();
+
+    let stats = s.object(&["schema", "wide.csv", "--stats"]);
+    assert_eq!(stats["row_count"], 3);
+    assert!(stats.get("column_count").is_none(), "{stats}");
+    let columns = stats["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), WIDE + 2);
+    for (i, column) in columns.iter().take(WIDE).enumerate() {
+        assert_eq!(column["name"], format!("c{i}"));
+        assert_eq!(column["min"], (i * 10).to_string(), "{column}");
+        assert_eq!(column["max"], (i * 10 + 2).to_string(), "{column}");
+        assert_eq!(column["median"], (i * 10 + 1).to_string(), "{column}");
+        assert_eq!(column["distinct"], 3, "{column}");
+        assert_eq!(column["decimals"], 0, "{column}");
+    }
+    assert_eq!(columns[WIDE]["name"], "day");
+    assert_eq!(columns[WIDE]["missing_days"], 0);
+    assert_eq!(columns[WIDE + 1]["name"], "label");
+    assert_eq!(columns[WIDE + 1]["max"], "x2");
+
+    // Part of it, in the order asked, matched without regard to case.
+    let part = s.object(&[
+        "schema",
+        "wide.csv",
+        "--stats",
+        "--columns",
+        "label, C42,c42",
+    ]);
+    assert_eq!(part["column_count"], WIDE + 2);
+    let names: Vec<&str> = part["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["label", "c42"]);
+    assert_eq!(part["columns"][1]["max"], "422");
+
+    let error = s.error(
+        &["schema", "wide.csv", "--stats", "--columns", "c42,lable"],
+        2,
+        "argument",
+    );
+    assert_eq!(error["error"]["hint"], "Did you mean \"label\"?");
+    s.error(&["schema", "wide.csv", "--columns", "c1"], 2, "argument");
+    s.error(
+        &["schema", "wide.csv", "--stats", "--columns", " , "],
+        2,
+        "argument",
+    );
+}
+
 #[test]
 fn schema_stats_names_a_missing_value_marker() {
     let s = Sandbox::new();

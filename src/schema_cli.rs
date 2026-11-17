@@ -31,7 +31,7 @@ use crate::cli::{parse_args, Arg, CliError, FlagSpec};
 
 pub(crate) const SCHEMA_HELP: &str = "\
 Usage: ducklocal schema [PATH ...] [--database PATH] [--table NAME]
-                        [--full|--stats]
+                        [--full|--stats [--columns NAMES]]
 
 What there is to query, as JSON sized for a prompt: data files (PATHs are
 files, folders or globs) and, with --database, a database's tables and views.
@@ -50,11 +50,14 @@ Options:
                      coverage for dates, and the word (null_marker) a text
                      column of numbers uses for missing, such as NA. A
                      workbook's first sheet is used.
+  --columns NAMES    With --stats: only these columns, comma-separated. A wide
+                     relation is profiled whole in batches; this is for when
+                     only some columns matter, or one batch is too big
 
 Output: {detail, relations: [{name, kind, from, rows, column_count, columns?}],
 without_columns, hint?}. `from` is the SQL that reads the relation. `rows` is
 an estimate for tables, exact for Parquet, and null where it would need a scan.
-With --stats: {target, row_count,
+With --stats: {target, row_count, column_count? (with --columns),
 columns: [{name, type, nulls, distinct, ...}]}. A file whose records sit in
 one list, such as {\"Records\": [...]}, carries a hint with the SQL that reads
 them as rows.
@@ -76,6 +79,10 @@ const SPEC: &[FlagSpec] = &[
     FlagSpec {
         name: "--stats",
         takes_value: false,
+    },
+    FlagSpec {
+        name: "--columns",
+        takes_value: true,
     },
 ];
 
@@ -112,6 +119,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     let mut table = None;
     let mut full = false;
     let mut stats = false;
+    let mut only: Option<Vec<String>> = None;
     for arg in parse_args("schema", args, SPEC, &[])? {
         match arg {
             Arg::Flag("--database", Some(value)) => {
@@ -126,6 +134,21 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
             }
             Arg::Flag("--full", None) => full = true,
             Arg::Flag("--stats", None) => stats = true,
+            Arg::Flag("--columns", Some(value)) => {
+                let value = value
+                    .into_string()
+                    .map_err(|_| CliError::argument("--columns must be UTF-8"))?;
+                let names: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if names.is_empty() {
+                    return Err(CliError::argument("--columns names no columns"));
+                }
+                only = Some(names);
+            }
             Arg::Positional(value) => paths.push(value.to_string_lossy().into_owned()),
             _ => {
                 return Err(CliError::failure(
@@ -162,6 +185,12 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
         return Err(CliError::argument(
             "--stats and --full are two answers; ask for one",
         ));
+    }
+    if only.is_some() && !stats {
+        return Err(
+            CliError::argument("--columns picks the columns --stats profiles")
+                .with_hint("Add --stats, or use --table NAME for one relation's columns"),
+        );
     }
 
     let connection = crate::cli::open(database.clone(), false)?;
@@ -208,7 +237,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
         let found = relations.swap_remove(index);
         if stats {
             drop(connection);
-            return profile(&found, database);
+            return profile(&found, database, only.as_deref());
         }
         return Ok(json!({
             "detail": "full",
@@ -219,7 +248,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
     }
 
     if stats {
-        let [only] = relations.as_slice() else {
+        let [only_relation] = relations.as_slice() else {
             return Err(CliError::argument(format!(
                 "--stats profiles one relation; these arguments name {}",
                 relations.len()
@@ -239,7 +268,7 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
             }));
         };
         drop(connection);
-        return profile(only, database);
+        return profile(only_relation, database, only.as_deref());
     }
 
     let total_columns: usize = relations.iter().map(|r| r.columns.len()).sum();
@@ -269,8 +298,12 @@ pub(crate) fn run(args: &[OsString]) -> Result<String, CliError> {
 }
 
 /// `--stats` for one relation, with what its shape hides said beside it.
-fn profile(relation: &Relation, database: Option<PathBuf>) -> Result<String, CliError> {
-    let output = crate::cli::profile_target(&relation.target, database)?;
+fn profile(
+    relation: &Relation,
+    database: Option<PathBuf>,
+    only: Option<&[String]>,
+) -> Result<String, CliError> {
+    let output = crate::cli::profile_target(&relation.target, database, only)?;
     let Some(hint) = wrapped_records(relation) else {
         return Ok(output);
     };
