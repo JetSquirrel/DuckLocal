@@ -1231,6 +1231,11 @@ impl Workspace {
                 // Decided before `run_sql` is handed to the history entry.
                 let reload_catalog = crate::query::may_change_catalog(&run_sql);
                 let script = crate::script::run(&run_sql);
+                // A `LOAD` typed here is kept for the next connection, as
+                // the sidebar's Load button is.
+                if crate::extensions::may_load(&run_sql) {
+                    let _ = crate::db::with_connection(crate::extensions::remember_loaded_of);
+                }
                 // A script is one history entry: its total time, the row
                 // count of the result it shows, and its first error.
                 let (duration_ms, row_count, ok, error) = match &script {

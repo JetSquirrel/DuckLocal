@@ -9,7 +9,15 @@
 //! installed, so a few that people ask for are named here until then. Any
 //! other community extension installs by name ([`install_community_of`]).
 //!
+//! DuckDB keeps a `LOAD` for one connection only, and loads on its own only
+//! what it compiles in or knows from its core repository. Anything else (a
+//! community extension, say) is remembered once loaded, and loaded again on
+//! every connection the window opens: see [`load_at_launch_of`].
+//!
 //! Blocking functions; call via `smol::unblock` from UI code.
+
+use std::collections::BTreeSet;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{anyhow, Result};
 use duckdb::Connection;
@@ -209,6 +217,116 @@ pub fn is_extension_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// The `settings` key holding the extensions loaded on every connection the
+/// window opens, as a JSON array of names.
+pub const AT_LAUNCH_SETTING: &str = "extensions_at_launch";
+
+/// Whether `ext` is one DuckDB leaves for someone to load in every session.
+/// A builtin is always loaded and a core extension autoloads when a query
+/// needs it; one from the community repository, another repository or a
+/// file does neither.
+pub fn needs_loading(ext: &ExtensionInfo) -> bool {
+    ext.installed
+        && matches!(ext.origin, Origin::Repository | Origin::Other)
+        && !ext
+            .installed_from
+            .as_deref()
+            .is_some_and(|from| from.starts_with("core"))
+}
+
+/// The extensions on the launch list: loaded on every new connection.
+pub fn at_launch() -> BTreeSet<String> {
+    crate::history::get_setting(AT_LAUNCH_SETTING)
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+        .unwrap_or_default()
+        .into_iter()
+        // Each name reaches SQL as an identifier.
+        .filter(|name| is_extension_name(name))
+        .collect()
+}
+
+fn save_at_launch(names: &BTreeSet<String>) -> Result<()> {
+    crate::history::set_setting(AT_LAUNCH_SETTING, &serde_json::to_string(names)?)
+}
+
+/// Put `name` on the launch list, or take it off.
+pub fn set_at_launch(name: &str, on: bool) -> Result<()> {
+    if !is_extension_name(name) {
+        return Err(anyhow!("Not an extension name: {name}"));
+    }
+    let mut names = at_launch();
+    let changed = if on {
+        names.insert(name.to_string())
+    } else {
+        names.remove(name)
+    };
+    if changed {
+        save_at_launch(&names)?;
+    }
+    Ok(())
+}
+
+/// The extensions [`needs_loading`] picks that the current connection had
+/// loaded when last looked at. One loaded since is new and joins the launch
+/// list; one taken off the list stays off while it is still loaded, since
+/// DuckDB cannot unload it.
+static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+fn loaded_by_hand_of(conn: &Connection) -> Result<BTreeSet<String>> {
+    Ok(engine_list_of(conn)?
+        .into_iter()
+        .filter(|ext| ext.loaded && needs_loading(ext))
+        .map(|ext| ext.name)
+        .collect())
+}
+
+/// Load everything on the launch list into `conn`, a connection just opened.
+/// Returns a line for each extension that would not load (removed, or built
+/// for another DuckDB), which stays on the list so that it loads again once
+/// reinstalled. Nothing is downloaded: [`crate::db::config`] turns
+/// autoinstall off, and `LOAD` never installs.
+pub fn load_at_launch_of(conn: &Connection) -> Vec<String> {
+    let mut problems = Vec::new();
+    for name in at_launch() {
+        if let Err(e) = conn.execute_batch(&format!("LOAD {name}")) {
+            problems.push(crate::i18n::trf(
+                "notify.extensions.not_loaded",
+                &[&name, &e.to_string()],
+            ));
+        }
+    }
+    *SEEN.lock().unwrap_or_else(PoisonError::into_inner) =
+        loaded_by_hand_of(conn).unwrap_or_default();
+    problems
+}
+
+/// Put each extension loaded since the last look on the launch list: after
+/// the sidebar's Load, and after SQL that [`may_load`].
+pub fn remember_loaded_of(conn: &Connection) -> Result<()> {
+    let now = loaded_by_hand_of(conn)?;
+    let new: Vec<String> = {
+        let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+        let new = now.difference(&seen).cloned().collect();
+        *seen = now;
+        new
+    };
+    if !new.is_empty() {
+        let mut names = at_launch();
+        names.extend(new);
+        save_at_launch(&names)?;
+    }
+    Ok(())
+}
+
+/// Whether `sql` may have loaded an extension, so that
+/// [`remember_loaded_of`] is worth running after it.
+pub fn may_load(sql: &str) -> bool {
+    sql.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|word| word.eq_ignore_ascii_case("load"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +388,116 @@ mod tests {
         assert!(is_extension_name("read_stat"));
         // A community extension that is not installed cannot be loaded.
         assert!(apply_of(&mem(), "mssql", ExtensionAction::Load).is_err());
+    }
+
+    fn ext(origin: Origin, installed_from: Option<&str>) -> ExtensionInfo {
+        ExtensionInfo {
+            name: "x".to_string(),
+            loaded: true,
+            installed: origin != Origin::NotInstalled,
+            origin,
+            version: None,
+            installed_from: installed_from.map(str::to_string),
+            description: None,
+            community: installed_from == Some(COMMUNITY_REPOSITORY),
+        }
+    }
+
+    #[test]
+    fn only_what_duckdb_will_not_load_itself_needs_loading() {
+        assert!(needs_loading(&ext(Origin::Repository, Some("community"))));
+        assert!(needs_loading(&ext(
+            Origin::Repository,
+            Some("https://example.com/ext")
+        )));
+        // Installed from a file.
+        assert!(needs_loading(&ext(Origin::Other, None)));
+
+        assert!(!needs_loading(&ext(Origin::Builtin, None)));
+        // Core extensions autoload when a query needs them.
+        assert!(!needs_loading(&ext(Origin::Repository, Some("core"))));
+        assert!(!needs_loading(&ext(
+            Origin::Repository,
+            Some("core_nightly")
+        )));
+        assert!(!needs_loading(&ext(Origin::NotInstalled, None)));
+    }
+
+    #[test]
+    fn the_launch_list_keeps_only_extension_names() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            assert!(at_launch().is_empty());
+            crate::history::set_setting(
+                AT_LAUNCH_SETTING,
+                r#"["mssql", "x; DROP TABLE t", "MSSQL", "gsheets"]"#,
+            )
+            .unwrap();
+            assert_eq!(
+                at_launch().into_iter().collect::<Vec<_>>(),
+                ["gsheets", "mssql"]
+            );
+
+            set_at_launch("mssql", false).unwrap();
+            set_at_launch("h3", true).unwrap();
+            assert_eq!(
+                at_launch().into_iter().collect::<Vec<_>>(),
+                ["gsheets", "h3"]
+            );
+            assert!(set_at_launch("a b", true).is_err());
+
+            // A value this build cannot read is no list, not a failure.
+            crate::history::set_setting(AT_LAUNCH_SETTING, "not json").unwrap();
+            assert!(at_launch().is_empty());
+        });
+    }
+
+    #[test]
+    fn an_extension_that_will_not_load_is_named_and_kept_on_the_list() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            set_at_launch("ducklocal_no_such_extension", true).unwrap();
+            // As the window opens one: autoinstall off, so nothing downloads.
+            let conn = Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap();
+            let problems = load_at_launch_of(&conn);
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(
+                problems[0].contains("ducklocal_no_such_extension"),
+                "{problems:?}"
+            );
+            assert!(at_launch().contains("ducklocal_no_such_extension"));
+        });
+    }
+
+    #[test]
+    fn builtin_and_core_extensions_never_join_the_launch_list() {
+        let _guard = crate::db::connection_guard();
+        crate::history::with_test_history(|| {
+            let conn = mem();
+            load_at_launch_of(&conn);
+            apply_of(&conn, "parquet", ExtensionAction::Load).unwrap();
+            // ICU is from the core repository where it is installed at all.
+            let _ = conn.execute_batch("LOAD icu");
+            remember_loaded_of(&conn).unwrap();
+            assert!(at_launch().is_empty());
+        });
+    }
+
+    #[test]
+    fn only_sql_that_says_load_is_looked_at_again() {
+        for sql in [
+            "LOAD mssql",
+            "INSTALL mssql FROM community;\nload mssql;",
+            "SELECT 1; LOAD 'x.duckdb_extension'",
+        ] {
+            assert!(may_load(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM loads",
+            "SELECT download FROM t",
+            "INSTALL mssql FROM community",
+        ] {
+            assert!(!may_load(sql), "{sql}");
+        }
     }
 }
