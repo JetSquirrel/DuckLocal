@@ -1,0 +1,78 @@
+version: 0.2.0.dev0
+name: cloudtrail
+description: >
+  What happened in the account, one row per CloudTrail event. The events
+  dataset is the "events" view in reports/investigation.dash:
+  ducklocal metrics query --views reports/investigation.dash ...
+ai_context:
+  instructions: >
+    event_time is UTC. A NULL error_code means the call succeeded.
+    The build key is the IAM user ci-deploy.
+datasets:
+- name: events
+  source: events
+  description: One row per API call.
+  fields:
+  - name: event_time
+    description: When the call was made, UTC.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: event_time}]}
+    dimension: {is_time: true}
+  - name: event_name
+    description: The API call, such as CreateUser.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: event_name}]}
+    dimension: {is_time: false}
+  - name: service
+    description: The AWS service called, such as iam.amazonaws.com.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: service}]}
+    dimension: {is_time: false}
+    ai_context: {synonyms: [event_source]}
+  - name: ip
+    description: The address the call came from.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: ip}]}
+    dimension: {is_time: false}
+    ai_context: {synonyms: [source_ip, address]}
+  - name: user_name
+    description: The IAM user that made the call.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: user_name}]}
+    dimension: {is_time: false}
+    ai_context: {synonyms: [principal, who, identity]}
+  - name: error_code
+    description: Why the call was refused; NULL when it succeeded.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: error_code}]}
+    dimension: {is_time: false}
+  - name: read_only
+    description: Whether the call only read.
+    expression: {dialects: [{dialect: ANSI_SQL, expression: read_only}]}
+    dimension: {is_time: false}
+metrics:
+- name: event_count
+  description: API calls.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(events.event_time)}]}
+- name: error_count
+  description: Calls that were refused or failed.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(events.error_code)}]}
+  ai_context: {synonyms: [denied, refused, failures]}
+- name: error_rate
+  description: The share of calls that were refused or failed.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: error_count * 1.0 / NULLIF(event_count, 0)}]}
+- name: access_changes
+  description: Successful calls that changed IAM.
+  expression:
+    dialects:
+    - dialect: ANSI_SQL
+      expression: >
+        COUNT(events.event_time) FILTER (WHERE events.service = 'iam.amazonaws.com'
+        AND NOT events.read_only AND events.error_code IS NULL)
+  ai_context: {synonyms: [iam_changes, privilege_changes]}
+- name: distinct_principals
+  description: Different IAM users seen.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(DISTINCT events.user_name)}]}
+- name: distinct_addresses
+  description: Different source addresses seen.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(DISTINCT events.ip)}]}
+- name: first_seen
+  description: The earliest call.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: MIN(events.event_time)}]}
+- name: last_seen
+  description: The latest call.
+  expression: {dialects: [{dialect: ANSI_SQL, expression: MAX(events.event_time)}]}

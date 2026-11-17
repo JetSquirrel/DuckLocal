@@ -32,6 +32,7 @@ mod script;
 mod session;
 mod setup;
 mod sources;
+mod semantic;
 mod spec;
 mod state;
 mod storage;

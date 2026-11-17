@@ -18,6 +18,16 @@ Use the real DuckLocal executable, not GUI automation or a replacement Python sc
 
 To build a dashboard for the GUI, write a `.dash` spec — see [Authoring a dashboard spec](#authoring-a-dashboard-spec).
 
+## Asking by metric
+
+When the folder has a `model.ossie.yaml` (an Apache Ossie semantic model), answer counts, rates and breakdowns through its metrics instead of writing the SQL yourself: the model says once what "error rate" or "access changes" means, and every answer then means the same thing.
+
+1. `ducklocal metrics` lists the vocabulary: each metric with its `description`, `synonyms`, `queryable` (and, when false, a `problem` saying why), each dataset's fields as `dataset.field` with `is_time`, and the relationships. Map the person's words onto these names, synonyms included; when no metric fits, say so and ask rather than picking the closest. `ai_context.instructions` on the model is about this data (time zones, what NULL means): read it.
+2. `ducklocal metrics compile --metric error_count,event_count --by events.ip --where "events.user_name = 'ci-deploy'"` prints the SQL it would run, and reads no data. `--by events.event_time:hour` truncates a time field (second … year). A `--where` over fields filters rows; one over metric names (`"error_count > 5"`) filters groups. `--order-by event_count:desc` and `--limit N` name output columns.
+3. `ducklocal metrics query` with the same request runs it the way `ducklocal query` does: add `--views reports/x.dash` when the model's sources are a dashboard's `source`/`view` blocks (its description says so), and `--restricted --allow-read ./data` as for any query. The result carries `semantic`: the compiled `sql`, the `model`'s `sha256` and the `request`, which is what to cite.
+
+A refusal is exit 2 with a `kind`, and it means the model cannot answer that exactly; never work around one with hand-written SQL presented as the metric. `metric_unknown_name`: use the name or `hint` it gives. `metric_fanout`: the dimension is on the many side of a relationship, and joining it would count rows twice; break down by a field of the metric's own dataset (`base` in the vocabulary). `metric_multi_grain`: the metrics count different datasets; ask for each in its own query. `metric_ambiguous_path`, `metric_no_path`: the model must say how the datasets join; tell the person. `metric_window_unsupported`, `metric_not_aggregate`, `metric_no_dialect`: the metric cannot be queried; say which. When a step really needs SQL the model cannot express, write it with `ducklocal query`, and say in the answer that that number is not one of the model's metrics.
+
 ## Authoring a dashboard spec
 
 A `.dash` file declares a dashboard as blocks — easy to write and diff, and validated without opening a window:
