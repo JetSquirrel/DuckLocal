@@ -13,6 +13,7 @@
 //! `metric_multi_grain`, ...), not answered approximately.
 
 mod ast;
+pub(crate) mod browse;
 mod compile;
 mod model;
 
@@ -439,23 +440,30 @@ fn query_command(args: &[OsString]) -> Result<String, CliError> {
 /// `sql` with the source and view blocks of the dashboard at `file` in front
 /// of it, as the dashboard's own queries get them.
 fn with_views(sql: &str, file: &Path) -> Result<String, CliError> {
-    let text = std::fs::read_to_string(file)
+    // A file that is not there is an I/O failure; one that does not read as
+    // a dashboard is the argument's.
+    std::fs::metadata(file)
         .map_err(|e| CliError::failure("io", format!("{}: {e}", file.display())))?;
+    expand_views(sql, file).map_err(CliError::argument)
+}
+
+/// [`with_views`], with the problem said as text: the window shows it.
+pub(crate) fn expand_views(sql: &str, file: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let parsed = crate::spec::model::parse(&text)
-        .map_err(|e| CliError::argument(format!("{}:{}: {}", file.display(), e.line, e.message)))?;
+        .map_err(|e| format!("{}:{}: {}", file.display(), e.line, e.message))?;
     let spec = crate::spec::model::validate(&parsed).map_err(|diagnostics| {
-        let first = diagnostics
+        diagnostics
             .first()
             .map(|d| format!("{}:{}: {}", file.display(), d.line, d.message))
-            .unwrap_or_else(|| format!("{} is not a valid dashboard", file.display()));
-        CliError::argument(first)
+            .unwrap_or_else(|| format!("{} is not a valid dashboard", file.display()))
     })?;
     if let Some((view, message)) = crate::spec::source::unsound_view(&spec.views) {
-        return Err(CliError::argument(format!(
+        return Err(format!(
             "{}: view {:?}: {message}",
             file.display(),
             view.name
-        )));
+        ));
     }
     let base = crate::spec::source::base_of(file);
     Ok(crate::spec::source::expand(

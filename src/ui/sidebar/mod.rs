@@ -41,6 +41,7 @@ use gpui_kit::*;
 use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf, Language};
 use crate::recents::RecentDocument;
+use crate::semantic::browse::ModelEntry;
 use crate::state::{
     format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged, HistoryChanged,
     RecentsChanged, S3ConfigChanged,
@@ -48,7 +49,7 @@ use crate::state::{
 use crate::ui::workspace::Workspace;
 
 use self::extensions::ExtensionList;
-use self::model::ColumnRef;
+use self::model::{ColumnRef, MetricRef};
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
 use self::selection::{ColumnPick, FileSelection};
@@ -77,6 +78,12 @@ pub struct Sidebar {
     s3_browse: Option<S3Browse>,
     /// Recently opened dashboards, shown as a clickable group.
     recents: Rc<Vec<RecentDocument>>,
+    /// The semantic models beside those dashboards, read off the UI thread
+    /// whenever the list changes.
+    models: Rc<Vec<ModelEntry>>,
+    /// Whether a metric's SQL is run once it is in the editor. Tests turn it
+    /// off: running goes through the query thread, which they do not drive.
+    run_metrics: bool,
     /// A schema reload is in flight; the refresh button shows loading and
     /// repeat clicks are ignored until it finishes.
     refreshing_schema: bool,
@@ -154,6 +161,7 @@ impl Sidebar {
             }),
             cx.subscribe(&state, |this, _, _: &RecentsChanged, cx| {
                 this.recents = Rc::new(crate::recents::list());
+                this.reload_models(cx);
                 this.rebuild_tree(cx);
                 cx.notify();
             }),
@@ -176,7 +184,7 @@ impl Sidebar {
             .s3_config
             .as_ref()
             .map(|_| S3Browse::default());
-        Self {
+        let mut sidebar = Self {
             state,
             workspace,
             tab: SidebarTab::Schema,
@@ -184,6 +192,8 @@ impl Sidebar {
             node_meta: Rc::new(HashMap::new()),
             s3_browse,
             recents: Rc::new(crate::recents::list()),
+            models: Rc::new(Vec::new()),
+            run_metrics: true,
             refreshing_schema: false,
             file_selection: FileSelection::default(),
             column_pick: ColumnPick::default(),
@@ -194,7 +204,86 @@ impl Sidebar {
             community_name,
             tree_language: crate::i18n::current(),
             _subscriptions: subscriptions,
+        };
+        sidebar.reload_models(cx);
+        sidebar
+    }
+
+    /// Look for semantic models beside the remembered dashboards, off the UI
+    /// thread: loading one opens a DuckDB parser.
+    fn reload_models(&mut self, cx: &mut Context<Self>) {
+        let dashboards: Vec<std::path::PathBuf> = self
+            .recents
+            .iter()
+            .map(|doc| std::path::PathBuf::from(&doc.path))
+            .collect();
+        if dashboards.is_empty() {
+            if !self.models.is_empty() {
+                self.models = Rc::new(Vec::new());
+                self.rebuild_tree(cx);
+            }
+            return;
         }
+        let discovery =
+            cx.background_spawn(async move { crate::semantic::browse::discover(&dashboards) });
+        cx.spawn(async move |this, cx| {
+            let models = discovery.await;
+            this.update(cx, |this, cx| {
+                if *this.models != models {
+                    this.models = Rc::new(models);
+                    this.rebuild_tree(cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Compile `metric`, by day when `by_time`, put the SQL in the editor and
+    /// run it. A metric that will not compile says why.
+    fn run_metric(
+        &mut self,
+        metric: MetricRef,
+        by_time: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = self.workspace.clone();
+        let run = self.run_metrics;
+        let by = by_time
+            .then(|| {
+                metric
+                    .time_field
+                    .as_ref()
+                    .map(|field| format!("{field}:day"))
+            })
+            .flatten();
+        let compiling = cx.background_spawn(async move {
+            crate::semantic::browse::metric_sql(
+                &metric.model,
+                metric.views.as_deref(),
+                &metric.name,
+                by.as_deref(),
+            )
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let result = compiling.await;
+            cx.update(|window, cx| match result {
+                Ok(sql) => workspace.update(cx, |ws, cx| {
+                    ws.fill_active_editor(sql, window, cx);
+                    if run {
+                        ws.run_active(window, cx);
+                    }
+                }),
+                Err(e) => window.push_notification(
+                    gpui_kit::component::notification::Notification::error(e),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
@@ -206,6 +295,7 @@ impl Sidebar {
             &catalog,
             &attached_files,
             &self.recents,
+            &self.models,
             self.s3_browse.as_ref(),
         );
         self.column_pick.retain(|table, name| {
@@ -308,6 +398,16 @@ impl Sidebar {
         (picked, self.tree_state.read(cx).selected_index())
     }
 
+    /// Stand in `documents` for the remembered dashboards, as a launch that
+    /// read them would, and leave a metric's SQL in the editor unrun.
+    #[cfg(test)]
+    pub(crate) fn set_recents(&mut self, documents: Vec<RecentDocument>, cx: &mut Context<Self>) {
+        self.recents = Rc::new(documents);
+        self.run_metrics = false;
+        self.reload_models(cx);
+        self.rebuild_tree(cx);
+    }
+
     /// The label of the tree row at `ix`, as the tree would draw it.
     #[cfg(test)]
     pub(crate) fn tree_label(&self, ix: usize, cx: &App) -> Option<SharedString> {
@@ -390,6 +490,7 @@ impl Sidebar {
                 || !state.attached_files.is_empty()
                 || state.s3_config.is_some()
                 || !recents.is_empty()
+                || !self.models.is_empty()
         };
 
         if !has_items {
@@ -445,6 +546,7 @@ impl Sidebar {
                 // folds, nothing more.
                 SchemaNodeKind::LocalFilesGroup
                 | SchemaNodeKind::DashboardsGroup
+                | SchemaNodeKind::MetricsGroup
                 | SchemaNodeKind::S3Status => Some(if entry.is_expanded() {
                     IconName::ChevronDown.into()
                 } else {
@@ -459,6 +561,8 @@ impl Sidebar {
                     .doc
                     .as_ref()
                     .map(|_| gpui_kit::assets::IconName::ChartNoAxesColumn),
+                SchemaNodeKind::SemanticModel => Some(IconName::BookOpen.into()),
+                SchemaNodeKind::Metric => Some(gpui_kit::assets::IconName::Sigma),
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
                 SchemaNodeKind::View => Some(IconName::Eye.into()),
                 SchemaNodeKind::File | SchemaNodeKind::S3File => Some(IconName::File.into()),
@@ -489,10 +593,12 @@ impl Sidebar {
             let column = node_meta.and_then(|m| m.column.clone());
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
             let doc = node_meta.and_then(|m| m.doc.clone());
+            let metric = node_meta.and_then(|m| m.metric.clone());
             let removable_doc = doc.clone();
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
             let has_actions = is_s3_root
+                || metric.is_some()
                 || table.is_some()
                 || editable_column.is_some()
                 || removable_doc.is_some()
@@ -644,6 +750,21 @@ impl Sidebar {
                                             });
                                         })
                                 })
+                                .when_some(metric.clone(), |this, metric| {
+                                    let sidebar = sidebar.clone();
+                                    this.cursor_pointer()
+                                        .hover(|this| this.text_color(cx.theme().primary))
+                                        .active(|this| {
+                                            this.text_color(cx.theme().primary.opacity(0.7))
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            if let Some(sidebar) = sidebar.upgrade() {
+                                                sidebar.update(cx, |this, cx| {
+                                                    this.run_metric(metric.clone(), false, window, cx)
+                                                });
+                                            }
+                                        })
+                                })
                                 .when_some(doc, |this, doc| {
                                     let workspace = workspace.clone();
                                     let state = state.clone();
@@ -726,6 +847,39 @@ impl Sidebar {
                                                         if let Some(sidebar) = sidebar.upgrade() {
                                                             sidebar.update(cx, |this, cx| {
                                                                 this.refresh_s3(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                        })
+                                        .when_some(metric, |this, metric| {
+                                            let by_time = metric.time_field.clone().map(|field| {
+                                                let sidebar = sidebar.clone();
+                                                let metric = metric.clone();
+                                                Button::new(("metric-by-day", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(gpui_kit::assets::IconName::ChartLine)
+                                                    .tooltip(trf("sidebar.metrics.by_day", &[&field]))
+                                                    .on_click(move |_, window, cx| {
+                                                        if let Some(sidebar) = sidebar.upgrade() {
+                                                            sidebar.update(cx, |this, cx| {
+                                                                this.run_metric(metric.clone(), true, window, cx)
+                                                            });
+                                                        }
+                                                    })
+                                            });
+                                            let sidebar = sidebar.clone();
+                                            this.children(by_time).child(
+                                                Button::new(("metric-run", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(IconName::Play)
+                                                    .tooltip(tr("sidebar.metrics.run"))
+                                                    .on_click(move |_, window, cx| {
+                                                        if let Some(sidebar) = sidebar.upgrade() {
+                                                            sidebar.update(cx, |this, cx| {
+                                                                this.run_metric(metric.clone(), false, window, cx)
                                                             });
                                                         }
                                                     }),

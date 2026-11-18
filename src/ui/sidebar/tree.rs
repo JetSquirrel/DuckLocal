@@ -7,17 +7,21 @@ use std::collections::HashMap;
 use gpui_kit::component::tree::TreeItem;
 use gpui_kit::SharedString;
 
-use super::model::{ColumnRef, DatabaseRef, FileRef, SchemaNodeKind, SchemaNodeMeta, TableRef};
+use super::model::{
+    ColumnRef, DatabaseRef, FileRef, MetricRef, SchemaNodeKind, SchemaNodeMeta, TableRef,
+};
 use super::s3::{s3_children_items, S3Browse};
 use crate::i18n::tr;
 use crate::recents::RecentDocument;
 use crate::schema::{DatabaseInfo, NodeKind, TableInfo};
+use crate::semantic::browse::ModelEntry;
 use crate::state::{format_rows, AttachedFileView};
 
 pub(super) fn build_tree_items(
     catalog: &[DatabaseInfo],
     attached_files: &[AttachedFileView],
     recents: &[RecentDocument],
+    models: &[ModelEntry],
     s3_browse: Option<&S3Browse>,
 ) -> (Vec<TreeItem>, HashMap<SharedString, SchemaNodeMeta>) {
     let mut meta = HashMap::new();
@@ -55,6 +59,10 @@ pub(super) fn build_tree_items(
         recents,
         &mut meta,
     ) {
+        items.push(group);
+    }
+
+    if let Some(group) = metrics_group(models, &mut meta) {
         items.push(group);
     }
 
@@ -191,6 +199,106 @@ fn recents_group(
     Some(TreeItem::new(group_id, label).expanded(true).children(rows))
 }
 
+/// The semantic models found beside the dashboards: a row per model, and
+/// under it a row per metric, which runs the metric on click.
+fn metrics_group(
+    models: &[ModelEntry],
+    meta: &mut HashMap<SharedString, SchemaNodeMeta>,
+) -> Option<TreeItem> {
+    if models.is_empty() {
+        return None;
+    }
+    let group_id: SharedString = "group:metrics".into();
+    let count: usize = models.iter().map(|model| model.metrics.len()).sum();
+    meta.insert(
+        group_id.clone(),
+        SchemaNodeMeta::new(SchemaNodeKind::MetricsGroup, Some(count.to_string().into())),
+    );
+    let model_items = models
+        .iter()
+        .map(|model| {
+            let path = model.path.to_string_lossy();
+            let model_id: SharedString = format!("model:{path}").into();
+            let mut tooltip = crate::db::compact_home(&path);
+            if let Some(views) = &model.views {
+                tooltip.push_str(&format!(
+                    "\n{}",
+                    crate::i18n::trf(
+                        "sidebar.metrics.views",
+                        &[&crate::db::compact_home(&views.to_string_lossy())]
+                    )
+                ));
+            }
+            if let Some(problem) = &model.problem {
+                tooltip.push_str(&format!("\n{problem}"));
+            }
+            meta.insert(
+                model_id.clone(),
+                SchemaNodeMeta {
+                    hint: model
+                        .problem
+                        .as_ref()
+                        .map(|_| tr("sidebar.metrics.unreadable").into()),
+                    tooltip: Some(tooltip.into()),
+                    ..SchemaNodeMeta::new(
+                        SchemaNodeKind::SemanticModel,
+                        Some(model.metrics.len().to_string().into()),
+                    )
+                },
+            );
+            let metric_items: Vec<TreeItem> = model
+                .metrics
+                .iter()
+                .map(|metric| {
+                    let row_id: SharedString = format!("metric:{path}:{}", metric.name).into();
+                    let mut tooltip: Vec<String> = Vec::new();
+                    if let Some(description) = &metric.description {
+                        tooltip.push(description.trim().to_string());
+                    }
+                    if !metric.synonyms.is_empty() {
+                        tooltip.push(crate::i18n::trf(
+                            "sidebar.metrics.synonyms",
+                            &[&metric.synonyms.join(", ")],
+                        ));
+                    }
+                    if let Some(problem) = &metric.problem {
+                        tooltip.push(problem.clone());
+                    }
+                    meta.insert(
+                        row_id.clone(),
+                        SchemaNodeMeta {
+                            metric: metric.problem.is_none().then(|| MetricRef {
+                                model: model.path.clone(),
+                                views: model.views.clone(),
+                                name: metric.name.clone(),
+                                time_field: metric.time_field.clone(),
+                            }),
+                            hint: match (&metric.problem, &metric.label) {
+                                (Some(_), _) => Some(tr("sidebar.metrics.not_queryable").into()),
+                                (None, Some(label)) if *label != metric.name => {
+                                    Some(label.clone().into())
+                                }
+                                _ => None,
+                            },
+                            tooltip: (!tooltip.is_empty()).then(|| tooltip.join("\n").into()),
+                            ..SchemaNodeMeta::new(SchemaNodeKind::Metric, None)
+                        },
+                    );
+                    TreeItem::new(row_id, metric.name.clone())
+                })
+                .collect();
+            TreeItem::new(model_id, model.name.clone())
+                .expanded(true)
+                .children(metric_items)
+        })
+        .collect::<Vec<_>>();
+    Some(
+        TreeItem::new(group_id, tr("sidebar.group.metrics"))
+            .expanded(true)
+            .children(model_items),
+    )
+}
+
 /// One registered data file: labelled by its view name — what a query names —
 /// with the file's own name beside it only when that says something the view
 /// name does not, and its folder when another file has the same view name.
@@ -229,6 +337,7 @@ fn file_tree_item(
             column: None,
             s3_uri: None,
             doc: None,
+            metric: None,
             hint: file_hint(&file.path, &file.view_name, duplicate),
             tooltip: Some(crate::db::compact_home(&file.path).into()),
         },

@@ -700,6 +700,13 @@ impl Workspace {
 
     /// Put `sql` in the editor, run it, and show its column overview rather
     /// than its rows.
+    /// The active query tab's SQL, as its editor holds it.
+    #[cfg(test)]
+    pub(crate) fn active_editor_text(&self, cx: &App) -> Option<String> {
+        let tab = self.tabs.get(self.active)?.as_query()?;
+        Some(tab.editor.read(cx).value().to_string())
+    }
+
     pub fn run_for_overview(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
         self.fill_active_editor(sql, window, cx);
         if let Some(tab) = self.tabs.get(self.active).and_then(WorkspaceTab::as_query) {

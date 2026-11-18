@@ -35,7 +35,9 @@ icon_assets!(
         ChartNoAxesColumn,
         UserRound,
         Maximize2,
-        Minimize2
+        Minimize2,
+        Sigma,
+        ChartLine
     ]
 );
 
