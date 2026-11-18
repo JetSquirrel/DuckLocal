@@ -15,6 +15,7 @@ Usage:
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
   ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
+  ducklocal metrics [MODEL]     A semantic model's metrics; compile or query them
   ducklocal comments FILE       Read and answer review comments on a dashboard
   ducklocal propose FILE        Suggest a dashboard change for the person to review
   ducklocal project check [DIR] Check a portable analysis folder and what it needs
@@ -501,10 +502,38 @@ struct Options {
 /// document. `Html` is a page to open, send or publish. The values are the
 /// same values; only the framing differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
+pub(crate) enum Format {
     Json,
     Markdown,
     Html,
+}
+
+impl Format {
+    pub(crate) fn parse(value: &OsString) -> Result<Self, CliError> {
+        match value.to_string_lossy().to_ascii_lowercase().as_str() {
+            "json" => Ok(Format::Json),
+            "md" | "markdown" => Ok(Format::Markdown),
+            "html" => Ok(Format::Html),
+            _ => Err(CliError::argument(format!(
+                "--format must be json, md or html; got {:?}",
+                value.to_string_lossy()
+            ))),
+        }
+    }
+}
+
+/// `--limit N`: a whole number of rows, 1 or more.
+pub(crate) fn row_limit(value: &OsString) -> Result<usize, CliError> {
+    let text = value.to_str().unwrap_or("");
+    text.parse()
+        .ok()
+        .filter(|n| *n > 0)
+        .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
+        .ok_or_else(|| {
+            CliError::argument(format!(
+                "--limit must be a whole number of rows, 1 or more; got {text:?}"
+            ))
+        })
 }
 
 const QUERY_SPEC: &[FlagSpec] = &[
@@ -551,7 +580,7 @@ const QUERY_SPEC: &[FlagSpec] = &[
 ];
 
 /// The flags that may be given more than once.
-const REPEATABLE: &[&str] = &["--allow-read"];
+const REPEATABLE: &[&str] = &["--allow-read", "--metric", "--by", "--where", "--order-by"];
 
 const PROFILE_SPEC: &[FlagSpec] = &[FlagSpec {
     name: "--database",
@@ -586,33 +615,8 @@ fn parse(args: &[OsString]) -> Result<Options, CliError> {
                 options.database = Some(database_path(&value)?);
             }
             Arg::Flag("--read-write", None) => options.read_write = true,
-            Arg::Flag("--format", Some(value)) => {
-                let text = value.to_string_lossy().to_ascii_lowercase();
-                options.format = match text.as_str() {
-                    "json" => Format::Json,
-                    "md" | "markdown" => Format::Markdown,
-                    "html" => Format::Html,
-                    _ => {
-                        return Err(CliError::argument(format!(
-                            "--format must be json, md or html; got {:?}",
-                            value.to_string_lossy()
-                        )))
-                    }
-                };
-            }
-            Arg::Flag("--limit", Some(value)) => {
-                let text = value.to_str().unwrap_or("");
-                options.limit = text
-                    .parse()
-                    .ok()
-                    .filter(|n| *n > 0)
-                    .filter(|_| text.bytes().all(|b| b.is_ascii_digit()))
-                    .ok_or_else(|| {
-                        CliError::argument(format!(
-                            "--limit must be a whole number of rows, 1 or more; got {text:?}"
-                        ))
-                    })?;
-            }
+            Arg::Flag("--format", Some(value)) => options.format = Format::parse(&value)?,
+            Arg::Flag("--limit", Some(value)) => options.limit = row_limit(&value)?,
             Arg::Positional(value) => {
                 return Err(CliError::argument(format!(
                     "Unknown query option: {}",
@@ -758,51 +762,87 @@ fn query(args: &[OsString]) -> Result<String, CliError> {
             }
         }
     };
+    let (result, policy) = execute(
+        &sql,
+        options.database,
+        options.read_write,
+        options.limit,
+        &options.limits,
+    )?;
+    write_result(result, policy.as_ref(), options.format, &sql, None)
+}
+
+/// Run one statement the way `query` does — checked, restricted when asked,
+/// recorded in the session — for every command that runs SQL it was given or
+/// made.
+pub(crate) fn execute(
+    sql: &str,
+    database: Option<PathBuf>,
+    read_write: bool,
+    limit: usize,
+    limits: &crate::restricted::Flags,
+) -> Result<(crate::query::CliResult, Option<crate::restricted::Policy>), CliError> {
     // Whatever stops it from here is worth a line in a session: a refusal, or
     // a failure, is as much a part of how the work went as a result.
     let run = || -> Result<_, CliError> {
-        validate_sql(&sql).map_err(|e| with_keyword_hint(e, &sql))?;
-        let policy = options.limits.policy()?;
-        let conn = open(options.database.clone(), options.read_write)?;
+        validate_sql(sql).map_err(|e| with_keyword_hint(e, sql))?;
+        let policy = limits.policy()?;
+        let conn = open(database.clone(), read_write)?;
         let watch = match &policy {
             Some(policy) => {
                 policy.enforce(&conn)?;
-                policy.admit(&conn, &sql)?;
+                policy.admit(&conn, sql)?;
                 Some(policy.watch(&conn))
             }
             None => None,
         };
-        let result = crate::query::run_cli_of(&conn, &sql, options.limit).map_err(|e| {
+        let result = crate::query::run_cli_of(&conn, sql, limit).map_err(|e| {
             let message = e.to_string();
             match (&policy, &watch) {
                 (Some(policy), Some(watch)) => policy.classify(&message, watch),
                 _ => None,
             }
-            .unwrap_or_else(|| with_keyword_hint(CliError::failure("sql", message), &sql))
+            .unwrap_or_else(|| with_keyword_hint(CliError::failure("sql", message), sql))
         })?;
         Ok((result, policy))
     };
     let outcome = run();
     crate::session::record_query(
-        &sql,
-        options.database.as_deref(),
-        options.limits.restricted,
+        sql,
+        database.as_deref(),
+        limits.restricted,
         outcome.as_ref().map(|(result, _)| result),
     );
-    let (result, policy) = outcome?;
-    if let (Some(policy), Format::Json) = (&policy, options.format) {
+    outcome
+}
+
+/// A result as `format` writes it. JSON carries the limits it ran under, and
+/// `extra` as one more key, when given.
+pub(crate) fn write_result(
+    result: crate::query::CliResult,
+    policy: Option<&crate::restricted::Policy>,
+    format: Format,
+    sql: &str,
+    extra: Option<(&str, serde_json::Value)>,
+) -> Result<String, CliError> {
+    if format == Format::Json && (policy.is_some() || extra.is_some()) {
         let mut output =
             serde_json::to_value(&result).map_err(|e| CliError::failure("output", e))?;
-        output["restricted"] = policy.report();
+        if let Some(policy) = policy {
+            output["restricted"] = policy.report();
+        }
+        if let Some((key, value)) = extra {
+            output[key] = value;
+        }
         return Ok(output.to_string());
     }
-    let output = match options.format {
+    let output = match format {
         // Trailing newline is not part of the document; `dispatch` adds the
         // one line ending every output gets.
         Format::Markdown => Ok(crate::query::format_markdown(&result)
             .trim_end()
             .to_string()),
-        Format::Html => Ok(crate::html_page::format_html(&result, &sql)),
+        Format::Html => Ok(crate::html_page::format_html(&result, sql)),
         Format::Json => {
             hotpath::measure_block!("cli::serialize_json", serde_json::to_string(&result))
                 .map_err(|e| CliError::failure("output", e))
@@ -986,6 +1026,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "profile"
             | "open"
             | "check"
+            | "metrics"
             | "comments"
             | "propose"
             | "project"
@@ -1026,6 +1067,8 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
         ("open", _) => crate::remote::open(&args[1..]),
         ("check", 2) if args[1] == "--help" => Ok(CHECK_HELP.to_string()),
         ("check", _) => crate::spec::check(&args[1..]),
+        ("metrics", 2) if args[1] == "--help" => Ok(crate::semantic::HELP.to_string()),
+        ("metrics", _) => crate::semantic::run(&args[1..]),
         ("comments", 2) if args[1] == "--help" => {
             Ok(crate::spec::comments::COMMENTS_HELP.to_string())
         }
