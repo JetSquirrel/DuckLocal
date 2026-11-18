@@ -21,6 +21,12 @@ pub(super) enum SchemaNodeKind {
     S3Prefix,
     S3File,
     S3Message,
+    /// Group header for the semantic models found beside the dashboards.
+    MetricsGroup,
+    /// A semantic model: its metrics are its rows.
+    SemanticModel,
+    /// One metric of a model.
+    Metric,
 }
 
 /// What the remove button on a registered-file row needs to act on.
@@ -37,6 +43,17 @@ pub(super) struct DatabaseRef {
     /// The database the window opened, as opposed to one attached beside
     /// it: it cannot be detached.
     pub(super) is_main: bool,
+}
+
+/// A metric row: what running it needs.
+#[derive(Clone)]
+pub(super) struct MetricRef {
+    pub(super) model: std::path::PathBuf,
+    /// The dashboard whose blocks define the model's datasets.
+    pub(super) views: Option<std::path::PathBuf>,
+    pub(super) name: String,
+    /// `dataset.field` to break it down by day, when it has one.
+    pub(super) time_field: Option<String>,
 }
 
 /// A catalog table or view a tree node can act on (generate queries, alter).
@@ -68,6 +85,8 @@ pub(super) struct SchemaNodeMeta {
     pub(super) s3_uri: Option<String>,
     /// The document a recent-document row reopens on click.
     pub(super) doc: Option<crate::recents::RecentDocument>,
+    /// The metric a queryable metric row runs.
+    pub(super) metric: Option<MetricRef>,
     /// Muted text after the label: what tells a row apart from a same-named
     /// one, or a file name that differs from its view's.
     pub(super) hint: Option<SharedString>,
@@ -86,6 +105,7 @@ impl SchemaNodeMeta {
             column: None,
             s3_uri: None,
             doc: None,
+            metric: None,
             hint: None,
             tooltip: None,
         }
@@ -101,6 +121,7 @@ impl SchemaNodeKind {
             self,
             SchemaNodeKind::LocalFilesGroup
                 | SchemaNodeKind::DashboardsGroup
+                | SchemaNodeKind::MetricsGroup
                 | SchemaNodeKind::S3Status
         )
     }
