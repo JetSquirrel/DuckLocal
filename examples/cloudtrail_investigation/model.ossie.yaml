@@ -54,7 +54,7 @@ metrics:
   ai_context: {synonyms: [denied, refused, failures]}
 - name: error_rate
   description: The share of calls that were refused or failed.
-  expression: {dialects: [{dialect: ANSI_SQL, expression: error_count * 1.0 / NULLIF(event_count, 0)}]}
+  expression: {dialects: [{dialect: ANSI_SQL, expression: "error_count * 1.0 / NULLIF(event_count, 0)"}]}
 - name: access_changes
   description: Successful calls that changed IAM.
   expression:

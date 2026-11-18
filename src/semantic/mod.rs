@@ -427,7 +427,13 @@ fn query_command(args: &[OsString]) -> Result<String, CliError> {
         .unwrap_or(1000)
         .min(crate::query::MAX_ROWS);
     let (result, policy) = crate::cli::execute(&text, database, false, rows, &limits)?;
-    crate::cli::write_result(result, policy.as_ref(), format, &text, Some(("semantic", report)))
+    crate::cli::write_result(
+        result,
+        policy.as_ref(),
+        format,
+        &text,
+        Some(("semantic", report)),
+    )
 }
 
 /// `sql` with the source and view blocks of the dashboard at `file` in front
@@ -435,9 +441,8 @@ fn query_command(args: &[OsString]) -> Result<String, CliError> {
 fn with_views(sql: &str, file: &Path) -> Result<String, CliError> {
     let text = std::fs::read_to_string(file)
         .map_err(|e| CliError::failure("io", format!("{}: {e}", file.display())))?;
-    let parsed = crate::spec::model::parse(&text).map_err(|e| {
-        CliError::argument(format!("{}:{}: {}", file.display(), e.line, e.message))
-    })?;
+    let parsed = crate::spec::model::parse(&text)
+        .map_err(|e| CliError::argument(format!("{}:{}: {}", file.display(), e.line, e.message)))?;
     let spec = crate::spec::model::validate(&parsed).map_err(|diagnostics| {
         let first = diagnostics
             .first()
@@ -453,7 +458,12 @@ fn with_views(sql: &str, file: &Path) -> Result<String, CliError> {
         )));
     }
     let base = crate::spec::source::base_of(file);
-    Ok(crate::spec::source::expand(sql, &spec.sources, &spec.views, &base))
+    Ok(crate::spec::source::expand(
+        sql,
+        &spec.sources,
+        &spec.views,
+        &base,
+    ))
 }
 
 #[cfg(test)]

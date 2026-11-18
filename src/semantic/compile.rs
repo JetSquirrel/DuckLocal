@@ -102,7 +102,9 @@ impl<'a> Resolver<'a> {
         ast::replace_columns::<Refusal>(&mut tree, &mut |parts| {
             let mut qualified = vec![dataset.name.clone()];
             match parts.split_first() {
-                Some((first, rest)) if !rest.is_empty() && first.eq_ignore_ascii_case(&dataset.name) => {
+                Some((first, rest))
+                    if !rest.is_empty() && first.eq_ignore_ascii_case(&dataset.name) =>
+                {
                     qualified.extend(rest.iter().cloned())
                 }
                 _ => qualified.extend(parts.iter().cloned()),
@@ -124,22 +126,32 @@ impl<'a> Resolver<'a> {
 
     /// A metric's expression with every field and metric it names in place.
     fn metric(&self, metric: &Metric, stack: &mut Vec<String>) -> Result<Value, Refusal> {
-        if stack.iter().any(|name| name.eq_ignore_ascii_case(&metric.name)) {
+        if stack
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&metric.name))
+        {
             stack.push(metric.name.clone());
             return Err(Refusal::new(
                 "model_invalid",
-                format!("metrics refer to each other in a circle: {}", stack.join(" -> ")),
+                format!(
+                    "metrics refer to each other in a circle: {}",
+                    stack.join(" -> ")
+                ),
             ));
         }
         let mut tree = metric.expression.tree.clone().map_err(|r| {
-            r.reworded(format!("metric {:?} cannot be used: {}", metric.name, r.message))
+            r.reworded(format!(
+                "metric {:?} cannot be used: {}",
+                metric.name, r.message
+            ))
         })?;
         stack.push(metric.name.clone());
         let scope = Scope {
             home: metric.dataset.as_deref(),
             metrics: true,
         };
-        let result = ast::replace_columns(&mut tree, &mut |parts| self.reference(parts, scope, stack));
+        let result =
+            ast::replace_columns(&mut tree, &mut |parts| self.reference(parts, scope, stack));
         stack.pop();
         result.map_err(|r| {
             if r.kind == "metric_unknown_name" && stack.is_empty() {
@@ -185,7 +197,9 @@ impl<'a> Resolver<'a> {
             if !owners.is_empty() {
                 error.message = format!("{written:?} must name its dataset");
                 error.hint = Some(format!("Write {}", owners.join(" or ")));
-            } else if let Some(near) = closest(name, self.model.metrics.iter().map(|m| m.name.as_str())) {
+            } else if let Some(near) =
+                closest(name, self.model.metrics.iter().map(|m| m.name.as_str()))
+            {
                 error.hint = Some(format!("Did you mean {near}?"));
             }
             return Err(error);
@@ -195,8 +209,11 @@ impl<'a> Resolver<'a> {
                 "{written:?}: the model has no dataset named {:?}",
                 parts[0]
             ));
-            error.hint = closest(&parts[0], self.model.datasets.iter().map(|d| d.name.as_str()))
-                .map(|near| format!("Did you mean {near}.{}?", parts[1..].join(".")));
+            error.hint = closest(
+                &parts[0],
+                self.model.datasets.iter().map(|d| d.name.as_str()),
+            )
+            .map(|near| format!("Did you mean {near}.{}?", parts[1..].join(".")));
             return Err(error);
         };
         if let Some(field) = dataset.field(&parts[1]) {
@@ -262,12 +279,18 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
     let mut grain: BTreeSet<String> = BTreeSet::new();
     for name in &request.metrics {
         let Some(metric) = model.metric(name) else {
-            let mut error = unknown(format!("model {:?} has no metric named {name:?}", model.name));
+            let mut error = unknown(format!(
+                "model {:?} has no metric named {name:?}",
+                model.name
+            ));
             error.hint = closest(name, model.metrics.iter().map(|m| m.name.as_str()))
                 .map(|near| format!("Did you mean {near}?"));
             return Err(error);
         };
-        if selected.iter().any(|(_, reference, _)| reference == &metric.name) {
+        if selected
+            .iter()
+            .any(|(_, reference, _)| reference == &metric.name)
+        {
             continue;
         }
         let tree = resolver.metric(metric, &mut Vec::new())?;
@@ -285,7 +308,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
         if !shape.aggregates {
             return Err(Refusal::new(
                 "metric_not_aggregate",
-                format!("metric {:?} has no aggregate, so it has nothing to group", metric.name),
+                format!(
+                    "metric {:?} has no aggregate, so it has nothing to group",
+                    metric.name
+                ),
             ));
         }
         if let Some(bare) = shape.bare.first() {
@@ -301,7 +327,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
         if shape.nested {
             return Err(Refusal::new(
                 "metric_nested_aggregate",
-                format!("metric {:?} puts an aggregate inside an aggregate", metric.name),
+                format!(
+                    "metric {:?} puts an aggregate inside an aggregate",
+                    metric.name
+                ),
             ));
         }
         let own = datasets_of(&shape.aggregated);
@@ -368,7 +397,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
     let mut group_filters = Vec::new();
     for text in &request.filters {
         let refused = |message: String| {
-            Refusal::new("metric_filter_refused", format!("filter {text:?}: {message}"))
+            Refusal::new(
+                "metric_filter_refused",
+                format!("filter {text:?}: {message}"),
+            )
         };
         let mut tree = sql.expression(text).map_err(refused)?;
         let scope = Scope {
@@ -455,7 +487,12 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
             _ => {
                 let routes: Vec<String> = paths
                     .iter()
-                    .map(|p| p.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(" > "))
+                    .map(|p| {
+                        p.iter()
+                            .map(|r| r.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" > ")
+                    })
                     .collect();
                 return Err(Refusal::new(
                     "metric_ambiguous_path",
@@ -485,7 +522,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
     );
     for r in &joins {
         let (Some(from), Some(to)) = (model.dataset(&r.from), model.dataset(&r.to)) else {
-            return Err(Refusal::new("internal", format!("relationship {:?}", r.name)));
+            return Err(Refusal::new(
+                "internal",
+                format!("relationship {:?}", r.name),
+            ));
         };
         let mut keys = Vec::new();
         for (f, t) in r.from_columns.iter().zip(&r.to_columns) {
@@ -503,7 +543,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
         ));
     }
     if !row_filters.is_empty() {
-        let rendered = row_filters.iter().map(render).collect::<Result<Vec<_>, _>>()?;
+        let rendered = row_filters
+            .iter()
+            .map(render)
+            .collect::<Result<Vec<_>, _>>()?;
         text.push_str(&format!("\nWHERE ({})", rendered.join(") AND (")));
     }
     if !dimensions.is_empty() {
@@ -511,7 +554,10 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
         text.push_str(&format!("\nGROUP BY {}", positions.join(", ")));
     }
     if !group_filters.is_empty() {
-        let rendered = group_filters.iter().map(render).collect::<Result<Vec<_>, _>>()?;
+        let rendered = group_filters
+            .iter()
+            .map(render)
+            .collect::<Result<Vec<_>, _>>()?;
         text.push_str(&format!("\nHAVING ({})", rendered.join(") AND (")));
     }
     let mut columns: Vec<Column> = dimensions.into_iter().map(|(c, _, _)| c).collect();
@@ -541,7 +587,11 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
                 ));
                 error.hint = Some(format!(
                     "Order by one of: {}",
-                    columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+                    columns
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
                 return Err(error);
             };
@@ -568,7 +618,11 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
 
 /// The dataset and field a dimension names: `dataset.field`, or a bare field
 /// name exactly one dataset has.
-fn dimension<'m>(model: &'m Model, sql: &Sql, text: &str) -> Result<(&'m Dataset, &'m Field), Refusal> {
+fn dimension<'m>(
+    model: &'m Model,
+    sql: &Sql,
+    text: &str,
+) -> Result<(&'m Dataset, &'m Field), Refusal> {
     let parts = sql
         .expression(text)
         .ok()
@@ -591,21 +645,28 @@ fn dimension<'m>(model: &'m Model, sql: &Sql, text: &str) -> Result<(&'m Dataset
                     let all: Vec<String> = model
                         .datasets
                         .iter()
-                        .flat_map(|d| d.fields.iter().map(move |f| format!("{}.{}", d.name, f.name)))
+                        .flat_map(|d| {
+                            d.fields
+                                .iter()
+                                .map(move |f| format!("{}.{}", d.name, f.name))
+                        })
                         .collect();
                     error.hint = closest(name, all.iter().map(|s| s.as_str()))
                         .map(|near| format!("Did you mean {near}?"));
                     Err(error)
                 }
-                _ => Err(unknown(format!("{name:?} is a field of more than one dataset"))
-                    .with_hint(format!(
-                        "Write {}",
-                        owners
-                            .iter()
-                            .map(|(d, f)| format!("{}.{}", d.name, f.name))
-                            .collect::<Vec<_>>()
-                            .join(" or ")
-                    ))),
+                _ => Err(
+                    unknown(format!("{name:?} is a field of more than one dataset")).with_hint(
+                        format!(
+                            "Write {}",
+                            owners
+                                .iter()
+                                .map(|(d, f)| format!("{}.{}", d.name, f.name))
+                                .collect::<Vec<_>>()
+                                .join(" or ")
+                        ),
+                    ),
+                ),
             }
         }
         [dataset, field] => {
@@ -628,7 +689,10 @@ fn dimension<'m>(model: &'m Model, sql: &Sql, text: &str) -> Result<(&'m Dataset
 }
 
 /// Output names: the field's own, unless two columns would share it.
-fn name_dimensions(dimensions: &mut [(Column, Value, String)], metrics: &[(String, String, Value)]) {
+fn name_dimensions(
+    dimensions: &mut [(Column, Value, String)],
+    metrics: &[(String, String, Value)],
+) {
     let short = |c: &Column| {
         let field = c.reference.rsplit('.').next().unwrap_or(&c.reference);
         match &c.grain {
@@ -642,7 +706,9 @@ fn name_dimensions(dimensions: &mut [(Column, Value, String)], metrics: &[(Strin
             .iter()
             .enumerate()
             .any(|(j, n)| j != i && n.eq_ignore_ascii_case(&names[i]))
-            || metrics.iter().any(|(m, _, _)| m.eq_ignore_ascii_case(&names[i]));
+            || metrics
+                .iter()
+                .any(|(m, _, _)| m.eq_ignore_ascii_case(&names[i]));
         column.name = if clash {
             match &column.grain {
                 Some(grain) => format!("{}_{grain}", column.reference),
@@ -700,7 +766,14 @@ fn paths<'m>(model: &'m Model, from: &str, to: &str) -> Vec<Vec<&'m Relationship
         }
     }
     let mut out = Vec::new();
-    walk(model, from, to, &mut vec![from.to_string()], &mut Vec::new(), &mut out);
+    walk(
+        model,
+        from,
+        to,
+        &mut vec![from.to_string()],
+        &mut Vec::new(),
+        &mut out,
+    );
     out
 }
 

@@ -50,7 +50,9 @@ impl Sql {
             let names = statement
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
-            names.collect::<Result<HashSet<_>, _>>().map_err(|e| e.to_string())?
+            names
+                .collect::<Result<HashSet<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
         let mut sql = Self {
             conn,
@@ -92,7 +94,9 @@ impl Sql {
         let tree = self.serialize(&format!("SELECT {text}\n"))?;
         let statements = tree["statements"].as_array().map_or(0, Vec::len);
         if statements != 1 {
-            return Err(format!("expected one expression, found {statements} statements"));
+            return Err(format!(
+                "expected one expression, found {statements} statements"
+            ));
         }
         let node = &tree["statements"][0]["node"];
         let single = node["type"] == "SELECT_NODE"
@@ -126,9 +130,11 @@ impl Sql {
         tree["statements"][0]["node"]["select_list"] = Value::Array(vec![expression.clone()]);
         let text: String = self
             .conn
-            .query_row("SELECT json_deserialize_sql(?::JSON)", [tree.to_string()], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT json_deserialize_sql(?::JSON)",
+                [tree.to_string()],
+                |row| row.get(0),
+            )
             .map_err(|e| e.to_string())?;
         text.strip_prefix("SELECT ")
             .map(str::to_string)
@@ -163,7 +169,9 @@ impl Sql {
         if statements != 1
             || node["type"] != "SELECT_NODE"
             || table["type"] != "BASE_TABLE"
-            || table["alias"].as_str().is_some_and(|alias| !alias.is_empty())
+            || table["alias"]
+                .as_str()
+                .is_some_and(|alias| !alias.is_empty())
             || !table["sample"].is_null()
             || CLAUSES.iter().any(|clause| !node[*clause].is_null())
             || !empty(&node["modifiers"])
@@ -267,7 +275,8 @@ pub(crate) fn replace_columns<E>(
 ) -> Result<(), E> {
     if let Some(parts) = column_names(value) {
         let mut replacement = f(&parts)?;
-        if let (Some(alias), Some(target)) = (value.get("alias").cloned(), replacement.as_object_mut())
+        if let (Some(alias), Some(target)) =
+            (value.get("alias").cloned(), replacement.as_object_mut())
         {
             target.insert("alias".to_string(), alias);
         }
@@ -334,7 +343,8 @@ impl Sql {
                             inside = true;
                         }
                     }
-                    map.values().for_each(|child| walk(sql, child, inside, shape));
+                    map.values()
+                        .for_each(|child| walk(sql, child, inside, shape));
                 }
                 Value::Array(items) => items
                     .iter()
@@ -421,10 +431,8 @@ mod tests {
     fn aggregates_are_found_by_duckdb_s_catalog() {
         let sql = sql();
         let shape = sql.shape(
-            &sql.expression(
-                "sum(CASE WHEN e.code = 'x' THEN 1 END) * 1.0 / count(e.id) + e.bare",
-            )
-            .unwrap(),
+            &sql.expression("sum(CASE WHEN e.code = 'x' THEN 1 END) * 1.0 / count(e.id) + e.bare")
+                .unwrap(),
         );
         assert!(shape.aggregates);
         assert_eq!(shape.aggregated.len(), 2);
@@ -435,9 +443,15 @@ mod tests {
             "median(e.x)",
             "count(*)",
         ] {
-            assert!(sql.shape(&sql.expression(text).unwrap()).aggregates, "{text}");
+            assert!(
+                sql.shape(&sql.expression(text).unwrap()).aggregates,
+                "{text}"
+            );
         }
-        let window = sql.shape(&sql.expression("sum(count(e.x)) OVER (ORDER BY e.t)").unwrap());
+        let window = sql.shape(
+            &sql.expression("sum(count(e.x)) OVER (ORDER BY e.t)")
+                .unwrap(),
+        );
         assert_eq!(window.window.as_deref(), Some("sum"));
         assert!(!sql.shape(&sql.expression("lower(e.x)").unwrap()).aggregates);
     }

@@ -147,7 +147,6 @@ pub(crate) struct Dataset {
 
 pub(crate) struct Field {
     pub name: String,
-    pub dataset: String,
     pub is_time: bool,
     pub description: Option<String>,
     pub label: Option<String>,
@@ -185,24 +184,32 @@ pub(crate) struct Relationship {
 
 impl Model {
     pub(crate) fn dataset(&self, name: &str) -> Option<&Dataset> {
-        self.datasets.iter().find(|d| d.name.eq_ignore_ascii_case(name))
+        self.datasets
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(name))
     }
 
     pub(crate) fn metric(&self, name: &str) -> Option<&Metric> {
-        self.metrics.iter().find(|m| m.name.eq_ignore_ascii_case(name))
+        self.metrics
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
     }
 }
 
 impl Dataset {
     pub(crate) fn field(&self, name: &str) -> Option<&Field> {
-        self.fields.iter().find(|f| f.name.eq_ignore_ascii_case(name))
+        self.fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(name))
     }
 }
 
 /// The model file for `path`: the file itself, or `model.ossie.yaml` in a
 /// folder.
 pub(crate) fn locate(path: Option<&Path>) -> PathBuf {
-    let path = path.map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let path = path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     if path.is_dir() {
         path.join("model.ossie.yaml")
     } else {
@@ -222,23 +229,25 @@ pub(crate) fn load(path: &Path, sql: &Sql) -> Result<Model, Refusal> {
     if size > MAX_MODEL_BYTES {
         return Err(Refusal::new(
             "model_invalid",
-            format!("{} is {size} bytes; a model is at most {MAX_MODEL_BYTES}", path.display()),
+            format!(
+                "{} is {size} bytes; a model is at most {MAX_MODEL_BYTES}",
+                path.display()
+            ),
         ));
     }
     let bytes = std::fs::read(path).map_err(|e| unreadable(&e))?;
     let text = String::from_utf8(bytes)
         .map_err(|_| Refusal::new("model_invalid", format!("{} is not UTF-8", path.display())))?;
     let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    let raw: RawModel = serde_saphyr::from_str(&text).map_err(|e| {
-        Refusal::new("model_invalid", format!("{}: {e}", path.display()))
-    })?;
+    let raw: RawModel = serde_saphyr::from_str(&text)
+        .map_err(|e| Refusal::new("model_invalid", format!("{}: {e}", path.display())))?;
     build(raw, path.to_path_buf(), sha256, sql)
 }
 
 #[cfg(test)]
 pub(crate) fn from_str(text: &str, sql: &Sql) -> Result<Model, Refusal> {
-    let raw: RawModel = serde_saphyr::from_str(text)
-        .map_err(|e| Refusal::new("model_invalid", e.to_string()))?;
+    let raw: RawModel =
+        serde_saphyr::from_str(text).map_err(|e| Refusal::new("model_invalid", e.to_string()))?;
     build(raw, PathBuf::from("model.ossie.yaml"), String::new(), sql)
 }
 
@@ -261,7 +270,10 @@ fn duplicates<'a>(what: &str, names: impl Iterator<Item = &'a str>) -> Result<()
 
 fn build(raw: RawModel, path: PathBuf, sha256: String, sql: &Sql) -> Result<Model, Refusal> {
     duplicates("dataset", raw.datasets.iter().map(|d| d.name.as_str()))?;
-    duplicates("relationship", raw.relationships.iter().map(|r| r.name.as_str()))?;
+    duplicates(
+        "relationship",
+        raw.relationships.iter().map(|r| r.name.as_str()),
+    )?;
     let mut metrics = Vec::new();
     let mut datasets = Vec::new();
     for raw_dataset in raw.datasets {
@@ -281,7 +293,6 @@ fn build(raw: RawModel, path: PathBuf, sha256: String, sql: &Sql) -> Result<Mode
             .into_iter()
             .map(|f| Field {
                 expression: expression(&f.expression, sql),
-                dataset: dataset_name.clone(),
                 is_time: f.dimension.as_ref().is_some_and(|d| d.is_time),
                 name: f.name,
                 description: f.description,
@@ -328,8 +339,10 @@ fn build(raw: RawModel, path: PathBuf, sha256: String, sql: &Sql) -> Result<Mode
     }
     duplicates("metric", metrics.iter().map(|m| m.name.as_str()))?;
 
-    let by_name: HashMap<String, &Dataset> =
-        datasets.iter().map(|d| (d.name.to_lowercase(), d)).collect();
+    let by_name: HashMap<String, &Dataset> = datasets
+        .iter()
+        .map(|d| (d.name.to_lowercase(), d))
+        .collect();
     let mut relationships = Vec::new();
     for r in raw.relationships {
         let (Some(from), Some(to)) = (
@@ -341,7 +354,11 @@ fn build(raw: RawModel, path: PathBuf, sha256: String, sql: &Sql) -> Result<Mode
                 r.name,
                 r.from,
                 r.to,
-                if by_name.contains_key(&r.from.to_lowercase()) { &r.to } else { &r.from }
+                if by_name.contains_key(&r.from.to_lowercase()) {
+                    &r.to
+                } else {
+                    &r.from
+                }
             )));
         };
         if r.from_columns.is_empty() || r.from_columns.len() != r.to_columns.len() {
@@ -353,7 +370,11 @@ fn build(raw: RawModel, path: PathBuf, sha256: String, sql: &Sql) -> Result<Mode
         let key: HashSet<String> = r.to_columns.iter().map(|c| c.to_lowercase()).collect();
         let is_key = |columns: &Vec<String>| {
             !columns.is_empty()
-                && columns.iter().map(|c| c.to_lowercase()).collect::<HashSet<_>>() == key
+                && columns
+                    .iter()
+                    .map(|c| c.to_lowercase())
+                    .collect::<HashSet<_>>()
+                    == key
         };
         let many_to_one = is_key(&to.primary_key) || to.unique_keys.iter().any(is_key);
         relationships.push(Relationship {
@@ -395,7 +416,11 @@ fn expression(raw: &RawExpression, sql: &Sql) -> Expression {
                 "metric_no_dialect",
                 format!(
                     "no expression in a dialect DuckLocal runs (found {}; reads {})",
-                    if found.is_empty() { "none".to_string() } else { found.join(", ") },
+                    if found.is_empty() {
+                        "none".to_string()
+                    } else {
+                        found.join(", ")
+                    },
                     DIALECTS.join(", ")
                 ),
             )),
@@ -427,7 +452,10 @@ pub(crate) fn synonyms(context: &Option<Value>) -> Vec<String> {
 }
 
 /// `name` among `candidates` that is closest, for "did you mean".
-pub(crate) fn closest<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+pub(crate) fn closest<'a>(
+    name: &str,
+    candidates: impl Iterator<Item = &'a str>,
+) -> Option<&'a str> {
     let name = name.to_lowercase();
     candidates
         .map(|c| (crate::cli::edit_distance(&name, &c.to_lowercase()), c))
