@@ -287,6 +287,7 @@ pub(crate) fn preload_extensions(conn: &Connection) {
 
 /// Put the process on `connection`, releasing whatever it was on.
 fn replace(connection: Option<Connection>) -> Result<()> {
+    crate::overview_cache::data_changed();
     if let Some(conn) = &connection {
         preload_extensions(conn);
     }
@@ -471,6 +472,7 @@ pub fn attach_data_file_as(path: &str, view_name: &str) -> Result<()> {
 }
 
 pub fn attach_data_file_as_of(conn: &Connection, path: &str, view_name: &str) -> Result<()> {
+    crate::overview_cache::data_changed();
     let expanded = expand_tilde(path);
     let file = std::path::Path::new(&expanded);
     if !file.exists() {
@@ -650,6 +652,7 @@ pub fn database_alias_of(conn: &Connection, path: &str, reserved: &[String]) -> 
 /// through the sqlite extension; anything else is taken for DuckDB, which
 /// creates the file when it does not exist yet (and refuses to, read-only).
 pub fn attach_database_of(conn: &Connection, attachment: &DatabaseAttachment) -> Result<()> {
+    crate::overview_cache::data_changed();
     let expanded = expand_tilde(&attachment.path);
     let mut options = Vec::new();
     if crate::storage::file_kind(&expanded) == Some(crate::storage::FileKind::Sqlite) {
@@ -681,6 +684,7 @@ pub fn attach_database_of(conn: &Connection, attachment: &DatabaseAttachment) ->
 /// moves back to the open database first: DuckDB will not detach the
 /// database in use.
 pub fn detach_database_of(conn: &Connection, alias: &str) -> Result<()> {
+    crate::overview_cache::data_changed();
     let (current, default): (String, Option<String>) = conn.query_row(
         "SELECT current_database(),
                 (SELECT database_name FROM duckdb_databases()

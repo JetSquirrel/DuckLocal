@@ -9,6 +9,7 @@ pub mod geo;
 mod language_toggle_tests;
 pub mod notebook;
 pub mod palette;
+pub mod column_overview;
 pub mod results;
 pub mod run;
 pub mod save_database;

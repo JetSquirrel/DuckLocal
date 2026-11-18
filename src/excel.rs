@@ -24,6 +24,7 @@ pub fn sheets(path: &str) -> Result<Vec<String>> {
 /// when the sheet has no rows at all, so the caller can skip it rather than
 /// register a name for nothing.
 pub fn attach_sheet(conn: &Connection, path: &str, sheet: &str, table_name: &str) -> Result<bool> {
+    crate::overview_cache::data_changed();
     import(conn, path, sheet, table_name, false)
 }
 

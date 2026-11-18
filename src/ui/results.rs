@@ -27,6 +27,7 @@ use crate::query::{
     ColumnKind, ColumnMeta, ExportFormat, PlanNode, QueryOutcome, QueryProfile, QueryResult,
 };
 use crate::ui::chart::{parse_number, ChartData, ChartKind, ChartPanel};
+use crate::ui::column_overview::ColumnOverviewPanel;
 use crate::ui::encoding::{Aggregate, Encoding};
 use crate::ui::RUN_QUERY_KEYSTROKE;
 use gpui_kit::assets::IconName as AssetIconName;
@@ -36,16 +37,6 @@ enum ResultsTab {
     Table,
     Chart,
     Overview,
-}
-
-/// The overview tab's content. It summarizes the current result's query,
-/// computed when the tab is shown and dropped when the result changes.
-enum OverviewState {
-    /// Not computed for the current result.
-    Idle,
-    Loading,
-    Ready(Rc<crate::overview::Overview>),
-    Failed(String),
 }
 
 /// The rows a column pick draws, grouped by DuckDB over the whole result.
@@ -632,10 +623,9 @@ pub struct ResultsPanel {
     table: Entity<TableState<ResultTableDelegate>>,
     /// SQL that produced the current row set, kept for export.
     rows_sql: Option<String>,
-    overview: OverviewState,
-    /// Bumped by every overview request, so an answer that arrives after a
-    /// newer request — or a new result — is dropped rather than shown.
-    overview_request: u64,
+    /// The overview tab: the current result's columns, profiled lazily.
+    /// Cleared, and its work cancelled, whenever the result changes.
+    overview: Entity<ColumnOverviewPanel>,
     /// Chart rows derived from the current result. Built on first use of the
     /// chart tab and reused across frames; `None` means not yet derived.
     chart_data: Option<Rc<ChartData>>,
@@ -761,8 +751,7 @@ impl ResultsPanel {
         Self {
             view: ResultView::Empty,
             tab: ResultsTab::Table,
-            overview: OverviewState::Idle,
-            overview_request: 0,
+            overview: cx.new(|_| ColumnOverviewPanel::new()),
             table,
             rows_sql: None,
             chart_data: None,
@@ -817,8 +806,9 @@ impl ResultsPanel {
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
         self.primary = None;
         self.view = ResultView::Running;
-        self.overview = OverviewState::Idle;
-        self.overview_request += 1;
+        // The query about to run waits for the window's connection: let go of
+        // it now rather than after the batch in flight.
+        self.overview.update(cx, |overview, cx| overview.clear(cx));
         self.script.clear();
         cx.notify();
     }
@@ -890,8 +880,7 @@ impl ResultsPanel {
         self.chart_data = None;
         self.chart_request += 1;
         self.grouped = Grouped::Idle;
-        self.overview = OverviewState::Idle;
-        self.overview_request += 1;
+        self.overview.update(cx, |overview, cx| overview.clear(cx));
         match shown {
             Shown::Rows(result) => {
                 self.table.update(cx, |table, cx| {
@@ -927,11 +916,12 @@ impl ResultsPanel {
         cx.notify();
     }
 
-    /// Summarize the current result's columns, unless that is done or under
-    /// way. The query runs again, whole: the overview describes the result,
-    /// not the rows the grid kept.
+    /// List the current result's columns for the overview, unless that is
+    /// done or under way. The query runs again: the overview describes the
+    /// result, not the rows the grid kept. Columns are profiled as they are
+    /// looked at, not here.
     fn load_overview(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.overview, OverviewState::Idle) {
+        if !self.overview.read(cx).is_idle() {
             return;
         }
         let Some(sql) = self
@@ -942,7 +932,9 @@ impl ResultsPanel {
             return;
         };
         if !crate::query::is_subquery(&sql) {
-            self.overview = OverviewState::Failed(tr("results.overview.not_query").to_string());
+            self.overview.update(cx, |overview, cx| {
+                overview.fail(tr("results.overview.not_query"), cx)
+            });
             return;
         }
         // The statement without its `;`, and the closing paren on a line of
@@ -950,35 +942,14 @@ impl ResultsPanel {
         let relation = match crate::query::single_statement(&sql) {
             Ok(statement) => overview_relation(statement),
             Err(error) => {
-                self.overview = OverviewState::Failed(error.to_string());
+                self.overview
+                    .update(cx, |overview, cx| overview.fail(error.to_string(), cx));
                 return;
             }
         };
-        self.overview_request += 1;
-        let request = self.overview_request;
-        self.overview = OverviewState::Loading;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let label = tr("results.overview.query");
-            let result = smol::unblock(move || {
-                crate::db::with_connection(|conn| {
-                    crate::overview::overview_of(conn, &relation, label)
-                })
-            })
-            .await;
-            this.update(cx, |this, cx| {
-                if this.overview_request != request {
-                    return;
-                }
-                this.overview = match result {
-                    Ok(overview) => OverviewState::Ready(Rc::new(overview)),
-                    Err(e) => OverviewState::Failed(e.to_string()),
-                };
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.overview.update(cx, |overview, cx| {
+            overview.load(relation, tr("results.overview.query").into(), cx)
+        });
     }
 
     /// The current result's query as a relation the chart can wrap, when it
@@ -1556,34 +1527,9 @@ impl ResultsPanel {
     }
 
     fn render_overview_content(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        match (&self.view, &self.overview) {
-            (ResultView::Running, _) | (_, OverviewState::Loading) => v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(
-                    Icon::new(IconName::LoaderCircle)
-                        .large()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(tr("results.overview.running")),
-                )
-                .into_any_element(),
-            (_, OverviewState::Failed(message)) => div()
-                .size_full()
-                .p_3()
-                .child(
-                    Alert::error("overview-error", message.clone())
-                        .title(tr("results.failed.title")),
-                )
-                .into_any_element(),
-            (_, OverviewState::Ready(overview)) => render_overview(overview, cx),
-            (_, OverviewState::Idle) => empty_state(tr("results.overview.empty"), None, cx),
+        match &self.view {
+            ResultView::Running => running_state(cx),
+            _ => self.overview.clone().into_any_element(),
         }
     }
 
@@ -1940,236 +1886,6 @@ fn shown_clone(shown: &Shown) -> Shown {
     }
 }
 
-/// Shared "query running" placeholder, used by both the table and chart tabs.
-/// Width of an overview row's name column, and of its distribution.
-const OVERVIEW_NAME_WIDTH: f32 = 180.;
-const OVERVIEW_CHART_WIDTH: f32 = 168.;
-const OVERVIEW_CHART_HEIGHT: f32 = 28.;
-
-/// Every column of a result, one row each: its name and type, how much of it
-/// is NULL, how many values it takes, its range, and its shape.
-fn render_overview(
-    overview: &crate::overview::Overview,
-    cx: &mut Context<ResultsPanel>,
-) -> AnyElement {
-    let rows = overview.row_count.max(0) as u64;
-    let lines = overview
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(ix, column)| render_overview_column(ix, column, rows, cx))
-        .collect::<Vec<_>>();
-    v_flex()
-        .size_full()
-        .child(
-            h_flex().px_3().py_2().child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(trf(
-                        "results.overview.summary",
-                        &[
-                            &overview.label,
-                            &group_digits(rows),
-                            &overview.columns.len().to_string(),
-                            &crate::state::format_duration(overview.elapsed_ms as i64),
-                        ],
-                    )),
-            ),
-        )
-        .child(
-            v_flex()
-                .id("overview-scroll")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .px_3()
-                .pb_3()
-                .children(lines),
-        )
-        .into_any_element()
-}
-
-fn render_overview_column(
-    ix: usize,
-    column: &crate::overview::ColumnOverview,
-    rows: u64,
-    cx: &mut Context<ResultsPanel>,
-) -> impl IntoElement {
-    use crate::overview::Distribution;
-    let mono = cx.theme().mono_font_family.clone();
-    let muted = cx.theme().muted_foreground;
-    let null_pct = (column.null_fraction * 100.0).clamp(0.0, 100.0);
-    let range = match (&column.min, &column.max) {
-        (Some(min), Some(max)) if min != max => Some(format!("{min} – {max}")),
-        (Some(min), _) => Some(min.clone()),
-        _ => None,
-    };
-
-    let distribution = match &column.distribution {
-        Distribution::Bins(bins) => {
-            let peak = bins.iter().map(|(_, n)| *n).max().unwrap_or(0).max(1) as f32;
-            let width = (OVERVIEW_CHART_WIDTH / bins.len().max(1) as f32 - 1.).max(1.);
-            h_flex()
-                .w(px(OVERVIEW_CHART_WIDTH))
-                .h(px(OVERVIEW_CHART_HEIGHT))
-                .flex_none()
-                .items_end()
-                .gap(px(1.))
-                .children(bins.iter().map(|(_, n)| {
-                    div()
-                        .w(px(width))
-                        // A bin with rows stays visible, however small.
-                        .h(px(if *n == 0 {
-                            0.
-                        } else {
-                            (OVERVIEW_CHART_HEIGHT * *n as f32 / peak).max(2.)
-                        }))
-                        .bg(cx.theme().primary.opacity(0.7))
-                }))
-                .into_any_element()
-        }
-        Distribution::Top(values) => {
-            let estimated = values.iter().all(|(_, n)| n.is_none());
-            v_flex()
-                .w(px(OVERVIEW_CHART_WIDTH))
-                .flex_none()
-                .gap(px(2.))
-                .when(estimated, |this| {
-                    this.child(
-                        div()
-                            .text_color(muted)
-                            .child(tr("results.overview.estimated")),
-                    )
-                })
-                .children(values.iter().enumerate().map(|(rank, (value, n))| {
-                    let share = n.map(|n| n as f32 / rows.max(1) as f32).unwrap_or(0.);
-                    h_flex()
-                        .id(("overview-top", ix * 16 + rank))
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .relative()
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .bottom_0()
-                                        .left_0()
-                                        .w(relative(share))
-                                        .bg(cx.theme().primary.opacity(0.15)),
-                                )
-                                .child(div().px_1().truncate().child(value.clone())),
-                        )
-                        .when_some(*n, |this, n| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .text_color(muted)
-                                    .child(format!("{:.0}%", share * 100.)),
-                            )
-                            .tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(group_digits(n))
-                                    .build(window, cx)
-                            })
-                        })
-                }))
-                .into_any_element()
-        }
-        Distribution::None => div()
-            .w(px(OVERVIEW_CHART_WIDTH))
-            .flex_none()
-            .into_any_element(),
-    };
-
-    h_flex()
-        .id(("overview-column", ix))
-        .w_full()
-        .py_2()
-        .gap_4()
-        .items_center()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .text_xs()
-        .child(
-            v_flex()
-                .w(px(OVERVIEW_NAME_WIDTH))
-                .flex_none()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .truncate()
-                        .child(column.name.clone()),
-                )
-                .child(
-                    div()
-                        .font_family(mono.clone())
-                        .text_color(muted)
-                        .truncate()
-                        .child(column.data_type.clone()),
-                ),
-        )
-        .child(
-            v_flex()
-                .w(px(96.))
-                .flex_none()
-                .gap_1()
-                .child(
-                    div()
-                        .when(null_pct > 0., |d| d.text_color(cx.theme().warning))
-                        .when(null_pct == 0., |d| d.text_color(muted))
-                        .child(trf("results.overview.nulls", &[&format!("{null_pct:.1}%")])),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(4.))
-                        .rounded_sm()
-                        .bg(cx.theme().border)
-                        .child(
-                            div()
-                                .h_full()
-                                .rounded_sm()
-                                .w(relative((null_pct / 100.) as f32))
-                                .bg(cx.theme().warning),
-                        ),
-                ),
-        )
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_1()
-                .text_color(muted)
-                .child(div().child(trf(
-                    "results.overview.distinct",
-                    &[&group_digits(column.approx_unique.max(0) as u64)],
-                )))
-                .when_some(range, |this, range| {
-                    this.child(
-                        div()
-                            .font_family(mono.clone())
-                            .text_color(cx.theme().foreground)
-                            .truncate()
-                            .child(range),
-                    )
-                })
-                .when_some(column.median.clone(), |this, median| {
-                    this.child(
-                        div()
-                            .font_family(mono.clone())
-                            .truncate()
-                            .child(trf("results.overview.median", &[&median])),
-                    )
-                }),
-        )
-        .child(distribution)
-}
-
 /// Widest a time bar gets: the operator that took every second of the query.
 const PROFILE_BAR_WIDTH: f32 = 96.;
 /// How far each level of the plan tree is indented.
@@ -2325,7 +2041,7 @@ fn flatten_plan<'a>(node: &'a PlanNode, depth: usize, out: &mut Vec<(usize, &'a 
 }
 
 /// `1234567` → `1,234,567`.
-fn group_digits(n: u64) -> String {
+pub(crate) fn group_digits(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (ix, ch) in digits.chars().enumerate() {
@@ -2549,7 +2265,7 @@ web"
             let statement = crate::query::single_statement(sql).unwrap();
             let relation = overview_relation(statement);
             assert!(
-                crate::overview::overview_of(&conn, &relation, "query").is_ok(),
+                crate::overview::overview_of(&conn, &relation).is_ok(),
                 "{sql}"
             );
         }
@@ -2684,7 +2400,9 @@ mod profile_render_tests {
              FROM range(20000)",
         )
         .unwrap();
-        let overview = crate::overview::overview_of(&conn, "t", "t").unwrap();
+        let (shell, mut columns) = crate::overview::overview_of(&conn, "t").unwrap();
+        // Three profiled, one not yet, one failed.
+        columns.truncate(3);
 
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -2709,9 +2427,12 @@ mod profile_render_tests {
         cx.update_window(window, |_, window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.tab = super::ResultsTab::Overview;
-                panel.overview = super::OverviewState::Ready(std::rc::Rc::new(overview));
+                panel.overview.update(cx, |overview, cx| {
+                    overview.show_profiled("t", shell, columns, cx)
+                });
                 cx.notify();
             });
+            // The list, its header and the first column's details.
             window.render_frame(cx);
         })
         .unwrap();
