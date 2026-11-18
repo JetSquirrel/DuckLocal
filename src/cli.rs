@@ -842,7 +842,7 @@ pub(crate) fn write_result(
         Format::Markdown => Ok(crate::query::format_markdown(&result)
             .trim_end()
             .to_string()),
-        Format::Html => Ok(crate::html_page::format_html(&result, &sql)),
+        Format::Html => Ok(crate::html_page::format_html(&result, sql)),
         Format::Json => {
             hotpath::measure_block!("cli::serialize_json", serde_json::to_string(&result))
                 .map_err(|e| CliError::failure("output", e))
