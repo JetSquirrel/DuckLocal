@@ -233,7 +233,7 @@ fn a_time_field_is_truncated_to_its_grain() {
         &model,
         &request(&["event_count"], &["events.seen:hour"]),
     );
-    assert_eq!(compiled.columns[0].name, "at_hour");
+    assert_eq!(compiled.columns[0].name, "seen_hour");
     assert_eq!(compiled.columns[0].grain.as_deref(), Some("hour"));
     assert_eq!(
         rows(&compiled.sql),
