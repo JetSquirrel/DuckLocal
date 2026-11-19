@@ -176,6 +176,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
 
     // ── src/ui/sidebar.rs ───────────────────────────────────────────────
     ("sidebar.tab.schema", "表结构", "Schema"),
+    ("sidebar.tab.metrics", "指标", "Metrics"),
     ("sidebar.tab.history", "查询历史", "History"),
     ("sidebar.tab.extensions", "扩展", "Extensions"),
     ("sidebar.extensions.refresh", "刷新扩展列表", "Refresh extensions"),
@@ -252,6 +253,50 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.metrics.views", "数据集来自 {}", "Datasets from {}"),
     ("sidebar.metrics.unreadable", "读不出", "unreadable"),
     ("sidebar.metrics.not_queryable", "不可查询", "not queryable"),
+
+    // ── src/ui/sidebar/metrics.rs ───────────────────────────────────────
+    (
+        "sidebar.builder.empty",
+        "没有语义模型。\n打开过的仪表盘旁边的 model.ossie.yaml 会列在这里，也可以选择一个模型文件。",
+        "No semantic model.\nA model.ossie.yaml beside a dashboard you have opened shows here, or pick a model file.",
+    ),
+    ("sidebar.builder.pick", "打开模型文件…", "Open model file…"),
+    ("sidebar.builder.pick_prompt", "打开语义模型", "Open semantic model"),
+    ("sidebar.builder.reload", "重新读取模型", "Reload the model"),
+    ("sidebar.builder.open_model", "用这个模型组合查询", "Build a query from this model"),
+    ("sidebar.builder.loading", "正在读取模型…", "Reading the model…"),
+    ("sidebar.builder.views", "数据集来自 {}", "Datasets from {}"),
+    (
+        "sidebar.builder.no_views",
+        "数据集按名称读取当前数据库",
+        "Datasets are read by name from the open database",
+    ),
+    ("sidebar.builder.metrics", "指标", "Metrics"),
+    ("sidebar.builder.no_metrics", "模型中没有指标。", "The model has no metrics."),
+    ("sidebar.builder.by", "按字段拆分", "Break down by"),
+    ("sidebar.builder.time", "时间", "time"),
+    ("sidebar.builder.grain.none", "原值", "as is"),
+    ("sidebar.builder.where", "条件", "Where"),
+    (
+        "sidebar.builder.where.placeholder",
+        "events.user_name = 'ci-deploy'",
+        "events.user_name = 'ci-deploy'",
+    ),
+    ("sidebar.builder.pick_a_metric", "勾选一个指标来生成查询。", "Tick a metric to build a query."),
+    ("sidebar.builder.compiling", "正在生成 SQL…", "Writing the SQL…"),
+    ("sidebar.builder.ready", "{} 列，按 {} 的行计算", "{} columns, counting rows of {}"),
+    ("sidebar.builder.open", "在编辑器中打开", "Open in editor"),
+    (
+        "sidebar.builder.open.tooltip",
+        "在新的查询标签页中打开 SQL，并带上仪表盘的数据源",
+        "Opens the SQL in a new query tab, with the dashboard's sources defined in front of it",
+    ),
+    ("sidebar.builder.run", "运行", "Run"),
+    (
+        "sidebar.builder.busy",
+        "已有查询在运行；SQL 已在新标签页中打开，可稍后运行。",
+        "A query is already running. The SQL is open in a new tab to run when it finishes.",
+    ),
     ("sidebar.s3.configured", "已配置", "Configured"),
     ("sidebar.s3.loading", "加载中…", "Loading…"),
     ("sidebar.s3.empty", "（空）", "(Empty)"),
