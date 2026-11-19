@@ -19,11 +19,11 @@ use gpui_kit::{rgb, App, Hsla, Rgba};
 pub const SLOTS: usize = 8;
 
 /// Blue, orange, aqua, yellow, magenta, green, violet, red, on a light surface.
-const LIGHT: [u32; SLOTS] = [
+pub(crate) const LIGHT: [u32; SLOTS] = [
     0x2a78d6, 0xeb6834, 0x1baf7a, 0xeda100, 0xe87ba4, 0x008300, 0x6250d6, 0xe34948,
 ];
 /// The same hues, stepped for a dark surface.
-const DARK: [u32; SLOTS] = [
+pub(crate) const DARK: [u32; SLOTS] = [
     0x3987e5, 0xd95926, 0x199e70, 0xc98500, 0xd55181, 0x008300, 0x9085e9, 0xe66767,
 ];
 

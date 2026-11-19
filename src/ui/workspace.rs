@@ -1803,6 +1803,7 @@ impl Workspace {
             ),
             _ => (None, None, false, false, false),
         };
+        let (host_for_share, path_for_share) = (host.clone(), path.clone());
 
         h_flex()
             .w_full()
@@ -1824,7 +1825,7 @@ impl Workspace {
                     .truncate()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .children(path.map(|path| path.to_string_lossy().to_string())),
+                    .children(path.as_ref().map(|path| path.to_string_lossy().to_string())),
             )
             .child(
                 Button::new("dashboard-save")
@@ -1868,6 +1869,28 @@ impl Workspace {
                         this.on_click(cx.listener(move |_, _, _, cx| {
                             host.update(cx, |dashboard, cx| dashboard.toggle_source(cx));
                         }))
+                    }),
+            )
+            .child(
+                // Icon-only like its neighbours; the formats are in its menu,
+                // HTML first and the room for more below it.
+                Button::new("dashboard-share")
+                    .outline()
+                    .small()
+                    .icon(AssetIcon::Share)
+                    .tooltip(tr("dashboard.share.tooltip"))
+                    .disabled(running || showing_source)
+                    .dropdown_menu(move |menu, _, _| {
+                        let (host, path) = (host_for_share.clone(), path_for_share.clone());
+                        menu.item(
+                            PopupMenuItem::new(tr("dashboard.share.html"))
+                                .icon(AssetIcon::FileCode)
+                                .on_click(move |_, window, cx| {
+                                    if let Some((host, path)) = host.as_ref().zip(path.as_ref()) {
+                                        export_dashboard_html(host, path, window, cx);
+                                    }
+                                }),
+                        )
                     }),
             )
             .child(
@@ -2061,6 +2084,58 @@ fn outcome_count(outcome: &QueryOutcome) -> i64 {
         QueryOutcome::Rows(result) => result.row_count() as i64,
         QueryOutcome::Affected { count, .. } => *count as i64,
     }
+}
+
+/// Ask where, beside the spec by default, and write the dashboard there as
+/// one HTML page. The page is rendered before the panel opens, so what is
+/// saved is what was on screen when the button was pressed.
+fn export_dashboard_html(
+    host: &Entity<crate::spec::view::Dashboard>,
+    spec_path: &std::path::Path,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(page) = host.read(cx).export_html() else {
+        window.push_notification(
+            Notification::warning(tr("dashboard.export_html.not_ready")),
+            cx,
+        );
+        return;
+    };
+    let directory = spec_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let name = spec_path
+        .file_stem()
+        .map(|stem| format!("{}.html", stem.to_string_lossy()))
+        .unwrap_or_else(|| "dashboard.html".to_string());
+    let rx = cx.prompt_for_new_path(&directory, Some(&name));
+    window
+        .spawn(cx, async move |cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let written = {
+                let path = path.clone();
+                smol::unblock(move || std::fs::write(&path, page)).await
+            };
+            cx.update(move |window, cx| {
+                let shown = crate::db::compact_home(&path.to_string_lossy());
+                match written {
+                    Ok(()) => window.push_notification(
+                        Notification::info(trf("dashboard.export_html.done", &[&shown])),
+                        cx,
+                    ),
+                    Err(e) => window.push_notification(
+                        Notification::error(trf("dashboard.export_html.failed", &[&e.to_string()])),
+                        cx,
+                    ),
+                }
+            })
+            .ok();
+        })
+        .detach();
 }
 
 #[cfg(test)]

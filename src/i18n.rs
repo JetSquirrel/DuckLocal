@@ -365,8 +365,9 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("results.overview.median", "中位数 {}", "median {}"),
     ("results.overview.estimated", "高频值（估算）", "Common values (estimated)"),
     ("results.summary", "{} 行，{} 列", "{} rows, {} columns"),
-    ("results.export_csv", "导出 CSV", "Export CSV"),
-    ("results.export_parquet", "导出 Parquet", "Export Parquet"),
+    ("results.export", "导出", "Export"),
+    ("results.export.csv", "CSV", "CSV"),
+    ("results.export.parquet", "Parquet", "Parquet"),
     ("results.running", "正在运行查询…", "Running query…"),
     ("results.truncated", "结果已截断到 {} 行。", "Results truncated to {} rows."),
     ("results.affected", "完成：{} 行受影响，耗时 {}", "Done: {} rows affected, took {}"),
@@ -1097,6 +1098,26 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
 
     // ── src/spec/view.rs ──────────────────────────────────────────────────
+    ("dashboard.share.tooltip", "分享", "Share"),
+    ("dashboard.share.html", "HTML", "HTML"),
+    ("dashboard.export_html.done", "已导出到 {}", "Exported to {}."),
+    ("dashboard.export_html.failed", "导出失败：{}", "Export failed: {}"),
+    (
+        "dashboard.export_html.not_ready",
+        "看板还没跑完或有错误，暂时不能导出。",
+        "The dashboard has not finished running or has errors; nothing to export yet.",
+    ),
+    (
+        "dashboard.export_html.as_table",
+        "这类图表在 HTML 中以数据表展示。",
+        "This plot is shown as its data in the HTML export.",
+    ),
+    (
+        "dashboard.export_html.rows_cut",
+        "只列出了前 {} 行。",
+        "Only the first {} rows are listed.",
+    ),
+    ("dashboard.export_html.empty", "没有可画的数据。", "No data to draw."),
     (
         "dashboard.reload.tooltip",
         "重新读取 spec 文件，并重跑它的所有查询",

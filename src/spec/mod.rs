@@ -13,6 +13,7 @@
 //! src/spec/prepare.rs  a plot's data, derived from its query's result once
 //! src/spec/plot.rs     the plots the catalog charts cannot draw honestly
 //! src/spec/highlight.rs  colours for the source editor, SQL heredocs included
+//! src/spec/html.rs    the dashboard as it stands, as one HTML file
 //! src/spec/view.rs     the view half: a `.dash` file as a workspace tab
 //! src/spec/tabs.rs     which specs are open, remembered between launches
 //! src/spec/watch.rs    noticing edits made to an open spec outside the window
@@ -35,6 +36,7 @@ pub mod filter;
 pub mod format;
 pub mod highlight;
 pub mod histogram;
+pub mod html;
 pub mod lsp;
 pub mod model;
 pub mod plot;
