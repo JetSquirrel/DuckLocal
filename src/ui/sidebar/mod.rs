@@ -1,5 +1,6 @@
-//! Left sidebar: Schema / 查询历史 / 扩展 tabs. The schema page renders the
-//! catalog as a tree (数据库 → schema → 表/视图 → 列); the history page lists
+//! Left sidebar: Schema / 指标 / 查询历史 / 扩展 tabs. The schema page renders the
+//! catalog as a tree (数据库 → schema → 表/视图 → 列); the metrics page builds a
+//! request to a semantic model from ticked boxes; the history page lists
 //! recent queries and refills the active editor on click; the extensions
 //! page lists DuckDB's extensions and installs, loads or updates them.
 //!
@@ -11,10 +12,12 @@
 //! src/ui/sidebar/actions.rs  refresh, remove-file, alter-type actions
 //! src/ui/sidebar/selection.rs  files picked together, columns ticked
 //! src/ui/sidebar/extensions.rs  the 扩展 page
+//! src/ui/sidebar/metrics.rs  the 指标 page: metrics, fields and a condition, ticked
 //! ```
 
 mod actions;
 mod extensions;
+mod metrics;
 mod model;
 mod s3;
 mod selection;
@@ -49,6 +52,7 @@ use crate::state::{
 use crate::ui::workspace::Workspace;
 
 use self::extensions::ExtensionList;
+use self::metrics::MetricsPage;
 use self::model::{ColumnRef, MetricRef};
 use self::model::{SchemaNodeKind, SchemaNodeMeta};
 use self::s3::S3Browse;
@@ -62,8 +66,27 @@ use self::tree::{build_tree_items, filter_tree};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SidebarTab {
     Schema,
+    Metrics,
     History,
     Extensions,
+}
+
+impl SidebarTab {
+    /// In the order the tab bar shows them.
+    const ALL: [SidebarTab; 4] = [
+        SidebarTab::Schema,
+        SidebarTab::Metrics,
+        SidebarTab::History,
+        SidebarTab::Extensions,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0)
+    }
+
+    fn at(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(SidebarTab::Schema)
+    }
 }
 
 const INDENT_PER_DEPTH: Pixels = px(16.);
@@ -101,6 +124,8 @@ pub struct Sidebar {
     extension_busy: Option<String>,
     /// A community extension's name, to install one the page doesn't list.
     community_name: Entity<InputState>,
+    /// The 指标 page: the model chosen there and the request being ticked.
+    metrics: MetricsPage,
     /// The language the tree's group labels were built in. Nothing notifies
     /// on a language switch beyond `cx.refresh_windows()`, so render compares
     /// and rebuilds the tree when it no longer matches.
@@ -121,7 +146,15 @@ impl Sidebar {
         let community_name = cx.new(|cx| {
             InputState::new(window, cx).placeholder(tr("sidebar.extensions.community_placeholder"))
         });
+        let metrics_filter = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr("sidebar.builder.where.placeholder"))
+        });
         let subscriptions = vec![
+            cx.subscribe(&metrics_filter, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.recompile_metrics(cx);
+                }
+            }),
             cx.subscribe_in(
                 &community_name,
                 window,
@@ -202,6 +235,7 @@ impl Sidebar {
             extensions_at_launch: Default::default(),
             extension_busy: None,
             community_name,
+            metrics: MetricsPage::new(metrics_filter),
             tree_language: crate::i18n::current(),
             _subscriptions: subscriptions,
         };
@@ -232,6 +266,9 @@ impl Sidebar {
                 if *this.models != models {
                     this.models = Rc::new(models);
                     this.rebuild_tree(cx);
+                    if this.tab == SidebarTab::Metrics {
+                        this.ensure_metrics_model(cx);
+                    }
                     cx.notify();
                 }
             })
@@ -594,11 +631,13 @@ impl Sidebar {
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
             let doc = node_meta.and_then(|m| m.doc.clone());
             let metric = node_meta.and_then(|m| m.metric.clone());
+            let semantic_model = node_meta.and_then(|m| m.semantic_model.clone());
             let removable_doc = doc.clone();
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
             let has_actions = is_s3_root
                 || metric.is_some()
+                || semantic_model.is_some()
                 || table.is_some()
                 || editable_column.is_some()
                 || removable_doc.is_some()
@@ -847,6 +886,28 @@ impl Sidebar {
                                                         if let Some(sidebar) = sidebar.upgrade() {
                                                             sidebar.update(cx, |this, cx| {
                                                                 this.refresh_s3(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                        })
+                                        .when_some(semantic_model, |this, source| {
+                                            let sidebar = sidebar.clone();
+                                            this.child(
+                                                Button::new(("model-build", ix))
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .icon(gpui_kit::assets::IconName::ListChecks)
+                                                    .tooltip(tr("sidebar.builder.open_model"))
+                                                    .on_click(move |_, _, cx| {
+                                                        if let Some(sidebar) = sidebar.upgrade() {
+                                                            sidebar.update(cx, |this, cx| {
+                                                                this.tab = SidebarTab::Metrics;
+                                                                this.select_metrics_model(
+                                                                    source.clone(),
+                                                                    cx,
+                                                                );
+                                                                cx.notify();
                                                             });
                                                         }
                                                     }),
@@ -1224,23 +1285,18 @@ impl Render for Sidebar {
                         TabBar::new("sidebar-tabs")
                             .segmented()
                             .with_size(crate::ui::scale::compact_control())
-                            .selected_index(match self.tab {
-                                SidebarTab::Schema => 0,
-                                SidebarTab::History => 1,
-                                SidebarTab::Extensions => 2,
-                            })
-                            .on_click(cx.listener(|this, ix, _, cx| {
-                                this.tab = match ix {
-                                    0 => SidebarTab::Schema,
-                                    1 => SidebarTab::History,
-                                    _ => SidebarTab::Extensions,
-                                };
-                                if this.tab == SidebarTab::Extensions {
-                                    this.reload_extensions(cx);
+                            .selected_index(self.tab.index())
+                            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                this.tab = SidebarTab::at(*ix);
+                                match this.tab {
+                                    SidebarTab::Extensions => this.reload_extensions(cx),
+                                    SidebarTab::Metrics => this.ensure_metrics_model(cx),
+                                    _ => {}
                                 }
                                 cx.notify();
                             }))
                             .child(Tab::new().label(tr("sidebar.tab.schema")))
+                            .child(Tab::new().label(tr("sidebar.tab.metrics")))
                             .child(Tab::new().label(tr("sidebar.tab.history")))
                             .child(Tab::new().label(tr("sidebar.tab.extensions"))),
                     )
@@ -1260,6 +1316,30 @@ impl Render for Sidebar {
                                 .on_click(cx.listener(Self::refresh_schema)),
                         )
                     })
+                    .when(self.tab == SidebarTab::Metrics, |this| {
+                        this.child(
+                            Button::new("pick-metrics-model")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::FolderOpen)
+                                .tooltip(tr("sidebar.builder.pick"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.pick_metrics_model(window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("reload-metrics-model")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::RotateCw)
+                                .tooltip(tr("sidebar.builder.reload"))
+                                .loading(self.metrics.is_loading())
+                                .disabled(!self.metrics.has_source() || self.metrics.is_loading())
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.load_metrics_model(cx)),
+                                ),
+                        )
+                    })
                     .when(self.tab == SidebarTab::Extensions, |this| {
                         this.child(
                             Button::new("refresh-extensions")
@@ -1274,6 +1354,7 @@ impl Render for Sidebar {
             )
             .child(div().flex_1().min_h_0().child(match self.tab {
                 SidebarTab::Schema => self.render_schema(window, cx),
+                SidebarTab::Metrics => self.render_metrics(cx),
                 SidebarTab::Extensions => self.render_extensions(cx),
                 SidebarTab::History => {
                     if history.is_empty() {

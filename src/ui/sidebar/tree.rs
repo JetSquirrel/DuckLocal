@@ -240,6 +240,13 @@ fn metrics_group(
                         .as_ref()
                         .map(|_| tr("sidebar.metrics.unreadable").into()),
                     tooltip: Some(tooltip.into()),
+                    semantic_model: model
+                        .problem
+                        .is_none()
+                        .then(|| super::metrics::ModelSource {
+                            model: model.path.clone(),
+                            views: model.views.clone(),
+                        }),
                     ..SchemaNodeMeta::new(
                         SchemaNodeKind::SemanticModel,
                         Some(model.metrics.len().to_string().into()),
@@ -337,6 +344,7 @@ fn file_tree_item(
             column: None,
             s3_uri: None,
             doc: None,
+            semantic_model: None,
             metric: None,
             hint: file_hint(&file.path, &file.view_name, duplicate),
             tooltip: Some(crate::db::compact_home(&file.path).into()),

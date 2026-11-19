@@ -37,7 +37,8 @@ icon_assets!(
         Maximize2,
         Minimize2,
         Sigma,
-        ChartLine
+        ChartLine,
+        ListChecks
     ]
 );
 

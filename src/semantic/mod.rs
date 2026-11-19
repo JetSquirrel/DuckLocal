@@ -16,6 +16,7 @@ mod ast;
 pub(crate) mod browse;
 mod compile;
 mod model;
+pub(crate) mod session;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

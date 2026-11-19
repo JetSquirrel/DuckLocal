@@ -85,6 +85,8 @@ pub(super) struct SchemaNodeMeta {
     pub(super) s3_uri: Option<String>,
     /// The document a recent-document row reopens on click.
     pub(super) doc: Option<crate::recents::RecentDocument>,
+    /// The model a readable model row opens in the 指标 tab.
+    pub(super) semantic_model: Option<super::metrics::ModelSource>,
     /// The metric a queryable metric row runs.
     pub(super) metric: Option<MetricRef>,
     /// Muted text after the label: what tells a row apart from a same-named
@@ -105,6 +107,7 @@ impl SchemaNodeMeta {
             column: None,
             s3_uri: None,
             doc: None,
+            semantic_model: None,
             metric: None,
             hint: None,
             tooltip: None,
