@@ -71,6 +71,10 @@ enum SidebarTab {
     Extensions,
 }
 
+/// The Metrics tab is hidden from the window until its design settles; the
+/// tests keep driving it, so the code stays working while it is out of sight.
+const METRICS_SHOWN: bool = cfg!(test);
+
 impl SidebarTab {
     /// In the order the tab bar shows them.
     const ALL: [SidebarTab; 4] = [
@@ -80,12 +84,19 @@ impl SidebarTab {
         SidebarTab::Extensions,
     ];
 
+    /// The tabs the bar shows, in order.
+    fn shown() -> impl Iterator<Item = SidebarTab> {
+        Self::ALL
+            .into_iter()
+            .filter(|tab| METRICS_SHOWN || *tab != SidebarTab::Metrics)
+    }
+
     fn index(self) -> usize {
-        Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0)
+        Self::shown().position(|tab| tab == self).unwrap_or(0)
     }
 
     fn at(index: usize) -> Self {
-        Self::ALL.get(index).copied().unwrap_or(SidebarTab::Schema)
+        Self::shown().nth(index).unwrap_or(SidebarTab::Schema)
     }
 }
 
@@ -631,7 +642,10 @@ impl Sidebar {
             let s3_uri = node_meta.and_then(|m| m.s3_uri.clone());
             let doc = node_meta.and_then(|m| m.doc.clone());
             let metric = node_meta.and_then(|m| m.metric.clone());
-            let semantic_model = node_meta.and_then(|m| m.semantic_model.clone());
+            // Its button opens the Metrics tab, hidden for now.
+            let semantic_model = node_meta
+                .and_then(|m| m.semantic_model.clone())
+                .filter(|_| METRICS_SHOWN);
             let removable_doc = doc.clone();
             let is_s3_root = node_meta.map(|m| m.kind) == Some(SchemaNodeKind::S3Status);
             let editable_column = column.clone().filter(|column| !column.table.is_view);
@@ -1295,10 +1309,14 @@ impl Render for Sidebar {
                                 }
                                 cx.notify();
                             }))
-                            .child(Tab::new().label(tr("sidebar.tab.schema")))
-                            .child(Tab::new().label(tr("sidebar.tab.metrics")))
-                            .child(Tab::new().label(tr("sidebar.tab.history")))
-                            .child(Tab::new().label(tr("sidebar.tab.extensions"))),
+                            .children(SidebarTab::shown().map(|tab| {
+                                Tab::new().label(tr(match tab {
+                                    SidebarTab::Schema => "sidebar.tab.schema",
+                                    SidebarTab::Metrics => "sidebar.tab.metrics",
+                                    SidebarTab::History => "sidebar.tab.history",
+                                    SidebarTab::Extensions => "sidebar.tab.extensions",
+                                }))
+                            })),
                     )
                     // The sidebar's own actions share the tabs' row, as borderless
                     // icon buttons. Putting the sidebar away is the title bar's
