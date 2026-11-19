@@ -510,6 +510,40 @@ impl Dashboard {
         Some(notice)
     }
 
+    /// The dashboard as it stands — the picks in force, each plot as last
+    /// run — as one HTML page. `None` while there is nothing drawn to export:
+    /// the first run has not landed, or the spec does not parse.
+    pub fn export_html(&self) -> Option<String> {
+        if self.spec_error.is_some() || self.plots.is_empty() {
+            return None;
+        }
+        let picks: Vec<String> = self
+            .spec
+            .as_ref()
+            .map(|spec| {
+                spec.filters
+                    .iter()
+                    .filter_map(|filter| {
+                        let pick = self.picks.get(&filter.name)?;
+                        let values: Vec<String> = pick.values.iter().map(pick_text).collect();
+                        Some(format!("{} = {}", filter.column, values.join(", ")))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let title = self
+            .path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Some(super::html::render(
+            &title,
+            &self.plots,
+            &self.results,
+            &picks,
+        ))
+    }
+
     pub fn is_showing_source(&self) -> bool {
         self.showing_source
     }

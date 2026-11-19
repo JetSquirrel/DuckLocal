@@ -89,6 +89,11 @@ impl PieSlice {
     pub(crate) fn amount(&self) -> f64 {
         self.value as f64
     }
+
+    /// Palette slot; `None` for the folded "other" slice.
+    pub(crate) fn slot(&self) -> Option<usize> {
+        self.slot
+    }
 }
 
 /// How a pie is drawn beyond its slices. A dashboard knows its panel's size,

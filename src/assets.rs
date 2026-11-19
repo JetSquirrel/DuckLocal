@@ -38,7 +38,9 @@ icon_assets!(
         Minimize2,
         Sigma,
         ChartLine,
-        ListChecks
+        ListChecks,
+        Share,
+        FileCode
     ]
 );
 
