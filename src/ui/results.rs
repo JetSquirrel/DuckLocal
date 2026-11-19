@@ -1377,46 +1377,49 @@ impl ResultsPanel {
                                 .child(summary),
                         )
                     })
-                    .child(
-                        // A real toolbar, not an h_flex: roving arrow-key focus and
-                        // the compact ghost treatment come with it.
+                    .child({
+                        // One Export menu rather than a button per format: the
+                        // header stays narrow and new formats slot in below.
+                        let view = cx.entity().downgrade();
+                        let item = move |label: &'static str, format: ExportFormat| {
+                            let view = view.clone();
+                            PopupMenuItem::new(tr(label)).on_click(move |_, window, cx| {
+                                if let Some(view) = view.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        this.open_export_dialog(format, window, cx)
+                                    });
+                                }
+                            })
+                        };
                         Toolbar::new("results-export-toolbar")
                             .xsmall()
-                            // Hidden, not greyed, without rows to export: two dead
-                            // buttons over an empty panel only add noise. Hidden
+                            // Hidden, not greyed, without rows to export: a dead
+                            // button over an empty panel only adds noise. Hidden
                             // rather than removed, so the header keeps its height.
                             .when(!has_rows, |this| this.invisible())
+                            // `dropdown_menu` wraps the Button in a popover that is
+                            // not `Sizable`, so the trigger goes in as content and
+                            // carries the toolbar's ghost/compact look by hand.
                             .child(
-                                ToolbarGroup::new("results-export-group")
-                                    .gap_1()
-                                    .child(
-                                        Button::new("export-csv")
-                                            .icon(gpui_kit::assets::IconName::Download)
-                                            .label(tr("results.export_csv"))
-                                            .disabled(!has_rows)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_export_dialog(
-                                                    ExportFormat::Csv,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("export-parquet")
-                                            .icon(gpui_kit::assets::IconName::Download)
-                                            .label(tr("results.export_parquet"))
-                                            .disabled(!has_rows)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open_export_dialog(
+                                ToolbarGroup::new("results-export-group").content(
+                                    Button::new("results-export")
+                                        .ghost()
+                                        .compact()
+                                        .xsmall()
+                                        .icon(AssetIconName::Download)
+                                        .label(tr("results.export"))
+                                        .dropdown_caret(true)
+                                        .disabled(!has_rows)
+                                        .dropdown_menu(move |menu, _, _| {
+                                            menu.item(item("results.export.csv", ExportFormat::Csv))
+                                                .item(item(
+                                                    "results.export.parquet",
                                                     ExportFormat::Parquet,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    ),
-                            ),
-                    ),
+                                                ))
+                                        }),
+                                ),
+                            )
+                    }),
             )
     }
 
