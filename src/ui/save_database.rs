@@ -237,7 +237,7 @@ pub fn save(state: Entity<AppState>, after: After, window: &mut Window, cx: &mut
 }
 
 /// Where the save panel opens: Documents, or the home folder without one.
-fn start_directory() -> PathBuf {
+pub(crate) fn start_directory() -> PathBuf {
     directories::UserDirs::new()
         .map(|dirs| {
             dirs.document_dir()

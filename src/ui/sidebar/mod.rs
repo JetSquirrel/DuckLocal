@@ -1182,6 +1182,32 @@ impl RowMenu {
                     }),
             );
         }
+        // A table or view row of the catalog. A registered file's row has
+        // its own Remove, which also forgets the file; a bare DROP would
+        // leave it in the registry to come back at the next launch.
+        if let Some(table) = meta
+            .table
+            .clone()
+            .filter(|_| meta.column.is_none() && meta.file.is_none())
+        {
+            let sidebar = self.sidebar.clone();
+            let label = if table.is_view {
+                "sidebar.menu.drop_view"
+            } else {
+                "sidebar.menu.drop_table"
+            };
+            menu = menu.separator().item(
+                PopupMenuItem::new(tr(label))
+                    .icon(gpui_kit::assets::IconName::Delete)
+                    .on_click(move |_, window, cx| {
+                        if let Some(sidebar) = sidebar.upgrade() {
+                            sidebar.update(cx, |this, cx| {
+                                this.confirm_drop_relation(table.clone(), window, cx)
+                            });
+                        }
+                    }),
+            );
+        }
         if let Some(database) = meta.database.clone() {
             // Where unqualified names resolve now; unknown until a Run
             // reports it, when the open database is the safe guess.

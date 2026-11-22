@@ -1,5 +1,6 @@
 //! The sidebar's row and toolbar actions: reload the schema, remove a
-//! registered file, and edit a column's type through a dialog.
+//! registered file, drop a table or view, and edit a column's type through
+//! a dialog.
 
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::dialog::{DialogButtonProps, DialogFooter};
@@ -8,12 +9,80 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{v_flex, WindowExt};
 use gpui_kit::*;
 
-use super::model::{ColumnRef, FileRef};
-use super::sql::alter_column_type_sql;
+use super::model::{ColumnRef, FileRef, TableRef};
+use super::sql::{alter_column_type_sql, drop_relation_sql};
 use super::Sidebar;
 use crate::i18n::{tr, trf};
 
 impl Sidebar {
+    /// Ask before dropping `table`, naming the statement that will run: in
+    /// an attached database that may be a server's, not a scratch table.
+    pub(super) fn confirm_drop_relation(
+        &mut self,
+        table: TableRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let title_key = if table.is_view {
+            "dialog.drop_view.title"
+        } else {
+            "dialog.drop_table.title"
+        };
+        let title = trf(title_key, &[&table.name]);
+        let sql = drop_relation_sql(&table);
+        let description = trf("dialog.drop_relation.description", &[&table.database, &sql]);
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let view = view.clone();
+            let sql = sql.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(tr("dialog.drop_relation.confirm"))
+                        .ok_variant(ButtonVariant::Danger)
+                        .show_cancel(true)
+                        .cancel_text(tr("common.cancel"))
+                        .on_ok(move |_, window, cx| {
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    this.drop_relation(sql.clone(), window, cx);
+                                });
+                            }
+                            true
+                        }),
+                )
+        });
+    }
+
+    fn drop_relation(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let (result, catalog) = smol::unblock(move || {
+                let result = crate::db::with_connection(|conn| Ok(conn.execute_batch(&sql)?));
+                let catalog = result
+                    .is_ok()
+                    .then(|| crate::schema::load_catalog().unwrap_or_default());
+                (result, catalog)
+            })
+            .await;
+            cx.update(|window, cx| match result {
+                Ok(()) => {
+                    if let Some(catalog) = catalog {
+                        state.update(cx, |s, cx| s.set_catalog(catalog, cx));
+                    }
+                }
+                Err(e) => window.push_notification(
+                    Notification::error(trf("notify.drop_relation.failed", &[&e.to_string()])),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(super) fn refresh_schema(
         &mut self,
         _: &ClickEvent,

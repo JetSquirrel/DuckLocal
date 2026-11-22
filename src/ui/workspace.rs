@@ -308,6 +308,9 @@ impl WorkspaceTab {
 /// run starts so a late answer still lands in the tab that asked.
 struct ActiveQuery {
     sql: String,
+    /// Where `sql` starts in the editor: past zero for a selection, so a
+    /// span the error names lands on the text it came from.
+    offset: usize,
     squiggles: TextDecorationCollection,
     fill: RangeDecorationCollection,
     results: Entity<ResultsPanel>,
@@ -324,6 +327,11 @@ pub struct Workspace {
     running: bool,
     explaining: bool,
     profiling: bool,
+    /// The query tab and its editor selection as the pointer went down on
+    /// the toolbar, for the button it lands on: by the click, the press has
+    /// moved focus to the button and the editor's selection is not to be
+    /// relied on.
+    toolbar_press: Option<(u64, std::ops::Range<usize>)>,
     /// Set once the user asks for the editor on a connection with no data yet,
     /// which is otherwise the first-run screen's job to keep out of the way.
     editor_shown: bool,
@@ -357,6 +365,7 @@ impl Workspace {
             running: false,
             explaining: false,
             profiling: false,
+            toolbar_press: None,
             editor_shown: false,
             renaming: None,
             _rename_subscription: None,
@@ -1106,18 +1115,44 @@ impl Workspace {
         }
     }
 
-    /// ⌘S saves the active dashboard's source; other tabs have nothing to
-    /// save, so the keystroke is theirs to ignore.
+    /// ⌘S saves the active dashboard's source, or a query tab's SQL to a
+    /// `.sql` file.
     fn save_spec_action(&mut self, _: &SaveSpec, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab_id) = self
-            .tabs
-            .get(self.active)
-            .and_then(WorkspaceTab::as_dashboard)
-            .map(|tab| tab.id)
-        else {
+        match self.tabs.get(self.active) {
+            Some(WorkspaceTab::Dashboard(tab)) => {
+                let tab_id = tab.id;
+                self.save_dashboard(tab_id, window, cx);
+            }
+            Some(WorkspaceTab::Query(_)) => self.save_query_as_sql(window, cx),
+            None => {}
+        }
+    }
+
+    /// Write the active query tab's whole text to a `.sql` file the user
+    /// names in the save panel, which starts on the tab's title.
+    fn save_query_as_sql(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active).and_then(WorkspaceTab::as_query) else {
             return;
         };
-        self.save_dashboard(tab_id, window, cx);
+        let sql = tab.editor.read(cx).value().to_string();
+        let name = sql_file_name(&tab.title);
+        let rx = cx.prompt_for_new_path(&crate::ui::save_database::start_directory(), Some(&name));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let shown = path.to_string_lossy().into_owned();
+            let result = smol::unblock(move || std::fs::write(&path, sql)).await;
+            cx.update(|window, cx| match result {
+                Ok(()) => window.push_notification(trf("notify.query_saved", &[&shown]), cx),
+                Err(e) => window.push_notification(
+                    Notification::error(trf("notify.query_save_failed", &[&shown, &e.to_string()])),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The active query's SQL, with everything a run delivers into: the
@@ -1125,14 +1160,26 @@ impl Workspace {
     /// error is marked with. All of it is captured when the run starts, so a
     /// result that lands after the user switched tabs still goes to the tab
     /// that asked.
-    fn active_sql(&self, cx: &App) -> Option<ActiveQuery> {
+    ///
+    /// The selection is the one kept at a toolbar press, when a button
+    /// asked; a key press reads the editor's own.
+    fn active_sql(&mut self, cx: &App) -> Option<ActiveQuery> {
+        let press = self.toolbar_press.take();
         let tab = self
             .tabs
             .get(self.active)
             .and_then(WorkspaceTab::as_query)?;
-        let sql = tab.editor.read(cx).value().to_string();
+        let editor = tab.editor.read(cx);
+        let text = editor.value();
+        let selected = match press {
+            Some((id, selected)) if id == tab.id => selected,
+            _ => editor.selected_range(),
+        };
+        let range = run_range(&text, selected);
+        let sql = text[range.clone()].to_string();
         (!sql.trim().is_empty()).then(|| ActiveQuery {
             sql,
+            offset: range.start,
             squiggles: tab.error_squiggles.clone(),
             fill: tab.error_fill.clone(),
             results: tab.results.clone(),
@@ -1206,7 +1253,20 @@ impl Workspace {
     }
 
     fn run_query_action(&mut self, _: &RunQuery, window: &mut Window, cx: &mut Context<Self>) {
+        // A key press reads the editor as it is now, not a toolbar press
+        // that never became a click.
+        self.toolbar_press = None;
         self.run_active(window, cx);
+    }
+
+    /// Keep the active query tab's selection as the pointer goes down on
+    /// the toolbar, before the press moves focus to a button.
+    fn note_toolbar_press(&mut self, cx: &App) {
+        self.toolbar_press = self
+            .tabs
+            .get(self.active)
+            .and_then(WorkspaceTab::as_query)
+            .map(|tab| (tab.id, tab.editor.read(cx).selected_range()));
     }
 
     pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1382,7 +1442,8 @@ impl Workspace {
         let Some(range) = crate::query::error_byte_range(sql, &error.to_string()) else {
             return;
         };
-        let range = piece.start + range.start..piece.start + range.end;
+        let start = query.offset + piece.start;
+        let range = start + range.start..start + range.end;
         let danger = cx.theme().danger;
         query.squiggles.set(
             vec![TextDecoration::new(
@@ -1465,6 +1526,7 @@ impl Workspace {
         if ix != self.active {
             self.activate(ix, window, cx);
         }
+        self.toolbar_press = None;
         self.run_active(window, cx);
         true
     }
@@ -1715,6 +1777,9 @@ impl Workspace {
 
     fn render_query_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
+            // In the capture phase, so it runs before a button takes the
+            // press and the focus.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| this.note_toolbar_press(cx)))
             .w_full()
             .px_3()
             .py_2()
@@ -1786,6 +1851,20 @@ impl Workspace {
                     .loading(self.profiling)
                     .tooltip(tr("workspace.profile.tooltip"))
                     .on_click(cx.listener(Self::profile_active)),
+            )
+            .child(
+                Button::new("save-sql")
+                    .ghost()
+                    .small()
+                    .icon(AssetIcon::Save)
+                    .tooltip_with_action(
+                        tr("workspace.save_sql.tooltip"),
+                        &SaveSpec,
+                        Some(WORKSPACE_KEY_CONTEXT),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_query_as_sql(window, cx);
+                    })),
             )
     }
 
@@ -2138,14 +2217,66 @@ fn export_dashboard_html(
         .detach();
 }
 
+/// The part of the editor's `text` that Run, Explain and Profile act on:
+/// the selection when it holds more than blanks, so one statement of a
+/// longer script runs by itself, and the whole text otherwise.
+fn run_range(text: &str, selected: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    match text.get(selected.clone()) {
+        Some(part) if !part.trim().is_empty() => selected,
+        _ => 0..text.len(),
+    }
+}
+
+/// The save panel's starting name for a query tab titled `title`: the title
+/// with what Windows refuses in a file name replaced, and `.sql` added.
+fn sql_file_name(title: &str) -> String {
+    let stem: String = title
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let stem = stem.trim_end_matches(['.', ' ']);
+    let stem = if stem.is_empty() { "query" } else { stem };
+    if stem.to_ascii_lowercase().ends_with(".sql") {
+        stem.to_string()
+    } else {
+        format!("{stem}.sql")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
     // `test` macro shadows the built-in `#[test]`.
     use super::{
         active_after_close, default_title_number, duplicate_titles, editor_target, parent_name,
-        EditorTarget, TabKind,
+        run_range, sql_file_name, EditorTarget, TabKind,
     };
+
+    #[test]
+    fn a_query_title_becomes_a_file_name() {
+        assert_eq!(sql_file_name("Query 1"), "Query 1.sql");
+        assert_eq!(sql_file_name("sales: by month?"), "sales_ by month_.sql");
+        assert_eq!(sql_file_name("report.SQL"), "report.SQL");
+        assert_eq!(sql_file_name("  "), "query.sql");
+        assert_eq!(sql_file_name("trailing. "), "trailing.sql");
+    }
+
+    #[test]
+    fn a_selection_runs_by_itself_and_blanks_run_everything() {
+        let text = "SELECT 1;\nSELECT 2;\n";
+        assert_eq!(run_range(text, 10..19), 10..19);
+        assert_eq!(&text[run_range(text, 10..19)], "SELECT 2;");
+        // A caret, or a selection of nothing but blanks, is not a choice.
+        assert_eq!(run_range(text, 4..4), 0..text.len());
+        assert_eq!(run_range(text, 9..10), 0..text.len());
+        // A range off the end of the text falls back too.
+        assert_eq!(run_range(text, 5..99), 0..text.len());
+    }
     use std::path::Path;
 
     /// A real workspace's state, with a result in its tab, against the
@@ -2244,6 +2375,68 @@ mod tests {
                     .update(cx, |editor, cx| editor.set_value("SELECT 2", window, cx));
             });
             assert_ne!(read(cx)["revision"], state["revision"]);
+        })
+        .unwrap();
+    }
+
+    /// What Run sends from a real editor: the selected statement alone, at
+    /// its place in the text, and everything once the selection is gone.
+    #[gpui_kit::test]
+    fn run_takes_the_editor_selection(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::{AppContext, WindowOptions};
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::ui::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let (window, workspace) = cx
+            .update(|cx| {
+                gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                    let state = cx.new(crate::state::AppState::new);
+                    cx.new(|cx| super::Workspace::new(state, window, cx))
+                })
+            })
+            .expect("open test window");
+        cx.update_window(window, |_, window, cx| {
+            let text = "SELECT 1 AS first;\nSELECT 2 AS second;";
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_query_tab(text.to_string(), None, window, cx);
+            });
+            let editor = |cx: &mut gpui_kit::App| {
+                workspace
+                    .read(cx)
+                    .tabs
+                    .last()
+                    .and_then(super::WorkspaceTab::as_query)
+                    .unwrap()
+                    .editor
+                    .clone()
+            };
+            let second = text.find("SELECT 2").unwrap();
+            editor(cx).update(cx, |editor, cx| {
+                editor.set_selected_range(second..text.len(), cx)
+            });
+            let active_sql = |cx: &mut gpui_kit::App| {
+                workspace.update(cx, |workspace, cx| workspace.active_sql(cx).unwrap())
+            };
+            let query = active_sql(cx);
+            assert_eq!(query.sql, "SELECT 2 AS second;");
+            assert_eq!(query.offset, second);
+
+            // A button runs what was selected as the pointer went down on
+            // the toolbar, whatever the press did to the editor since.
+            workspace.update(cx, |workspace, cx| workspace.note_toolbar_press(cx));
+            editor(cx).update(cx, |editor, cx| editor.set_selected_range(3..3, cx));
+            let query = active_sql(cx);
+            assert_eq!(query.sql, "SELECT 2 AS second;");
+            assert_eq!(query.offset, second);
+
+            // The press is used once; the next run reads the editor.
+            let query = active_sql(cx);
+            assert_eq!(query.sql, text);
+            assert_eq!(query.offset, 0);
         })
         .unwrap();
     }
