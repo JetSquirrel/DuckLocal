@@ -60,6 +60,14 @@ pub(super) fn alter_column_type_sql(column: &ColumnRef, new_type: &str) -> Strin
     )
 }
 
+/// `DROP TABLE` or `DROP VIEW` for a catalog relation, always fully
+/// qualified: the search path at click time is no guide to which of two
+/// same-named tables the row meant.
+pub(super) fn drop_relation_sql(table: &TableRef) -> String {
+    let kind = if table.is_view { "VIEW" } else { "TABLE" };
+    format!("DROP {kind} {}", qualified_table_name(table, None))
+}
+
 pub(super) fn select_s3_file_sql(uri: &str) -> String {
     format!("SELECT *\nFROM '{}'\nLIMIT 100;", uri.replace('\'', "''"))
 }
@@ -98,8 +106,8 @@ mod tests {
     // import chain drags gpui's `test` attribute macro into scope and shadows
     // the built-in `#[test]`.
     use super::{
-        alter_column_type_sql, select_column_sql, select_columns_sql, select_s3_file_sql,
-        select_star_sql, table_info_text,
+        alter_column_type_sql, drop_relation_sql, select_column_sql, select_columns_sql,
+        select_s3_file_sql, select_star_sql, table_info_text,
     };
     use crate::schema::{ColumnInfo, NodeKind, TableInfo};
     use crate::script::SearchPath;
@@ -202,6 +210,32 @@ mod tests {
             select_star_sql(&table_ref("we\"ird", false), None),
             "SELECT *\nFROM memory.main.\"we\"\"ird\"\nLIMIT 100;"
         );
+    }
+
+    #[test]
+    fn drop_sql_removes_the_table_or_view_the_row_names() {
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE \"we\"\"ird\"(id INTEGER); CREATE VIEW v AS SELECT 1 AS x;",
+        )
+        .unwrap();
+        assert_eq!(
+            drop_relation_sql(&table_ref("v", true)),
+            "DROP VIEW memory.main.v"
+        );
+        conn.execute_batch(&drop_relation_sql(&table_ref("we\"ird", false)))
+            .unwrap();
+        conn.execute_batch(&drop_relation_sql(&table_ref("v", true)))
+            .unwrap();
+        let left: i64 = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal) \
+                 + (SELECT count(*) FROM duckdb_views() WHERE NOT internal)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

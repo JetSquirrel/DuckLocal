@@ -1384,9 +1384,108 @@ fn format_interval(months: i32, days: i32, nanos: i64) -> String {
     parts.join(" ")
 }
 
+/// The date part a failed query left unquoted, as SQL Server's dialect
+/// writes it: `date_trunc(month, d)` makes DuckDB look for a column named
+/// `month`. Read from the error alone, whose `LINE` context quotes the call.
+pub(crate) fn unquoted_date_part(message: &str) -> Option<String> {
+    const PARTS: &[&str] = &[
+        "year",
+        "quarter",
+        "month",
+        "week",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "millisecond",
+        "microsecond",
+        "decade",
+        "century",
+        "millennium",
+        "dow",
+        "doy",
+        "isodow",
+        "dayofweek",
+        "dayofyear",
+        "epoch",
+    ];
+    const FUNCTIONS: &[&str] = &[
+        "date_trunc",
+        "datetrunc",
+        "date_part",
+        "datepart",
+        "date_diff",
+        "datediff",
+        "date_sub",
+        "datesub",
+    ];
+    let column = message
+        .split_once("Referenced column \"")?
+        .1
+        .split_once('"')?
+        .0;
+    let part = column.to_ascii_lowercase();
+    let singular = part.strip_suffix('s').unwrap_or(&part);
+    if !PARTS.contains(&part.as_str()) && !PARTS.contains(&singular) {
+        return None;
+    }
+    let lower = message.to_ascii_lowercase();
+    let called = FUNCTIONS.iter().any(|function| {
+        lower
+            .match_indices(&format!("{function}("))
+            .any(|(at, call)| {
+                let args = lower[at + call.len()..].trim_start();
+                args.strip_prefix(part.as_str()).is_some_and(|rest| {
+                    !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+    });
+    called.then(|| column.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unquoted_date_part_is_named_from_the_error() {
+        let conn = mem();
+        conn.execute_batch("CREATE TABLE s(order_date DATE)")
+            .unwrap();
+        let error = conn
+            .prepare("SELECT date_trunc(month,order_date) FROM s")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            unquoted_date_part(&error).as_deref(),
+            Some("month"),
+            "{error}"
+        );
+        let error = conn
+            .prepare("SELECT datediff( Day , order_date, order_date) FROM s")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            unquoted_date_part(&error).as_deref(),
+            Some("Day"),
+            "{error}"
+        );
+        // A missing column that only looks like a part, outside such a call.
+        let error = conn
+            .prepare("SELECT month FROM s")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(unquoted_date_part(&error), None, "{error}");
+        let error = conn
+            .prepare("SELECT monthly FROM s")
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(unquoted_date_part(&error), None, "{error}");
+    }
 
     fn mem() -> Connection {
         Connection::open_in_memory_with_flags(crate::db::config().unwrap()).unwrap()

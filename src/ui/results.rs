@@ -1488,7 +1488,8 @@ impl ResultsPanel {
                 .size_full()
                 .p_3()
                 .child(
-                    Alert::error("query-error", message.clone()).title(tr("results.failed.title")),
+                    Alert::error("query-error", with_date_part_hint(message))
+                        .title(tr("results.failed.title")),
                 )
                 .into_any_element(),
             ResultView::Explain { lines, elapsed_ms } => v_flex()
@@ -2352,6 +2353,21 @@ fn running_state(cx: &mut Context<ResultsPanel>) -> AnyElement {
                 .child(tr("results.running")),
         )
         .into_any_element()
+}
+
+/// A failed query's message, with a line on quoting the date part when
+/// the failure was SQL Server's `date_trunc(month, …)` habit.
+fn with_date_part_hint(message: &str) -> String {
+    match crate::query::unquoted_date_part(message) {
+        Some(part) => format!(
+            "{message}\n\n{}",
+            trf(
+                "results.failed.date_part_hint",
+                &[&part.to_ascii_lowercase()]
+            )
+        ),
+        None => message.to_string(),
+    }
 }
 
 fn empty_state(title: &str, subtitle: Option<&str>, cx: &mut Context<ResultsPanel>) -> AnyElement {
