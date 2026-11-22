@@ -327,6 +327,11 @@ pub struct Workspace {
     running: bool,
     explaining: bool,
     profiling: bool,
+    /// The query tab and its editor selection as the pointer went down on
+    /// the toolbar, for the button it lands on: by the click, the press has
+    /// moved focus to the button and the editor's selection is not to be
+    /// relied on.
+    toolbar_press: Option<(u64, std::ops::Range<usize>)>,
     /// Set once the user asks for the editor on a connection with no data yet,
     /// which is otherwise the first-run screen's job to keep out of the way.
     editor_shown: bool,
@@ -360,6 +365,7 @@ impl Workspace {
             running: false,
             explaining: false,
             profiling: false,
+            toolbar_press: None,
             editor_shown: false,
             renaming: None,
             _rename_subscription: None,
@@ -1154,14 +1160,22 @@ impl Workspace {
     /// error is marked with. All of it is captured when the run starts, so a
     /// result that lands after the user switched tabs still goes to the tab
     /// that asked.
-    fn active_sql(&self, cx: &App) -> Option<ActiveQuery> {
+    ///
+    /// The selection is the one kept at a toolbar press, when a button
+    /// asked; a key press reads the editor's own.
+    fn active_sql(&mut self, cx: &App) -> Option<ActiveQuery> {
+        let press = self.toolbar_press.take();
         let tab = self
             .tabs
             .get(self.active)
             .and_then(WorkspaceTab::as_query)?;
         let editor = tab.editor.read(cx);
         let text = editor.value();
-        let range = run_range(&text, editor.selected_range());
+        let selected = match press {
+            Some((id, selected)) if id == tab.id => selected,
+            _ => editor.selected_range(),
+        };
+        let range = run_range(&text, selected);
         let sql = text[range.clone()].to_string();
         (!sql.trim().is_empty()).then(|| ActiveQuery {
             sql,
@@ -1239,7 +1253,20 @@ impl Workspace {
     }
 
     fn run_query_action(&mut self, _: &RunQuery, window: &mut Window, cx: &mut Context<Self>) {
+        // A key press reads the editor as it is now, not a toolbar press
+        // that never became a click.
+        self.toolbar_press = None;
         self.run_active(window, cx);
+    }
+
+    /// Keep the active query tab's selection as the pointer goes down on
+    /// the toolbar, before the press moves focus to a button.
+    fn note_toolbar_press(&mut self, cx: &App) {
+        self.toolbar_press = self
+            .tabs
+            .get(self.active)
+            .and_then(WorkspaceTab::as_query)
+            .map(|tab| (tab.id, tab.editor.read(cx).selected_range()));
     }
 
     pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1499,6 +1526,7 @@ impl Workspace {
         if ix != self.active {
             self.activate(ix, window, cx);
         }
+        self.toolbar_press = None;
         self.run_active(window, cx);
         true
     }
@@ -1749,6 +1777,9 @@ impl Workspace {
 
     fn render_query_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
+            // In the capture phase, so it runs before a button takes the
+            // press and the focus.
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| this.note_toolbar_press(cx)))
             .w_full()
             .px_3()
             .py_2()
@@ -2387,12 +2418,23 @@ mod tests {
             editor(cx).update(cx, |editor, cx| {
                 editor.set_selected_range(second..text.len(), cx)
             });
-            let query = workspace.read(cx).active_sql(cx).unwrap();
+            let active_sql = |cx: &mut gpui_kit::App| {
+                workspace.update(cx, |workspace, cx| workspace.active_sql(cx).unwrap())
+            };
+            let query = active_sql(cx);
             assert_eq!(query.sql, "SELECT 2 AS second;");
             assert_eq!(query.offset, second);
 
+            // A button runs what was selected as the pointer went down on
+            // the toolbar, whatever the press did to the editor since.
+            workspace.update(cx, |workspace, cx| workspace.note_toolbar_press(cx));
             editor(cx).update(cx, |editor, cx| editor.set_selected_range(3..3, cx));
-            let query = workspace.read(cx).active_sql(cx).unwrap();
+            let query = active_sql(cx);
+            assert_eq!(query.sql, "SELECT 2 AS second;");
+            assert_eq!(query.offset, second);
+
+            // The press is used once; the next run reads the editor.
+            let query = active_sql(cx);
             assert_eq!(query.sql, text);
             assert_eq!(query.offset, 0);
         })
