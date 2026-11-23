@@ -43,7 +43,7 @@ icon_assets!(
         FileCode,
         Trash,
         FastForward,
-        NotebookText
+        Type
     ]
 );
 

@@ -533,6 +533,23 @@ impl TitleBarView {
                             }
                         }),
                 )
+                // Documents open from here too: everything that opens is in
+                // this one menu, and the tab strip's + only makes new ones.
+                .separator()
+                .item(
+                    PopupMenuItem::new(tr("workspace.open_notebook"))
+                        .icon(crate::ui::workspace::TabKind::Notebook.glyph())
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(crate::ui::OpenNotebook), cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(tr("workspace.open_dashboard"))
+                        .icon(crate::ui::workspace::TabKind::Dashboard.glyph())
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(crate::ui::OpenDashboard), cx);
+                        }),
+                )
                 .separator()
                 .item(
                     PopupMenuItem::new(tr("title_bar.open.s3"))

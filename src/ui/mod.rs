@@ -58,6 +58,8 @@ gpui_kit::actions!(
         NextTab,
         PreviousTab,
         OpenData,
+        OpenNotebook,
+        OpenDashboard,
         OpenSetup,
         ToggleBaseMap,
         CheckForUpdates,

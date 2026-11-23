@@ -22,9 +22,16 @@ Usage: ducklocal notebook cells FILE
                                    [--restricted [--allow-read PATH]...
                                     [--timeout SECONDS] [--memory-limit SIZE]]
 
-A notebook is a .sql file of cells: a line `-- %%` starts a SQL cell and
-`-- %% [markdown]` a Markdown one, whose lines are SQL comments. A file with
-no markers is one SQL cell. Cells are numbered from 1, Markdown included.
+A notebook is a .sql file of cells: a line `-- %%` starts a SQL cell,
+`-- %% [markdown]` a Markdown one, `-- %% [plot]` a plot and `-- %% [dash]` a
+dashboard, whose lines are SQL comments. A file with no markers is one SQL
+cell. Cells are numbered from 1, whatever their kind.
+
+A plot cell holds a .dash plot block's attributes, one a line (type = \"bar\",
+x = \"channel\", y = \"revenue\", series, title, format and the rest), checked by
+the same rules. `data = NAME` draws the SQL cell whose marker says name=NAME;
+without it, the nearest SQL cell above. A dash cell holds any .dash blocks
+(source, query, plot, filter); its relative paths start beside the notebook.
 
 cells  Print the cells as JSON: {file, cells: [{index, kind, line, source}]},
        line being where the cell's text starts. Nothing runs.
@@ -51,7 +58,13 @@ Output (json): {file, ok, cells: [...]}. A Markdown cell is {index, kind,
 line, source}; a SQL cell adds status (ok, failed or skipped), statements (how
 many it held), and result, the last statement's {columns, rows, row_count,
 truncated, total_rows, total_rows_exact, elapsed_ms}, or error {kind, message,
-hint}. With --restricted the output adds {restricted}, the limits it ran under.
+hint}. A plot cell adds status, data (the cell it draws), plot {type, x, y,
+series, title}, and error when the cell is wrong or names a column its data
+cell does not return; in md it is a line saying what it draws. A dash cell is
+checked as `ducklocal check FILE --summary` checks a .dash file, on its own
+connection: it adds status and check, that summary, or error; a query reading
+a table an earlier SQL cell made is listed under unresolved. With
+--restricted the output adds {restricted}, the limits it ran under.
 
 The report is printed whether or not a cell failed; exit 1 when one did, 2 for
 argument mistakes.
@@ -135,6 +148,8 @@ fn kind_name(kind: CellKind) -> &'static str {
     match kind {
         CellKind::Sql => "sql",
         CellKind::Markdown => "markdown",
+        CellKind::Plot => "plot",
+        CellKind::Dash => "dash",
     }
 }
 
@@ -273,6 +288,133 @@ enum Ran {
         error: CliError,
     },
     Skipped,
+    /// A plot cell, checked against its data cell's result.
+    Drawn(Box<Drawn>),
+    /// A dash cell, checked as `ducklocal check` checks a .dash file: its
+    /// summary line, or why it failed.
+    Checked(Result<Value, CliError>),
+}
+
+/// What became of one plot cell. It draws nothing here; it is checked, so a
+/// plot that would fail in the window fails the run.
+struct Drawn {
+    /// The data cell, numbered from 1; `None` for a text panel.
+    data: Option<usize>,
+    plot: Option<crate::spec::model::Plot>,
+    /// What is wrong with the cell, or with its columns.
+    error: Option<String>,
+    /// The data cell did not run, or failed, so there was nothing to check.
+    skipped: bool,
+}
+
+impl Drawn {
+    fn failed(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
+/// Check the plot cell at `ix` against what its data cell returned.
+fn draw(doc: &Document, ran: &[Option<Ran>], ix: usize) -> Drawn {
+    let cell = &doc.cells[ix];
+    let read = super::plot::read(&cell.source, ix as u64 + 1);
+    let failed =
+        |data: Option<usize>, plot: Option<crate::spec::model::Plot>, error: String| Drawn {
+            data,
+            plot,
+            error: Some(error),
+            skipped: false,
+        };
+    let plot = match read.plot {
+        Ok(plot) => plot,
+        Err(errors) => return failed(None, None, errors.join("\n")),
+    };
+    if plot.kind == "text" {
+        return Drawn {
+            data: None,
+            plot: Some(plot),
+            error: None,
+            skipped: false,
+        };
+    }
+    let d = match super::data_cell(&doc.cells, ix, read.data.as_deref()) {
+        Ok(d) => d,
+        Err(message) => return failed(None, Some(plot), message),
+    };
+    let result = match &ran[d] {
+        Some(Ran::Ok {
+            result: Some(result),
+            ..
+        }) => result,
+        Some(Ran::Ok { result: None, .. }) => {
+            return failed(
+                Some(d + 1),
+                Some(plot),
+                format!("cell {} returns no rows to plot", d + 1),
+            )
+        }
+        _ => {
+            return Drawn {
+                data: Some(d + 1),
+                plot: Some(plot),
+                error: None,
+                skipped: true,
+            }
+        }
+    };
+    // Each column the plot names must be in the result, as `check` demands
+    // of a dashboard's plots; names match ignoring case, as `prepare` finds
+    // them.
+    let columns: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+    let named = [
+        Some(plot.x.as_str()).filter(|x| !x.is_empty()),
+        plot.y.as_deref(),
+        plot.series.as_deref(),
+        plot.value.as_deref(),
+        plot.lat.as_deref(),
+        plot.lng.as_deref(),
+    ];
+    let missing: Vec<String> = named
+        .into_iter()
+        .flatten()
+        .filter(|name| !columns.iter().any(|c| c.eq_ignore_ascii_case(name)))
+        .map(str::to_string)
+        .collect();
+    if !missing.is_empty() {
+        return failed(
+            Some(d + 1),
+            Some(plot),
+            format!(
+                "cell {} returns no column {}; it returns {}",
+                d + 1,
+                missing.join(", "),
+                columns.join(", ")
+            ),
+        );
+    }
+    Drawn {
+        data: Some(d + 1),
+        plot: Some(plot),
+        error: None,
+        skipped: false,
+    }
+}
+
+/// A plot in a few words, for a report: `bar of revenue by channel`.
+fn describe(plot: &crate::spec::model::Plot) -> String {
+    let mut words = plot.kind.clone();
+    if let Some(y) = plot.y.as_deref().or(plot.value.as_deref()) {
+        words.push_str(&format!(" of {y}"));
+    }
+    if !plot.x.is_empty() {
+        words.push_str(&format!(" by {}", plot.x));
+    }
+    if let Some(series) = &plot.series {
+        words.push_str(&format!(", split by {series}"));
+    }
+    match &plot.title {
+        Some(title) => format!("{title} ({words})"),
+        None => words,
+    }
 }
 
 fn run_cells(args: &[OsString]) -> Result<(String, i32), CliError> {
@@ -331,9 +473,37 @@ fn run_cells(args: &[OsString]) -> Result<(String, i32), CliError> {
         }
         ran.push(Some(outcome));
     }
-    let failed = ran
-        .iter()
-        .any(|ran| matches!(ran, Some(Ran::Failed { .. })));
+    // Plots after every SQL cell has had its turn: a plot may draw a cell
+    // below it, by name.
+    for ix in 0..doc.cells.len() {
+        if doc.cells[ix].kind == CellKind::Plot && selected(ix + 1) {
+            ran[ix] = Some(Ran::Drawn(Box::new(draw(&doc, &ran, ix))));
+        }
+    }
+    // A dash cell is a dashboard of its own: checked the way `check` checks
+    // a .dash file beside the notebook — its sources start there — on its
+    // own connection, in memory unless --database names one. A table an
+    // earlier SQL cell made is not there, so a query reading one is listed
+    // under `unresolved` rather than failed.
+    for ix in 0..doc.cells.len() {
+        if doc.cells[ix].kind == CellKind::Dash && selected(ix + 1) {
+            let checked = crate::spec::check_source(
+                &file,
+                &doc.cells[ix].source,
+                options.database.clone(),
+                true,
+                false,
+                policy.as_ref(),
+            )
+            .map(|summary| serde_json::from_str(&summary).unwrap_or(Value::Null));
+            ran[ix] = Some(Ran::Checked(checked));
+        }
+    }
+    let failed = ran.iter().any(|ran| match ran {
+        Some(Ran::Failed { .. }) | Some(Ran::Checked(Err(_))) => true,
+        Some(Ran::Drawn(drawn)) => drawn.failed(),
+        _ => false,
+    });
 
     let output = match options.format {
         Format::Markdown => markdown_report(&doc, &ran, &selected),
@@ -431,7 +601,7 @@ fn json_report(
         // Markdown is there too, as the context the SQL was written in.
         let shown = match cell.kind {
             CellKind::Markdown => every_cell,
-            CellKind::Sql => selected(index),
+            CellKind::Sql | CellKind::Plot | CellKind::Dash => selected(index),
         };
         if !shown {
             continue;
@@ -456,13 +626,47 @@ fn json_report(
                 entry["error"] = error_json(error);
             }
             Some(Ran::Skipped) => entry["status"] = json!("skipped"),
+            Some(Ran::Drawn(drawn)) => {
+                entry["status"] = json!(if drawn.failed() {
+                    "failed"
+                } else if drawn.skipped {
+                    "skipped"
+                } else {
+                    "ok"
+                });
+                if let Some(data) = drawn.data {
+                    entry["data"] = json!(data);
+                }
+                if let Some(plot) = &drawn.plot {
+                    entry["plot"] = json!({
+                        "type": plot.kind,
+                        "x": (!plot.x.is_empty()).then_some(&plot.x),
+                        "y": plot.y,
+                        "series": plot.series,
+                        "title": plot.title,
+                    });
+                }
+                if let Some(error) = &drawn.error {
+                    entry["error"] = json!({"kind": "plot", "message": error});
+                }
+            }
+            Some(Ran::Checked(Ok(summary))) => {
+                entry["status"] = json!("ok");
+                entry["check"] = summary.clone();
+            }
+            Some(Ran::Checked(Err(error))) => {
+                entry["status"] = json!("failed");
+                entry["error"] = error_json(error);
+            }
             None => {}
         }
         cells.push(entry);
     }
-    let ok = !ran
-        .iter()
-        .any(|ran| matches!(ran, Some(Ran::Failed { .. })));
+    let ok = !ran.iter().any(|ran| match ran {
+        Some(Ran::Failed { .. }) | Some(Ran::Checked(Err(_))) => true,
+        Some(Ran::Drawn(drawn)) => drawn.failed(),
+        _ => false,
+    });
     json!({"file": file.display().to_string(), "ok": ok, "cells": cells})
 }
 
@@ -501,7 +705,35 @@ fn markdown_report(
                         ));
                     }
                     Some(Ran::Skipped) => out.push("_Not run: an earlier cell failed._".into()),
-                    None => {}
+                    Some(Ran::Drawn(_)) | Some(Ran::Checked(_)) | None => {}
+                }
+            }
+            // A dashboard is said in words, as a plot is: what it holds, or
+            // what is wrong with it.
+            CellKind::Dash => match ran {
+                Some(Ran::Checked(Ok(summary))) => out.push(format!(
+                    "_Dashboard: {} plots from {} queries_",
+                    summary["plots"].as_u64().unwrap_or(0),
+                    summary["queries"].as_u64().unwrap_or(0)
+                )),
+                Some(Ran::Checked(Err(error))) => out.push(format!(
+                    "> **Dashboard error:** {}",
+                    error.message.replace('\n', "\n> ")
+                )),
+                _ => {}
+            },
+            // A chart cannot be written into Markdown; it is said in words,
+            // so a reader knows what the window would draw there.
+            CellKind::Plot => {
+                let Some(Ran::Drawn(drawn)) = ran else {
+                    continue;
+                };
+                match (&drawn.error, &drawn.plot) {
+                    (Some(error), _) => {
+                        out.push(format!("> **Plot error:** {}", error.replace('\n', "\n> ")))
+                    }
+                    (None, Some(plot)) => out.push(format!("_Chart: {}_", describe(plot))),
+                    (None, None) => {}
                 }
             }
         }
@@ -627,6 +859,60 @@ SELECT sum(n) AS total FROM t;
         assert!(report["restricted"].is_object());
     }
 
+    const PLOTS: &str = "\
+-- %% name=sales
+SELECT 'a' AS channel, 3 AS revenue UNION ALL SELECT 'b', 5;
+
+-- %% [plot]
+-- type = \"bar\"
+-- data = sales
+-- x = \"channel\"
+-- y = \"revenue\"
+
+-- %% [plot]
+-- type = \"pie\"
+-- x = \"channel\"
+-- y = \"profit\"
+";
+
+    #[test]
+    fn a_plot_reports_its_data_cell_and_a_missing_column_fails_the_run() {
+        let (_dir, path) = notebook(PLOTS);
+        let (report, code) = run_json(&path, &[]);
+        assert_eq!(code, 1, "{report}");
+        let cells = report["cells"].as_array().unwrap();
+        assert_eq!(cells[1]["kind"], "plot");
+        assert_eq!(cells[1]["status"], "ok");
+        assert_eq!(cells[1]["data"], 1);
+        assert_eq!(cells[1]["plot"]["type"], "bar");
+        // No `data`: the nearest SQL cell above, which has no `profit`.
+        assert_eq!(cells[2]["status"], "failed");
+        assert_eq!(cells[2]["data"], 1);
+        let message = cells[2]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("profit"), "{message}");
+    }
+
+    #[test]
+    fn a_plot_mistake_is_said_as_a_dashboard_check_says_it() {
+        let (_dir, path) = notebook("-- %%\nSELECT 1 AS a;\n-- %% [plot]\n-- type = \"pyramid\"\n");
+        let (report, code) = run_json(&path, &[]);
+        assert_eq!(code, 1);
+        let message = report["cells"][1]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("pyramid"), "{message}");
+    }
+
+    #[test]
+    fn a_plot_is_said_in_words_in_a_markdown_report() {
+        let (_dir, path) = notebook(&PLOTS.replace("profit", "revenue"));
+        let (output, code) =
+            run(&args(&["run", path.to_str().unwrap(), "--format", "md"])).unwrap();
+        assert_eq!(code, 0, "{output}");
+        assert!(
+            output.contains("_Chart: bar of revenue by channel_"),
+            "{output}"
+        );
+    }
+
     #[test]
     fn markdown_format_reads_as_a_report() {
         let (dir, path) = notebook(TEXT);
@@ -639,5 +925,48 @@ SELECT sum(n) AS total FROM t;
             "{output}"
         );
         assert!(output.contains("| total |"), "{output}");
+    }
+
+    const DASH: &str = "\
+-- %% [dash]
+-- source \"rows\" { path = \"rows.csv\" }
+-- query \"total\" {
+--   sql = <<SQL
+--     SELECT sum(n) AS total FROM rows
+--   SQL
+-- }
+-- plot \"t\" {
+--   type  = \"card\"
+--   query = query.total
+--   value = total
+-- }
+";
+
+    #[test]
+    fn a_dash_cell_is_checked_as_a_dash_file_beside_the_notebook() {
+        let (dir, path) = notebook(DASH);
+        std::fs::write(dir.0.join("rows.csv"), "n\n1\n2\n").unwrap();
+        let (report, code) = run_json(&path, &[]);
+        assert_eq!(code, 0, "{report}");
+        let cell = &report["cells"][0];
+        assert_eq!(cell["kind"], "dash");
+        assert_eq!(cell["status"], "ok");
+        assert_eq!(cell["check"]["plots"], 1);
+        assert_eq!(cell["check"]["ok"], true);
+        let (output, _) = run(&args(&["run", path.to_str().unwrap(), "--format", "md"])).unwrap();
+        assert!(
+            output.contains("_Dashboard: 1 plots from 1 queries_"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn a_broken_dash_cell_fails_the_run_as_check_would() {
+        let (_dir, path) = notebook("-- %% [dash]\n-- plot \"p\" { type = \"pyramid\" }\n");
+        let (report, code) = run_json(&path, &[]);
+        assert_eq!(code, 1, "{report}");
+        assert_eq!(report["cells"][0]["status"], "failed");
+        let message = report["cells"][0]["error"]["message"].as_str().unwrap();
+        assert!(message.contains("pyramid"), "{message}");
     }
 }

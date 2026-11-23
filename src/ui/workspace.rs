@@ -116,7 +116,7 @@ impl TabKind {
         match self {
             TabKind::Query => AssetIcon::SquareTerminal,
             TabKind::Dashboard => AssetIcon::ChartNoAxesColumn,
-            TabKind::Notebook => AssetIcon::NotebookText,
+            TabKind::Notebook => AssetIcon::FileText,
         }
     }
 }
@@ -661,7 +661,7 @@ impl Workspace {
 
     /// The `+` menu's "Open notebook…": a `.sql` file, from the system
     /// picker.
-    fn pick_notebook_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn pick_notebook_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1027,7 +1027,7 @@ impl Workspace {
 
     /// The `+` menu's "Open dashboard…": a `.dash` file, from the system
     /// picker. Anything else is refused with a note, not opened as data.
-    fn pick_dashboard_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn pick_dashboard_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1813,9 +1813,9 @@ impl Workspace {
                     .dropdown_menu(move |menu, _window, _cx| {
                         let new_query = view.clone();
                         let new_notebook = view.clone();
-                        let open_notebook = view.clone();
-                        let open_dashboard = view.clone();
-                        // Each entry wears the glyph its tab will wear.
+                        // Only what is new: opening a file is the title bar's
+                        // Open menu. Each entry wears the glyph its tab will
+                        // wear.
                         menu.item(
                             PopupMenuItem::new(tr("workspace.new_query"))
                                 .icon(TabKind::Query.glyph())
@@ -1831,28 +1831,6 @@ impl Workspace {
                                 .on_click(move |_, window, cx| {
                                     if let Some(view) = new_notebook.upgrade() {
                                         view.update(cx, |this, cx| this.new_notebook(window, cx));
-                                    }
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(tr("workspace.open_notebook"))
-                                .icon(TabKind::Notebook.glyph())
-                                .on_click(move |_, window, cx| {
-                                    if let Some(view) = open_notebook.upgrade() {
-                                        view.update(cx, |this, cx| {
-                                            this.pick_notebook_file(window, cx)
-                                        });
-                                    }
-                                }),
-                        )
-                        .item(
-                            PopupMenuItem::new(tr("workspace.open_dashboard"))
-                                .icon(TabKind::Dashboard.glyph())
-                                .on_click(move |_, window, cx| {
-                                    if let Some(view) = open_dashboard.upgrade() {
-                                        view.update(cx, |this, cx| {
-                                            this.pick_dashboard_file(window, cx)
-                                        });
                                     }
                                 }),
                         )
@@ -1941,30 +1919,18 @@ impl Workspace {
                         .on_click(on_host(|notebook, _, cx| notebook.stop(cx))),
                 )
             })
-            .child(
-                Button::new("notebook-add-sql")
+            .child({
+                let notebook = host.downgrade();
+                Button::new("notebook-add")
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
-                    .label(tr("notebook.add.sql"))
+                    .tooltip(tr("notebook.add.tooltip"))
                     .disabled(broken)
-                    .on_click(on_host(|notebook, window, cx| {
-                        let after = notebook.selected_cell();
-                        notebook.insert_cell(crate::notebook::CellKind::Sql, after, window, cx)
-                    })),
-            )
-            .child(
-                Button::new("notebook-add-markdown")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label(tr("notebook.add.markdown"))
-                    .disabled(broken)
-                    .on_click(on_host(|notebook, window, cx| {
-                        let after = notebook.selected_cell();
-                        notebook.insert_cell(crate::notebook::CellKind::Markdown, after, window, cx)
-                    })),
-            )
+                    .dropdown_menu(move |menu, _, _| {
+                        crate::ui::notebook::add_cell_menu(menu, notebook.clone(), None)
+                    })
+            })
             .child(
                 div()
                     .flex_1()

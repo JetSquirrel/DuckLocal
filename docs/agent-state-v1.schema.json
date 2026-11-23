@@ -107,11 +107,15 @@
                   "type": "object",
                   "required": ["kind", "source", "selected"],
                   "properties": {
-                    "kind": { "enum": ["sql", "markdown"] },
+                    "kind": { "enum": ["sql", "markdown", "plot", "dash"] },
                     "source": { "type": "string" },
                     "selected": { "type": "boolean" },
                     "source_withheld": { "type": "boolean" },
-                    "result": { "type": "object" }
+                    "result": { "type": "object" },
+                    "dashboard": {
+                      "type": "object",
+                      "description": "A dash cell's dashboard, as a dashboard tab reports it."
+                    }
                   }
                 }
               }

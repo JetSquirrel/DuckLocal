@@ -1,21 +1,34 @@
-//! Notebooks: a `.sql` file read as a run of cells, SQL and Markdown.
+//! Notebooks: a `.sql` file read as a run of cells — SQL, Markdown, plots and
+//! dashboards.
 //!
 //! A notebook is plain SQL with cell markers, the "percent" format Jupytext
-//! and VS Code read: a line starting `-- %%` begins a cell, and
-//! `-- %% [markdown]` begins a Markdown one, whose lines are SQL comments.
+//! and VS Code read: a line starting `-- %%` begins a cell, `-- %% [markdown]`
+//! a Markdown one, `-- %% [plot]` a plot and `-- %% [dash]` a dashboard, whose
+//! lines are SQL comments.
 //!
 //! ```text
 //! -- %% [markdown]
 //! -- # Orders review
-//! -- Revenue by month.
 //!
-//! -- %%
-//! SELECT date_trunc('month', ts) AS m, sum(amount) AS revenue
+//! -- %% name=monthly
+//! SELECT date_trunc('month', ts) AS month, sum(amount) AS revenue
 //! FROM 'orders.parquet' GROUP BY 1 ORDER BY 1;
+//!
+//! -- %% [plot]
+//! -- type = "line"
+//! -- data = monthly
+//! -- x = "month"
+//! -- y = "revenue"
 //! ```
 //!
-//! The file stays a script: `duckdb < notebook.sql` runs it, Markdown and
-//! all, and it diffs like any other text. Results are not kept in it — a
+//! A plot cell holds the attributes of a `.dash` plot block, checked by the
+//! same rules (see `plot`), with `data` naming the SQL cell it draws — by the
+//! `name=` on its marker — or, left out, the nearest SQL cell above it. A dash
+//! cell holds any `.dash` blocks — sources, queries, plots, filters — and is
+//! drawn as a dashboard, its relative paths starting beside the notebook.
+//!
+//! The file stays a script: `duckdb < notebook.sql` runs it, Markdown, plots
+//! and all, and it diffs like any other text. Results are not kept in it — a
 //! result can be hundreds of megabytes, and rerunning is one keystroke.
 //!
 //! Any `.sql` file opens as a notebook. One with no markers is a single SQL
@@ -28,6 +41,7 @@ use crate::i18n::trf;
 use crate::spec::tabs::OpenDocument;
 
 pub mod cli;
+pub mod plot;
 
 /// The extension a notebook carries.
 pub const EXTENSION: &str = "sql";
@@ -42,14 +56,28 @@ const MARKER: &str = "-- %%";
 pub enum CellKind {
     Sql,
     Markdown,
+    /// A chart of a SQL cell's result: `.dash` plot attributes, one a line.
+    Plot,
+    /// A dashboard of its own: any `.dash` blocks — sources, queries,
+    /// plots, filters — drawn in place as the dashboard view draws a file.
+    Dash,
+}
+
+impl CellKind {
+    /// Whether the cell's lines are SQL comments in the file.
+    fn commented(self) -> bool {
+        matches!(self, CellKind::Markdown | CellKind::Plot | CellKind::Dash)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub kind: CellKind,
-    /// The cell's text: SQL as written, or Markdown with the comment
-    /// prefixes taken off.
+    /// The cell's text: SQL as written, or Markdown or plot attributes with
+    /// the comment prefixes taken off.
     pub source: String,
+    /// What a plot's `data` calls this cell: `name=` on its marker.
+    pub name: Option<String>,
 }
 
 impl Cell {
@@ -57,6 +85,7 @@ impl Cell {
         Self {
             kind: CellKind::Sql,
             source: source.into(),
+            name: None,
         }
     }
 
@@ -65,7 +94,23 @@ impl Cell {
         Self {
             kind: CellKind::Markdown,
             source: source.into(),
+            name: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn plot(source: impl Into<String>) -> Self {
+        Self {
+            kind: CellKind::Plot,
+            source: source.into(),
+            name: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn named(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
     }
 }
 
@@ -78,8 +123,25 @@ pub struct Document {
     pub plain: bool,
 }
 
-/// The kind a marker line names, or `None` when `line` is not a marker.
-fn marker_kind(line: &str) -> Option<CellKind> {
+/// What a marker line says: the kind of cell it starts, and its name.
+struct Marker {
+    kind: CellKind,
+    name: Option<String>,
+}
+
+/// Whether `text` can name a cell: a SQL identifier, as a `.dash` name is.
+pub fn is_cell_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Read a marker line, or `None` when `line` is not one. Past `-- %%` comes
+/// an optional title, `[kind]`, and `key=value` pairs; `name` is the one
+/// pair read, and a title is ignored, as Jupytext's own reader does.
+fn marker(line: &str) -> Option<Marker> {
     let rest = line.trim_start().strip_prefix(MARKER)?;
     // `-- %%%` is a comment that happens to start the same way.
     if rest.starts_with('%') {
@@ -89,13 +151,20 @@ fn marker_kind(line: &str) -> Option<CellKind> {
         .find('[')
         .and_then(|open| Some(&rest[open + 1..open + rest[open..].find(']')?]))
         .map(|tag| tag.trim().to_ascii_lowercase());
-    Some(match tag.as_deref() {
+    let kind = match tag.as_deref() {
         Some("markdown" | "md") => CellKind::Markdown,
+        Some("plot") => CellKind::Plot,
+        Some("dash") => CellKind::Dash,
         _ => CellKind::Sql,
-    })
+    };
+    let name = rest.split_whitespace().find_map(|word| {
+        let value = word.strip_prefix("name=")?.trim_matches('"');
+        is_cell_name(value).then(|| value.to_string())
+    });
+    Some(Marker { kind, name })
 }
 
-/// A Markdown line without its comment prefix: `-- text` is `text`, and a
+/// A commented line without its comment prefix: `-- text` is `text`, and a
 /// bare `--` is a blank line.
 fn uncomment(line: &str) -> &str {
     let trimmed = line.trim_start();
@@ -130,17 +199,23 @@ pub fn parse_located(text: &str) -> (Document, Vec<usize>) {
     let mut starts = Vec::new();
     // Text before the first marker is a SQL cell of its own, when there is
     // any: a header comment, or the whole of a plain script.
-    let mut kind = CellKind::Sql;
+    let mut current = Marker {
+        kind: CellKind::Sql,
+        name: None,
+    };
     let mut marker_line = 1;
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut plain = true;
     let mut flush =
-        |kind: CellKind, marker_line: usize, lines: &mut Vec<(usize, &str)>, leading: bool| {
+        |marker: Marker, marker_line: usize, lines: &mut Vec<(usize, &str)>, leading: bool| {
             let text: Vec<&str> = lines
                 .iter()
-                .map(|(_, line)| match kind {
-                    CellKind::Sql => *line,
-                    CellKind::Markdown => uncomment(line),
+                .map(|(_, line)| {
+                    if marker.kind.commented() {
+                        uncomment(line)
+                    } else {
+                        line
+                    }
                 })
                 .collect();
             let source = trim_blank_lines(&text);
@@ -151,7 +226,12 @@ pub fn parse_located(text: &str) -> (Document, Vec<usize>) {
                     .iter()
                     .find(|(_, line)| !line.trim().is_empty())
                     .map_or(marker_line, |(number, _)| *number);
-                cells.push(Cell { kind, source });
+                cells.push(Cell {
+                    kind: marker.kind,
+                    source,
+                    // Only a SQL cell has a result to be named for.
+                    name: marker.name.filter(|_| marker.kind == CellKind::Sql),
+                });
                 starts.push(start);
             }
             lines.clear();
@@ -159,17 +239,17 @@ pub fn parse_located(text: &str) -> (Document, Vec<usize>) {
     let mut leading = true;
     for (index, line) in text.lines().enumerate() {
         let number = index + 1;
-        if let Some(next) = marker_kind(line) {
-            flush(kind, marker_line, &mut lines, leading);
+        if let Some(next) = marker(line) {
+            let done = std::mem::replace(&mut current, next);
+            flush(done, marker_line, &mut lines, leading);
             leading = false;
             plain = false;
-            kind = next;
             marker_line = number;
         } else {
             lines.push((number, line));
         }
     }
-    flush(kind, marker_line, &mut lines, leading);
+    flush(current, marker_line, &mut lines, leading);
     if cells.is_empty() {
         cells.push(Cell::sql(""));
         starts.push(1);
@@ -180,7 +260,7 @@ pub fn parse_located(text: &str) -> (Document, Vec<usize>) {
 /// Write a notebook's text.
 pub fn serialize(doc: &Document) -> String {
     if let [cell] = doc.cells.as_slice() {
-        if doc.plain && cell.kind == CellKind::Sql {
+        if doc.plain && cell.kind == CellKind::Sql && cell.name.is_none() {
             return terminated(cell.source.clone());
         }
     }
@@ -189,31 +269,49 @@ pub fn serialize(doc: &Document) -> String {
         if ix > 0 {
             out.push('\n');
         }
+        out.push_str(MARKER);
         match cell.kind {
-            CellKind::Sql => {
-                out.push_str(MARKER);
-                out.push('\n');
-                if !cell.source.trim().is_empty() {
-                    out.push_str(cell.source.trim_end());
+            CellKind::Sql => {}
+            CellKind::Markdown => out.push_str(" [markdown]"),
+            CellKind::Plot => out.push_str(" [plot]"),
+            CellKind::Dash => out.push_str(" [dash]"),
+        }
+        if let Some(name) = cell.name.as_deref().filter(|name| is_cell_name(name)) {
+            out.push_str(" name=");
+            out.push_str(name);
+        }
+        out.push('\n');
+        if cell.kind.commented() {
+            for line in cell.source.trim_end().lines() {
+                if line.is_empty() {
+                    out.push_str("--\n");
+                } else {
+                    out.push_str("-- ");
+                    out.push_str(line);
                     out.push('\n');
                 }
             }
-            CellKind::Markdown => {
-                out.push_str(MARKER);
-                out.push_str(" [markdown]\n");
-                for line in cell.source.trim_end().lines() {
-                    if line.is_empty() {
-                        out.push_str("--\n");
-                    } else {
-                        out.push_str("-- ");
-                        out.push_str(line);
-                        out.push('\n');
-                    }
-                }
-            }
+        } else if !cell.source.trim().is_empty() {
+            out.push_str(cell.source.trim_end());
+            out.push('\n');
         }
     }
     out
+}
+
+/// The SQL cell a plot at `plot_ix` draws: the one its `data` names, or the
+/// nearest SQL cell above it. `Err` says why there is none.
+pub fn data_cell(cells: &[Cell], plot_ix: usize, data: Option<&str>) -> Result<usize, String> {
+    match data {
+        Some(name) => cells
+            .iter()
+            .position(|cell| cell.kind == CellKind::Sql && cell.name.as_deref() == Some(name))
+            .ok_or_else(|| crate::i18n::trf("notebook.plot.no_such_cell", &[name, name])),
+        None => cells[..plot_ix.min(cells.len())]
+            .iter()
+            .rposition(|cell| cell.kind == CellKind::Sql)
+            .ok_or_else(|| crate::i18n::tr("notebook.plot.no_cell_above").to_string()),
+    }
 }
 
 fn terminated(mut text: String) -> String {
@@ -371,15 +469,93 @@ SELECT 2;
 
     #[test]
     fn only_a_marker_line_starts_a_cell() {
-        assert_eq!(marker_kind("-- %%"), Some(CellKind::Sql));
-        assert_eq!(marker_kind("  -- %% [md]"), Some(CellKind::Markdown));
+        let kind = |line: &str| marker(line).map(|marker| marker.kind);
+        assert_eq!(kind("-- %%"), Some(CellKind::Sql));
+        assert_eq!(kind("  -- %% [md]"), Some(CellKind::Markdown));
+        assert_eq!(kind("-- %% [Markdown] notes"), Some(CellKind::Markdown));
+        assert_eq!(kind("-- %% [plot]"), Some(CellKind::Plot));
+        assert_eq!(kind("-- %%% not a cell"), None);
+        assert_eq!(kind("-- % not a cell"), None);
+        assert_eq!(kind("SELECT '-- %%'"), None);
+    }
+
+    #[test]
+    fn a_marker_names_its_cell_and_a_bad_name_is_none() {
+        let name = |line: &str| marker(line).and_then(|marker| marker.name);
+        assert_eq!(name("-- %% name=sales").as_deref(), Some("sales"));
         assert_eq!(
-            marker_kind("-- %% [Markdown] notes"),
-            Some(CellKind::Markdown)
+            name("-- %% Totals name=\"by_day\"").as_deref(),
+            Some("by_day")
         );
-        assert_eq!(marker_kind("-- %%% not a cell"), None);
-        assert_eq!(marker_kind("-- % not a cell"), None);
-        assert_eq!(marker_kind("SELECT '-- %%'"), None);
+        assert_eq!(name("-- %% name=1st"), None);
+        assert_eq!(name("-- %% name=a-b"), None);
+        assert_eq!(name("-- %%"), None);
+    }
+
+    #[test]
+    fn plot_cells_and_names_round_trip() {
+        let text = "\
+-- %% name=sales
+SELECT channel, revenue FROM t;
+
+-- %% [plot]
+-- type = \"bar\"
+-- data = sales
+-- x = \"channel\"
+-- y = \"revenue\"
+";
+        let doc = parse(text);
+        assert_eq!(
+            doc.cells,
+            vec![
+                Cell::sql("SELECT channel, revenue FROM t;").named("sales"),
+                Cell::plot("type = \"bar\"\ndata = sales\nx = \"channel\"\ny = \"revenue\""),
+            ]
+        );
+        assert_eq!(serialize(&doc), text);
+    }
+
+    #[test]
+    fn a_plot_draws_the_named_cell_or_the_nearest_sql_cell_above() {
+        let cells = vec![
+            Cell::sql("SELECT 1").named("first"),
+            Cell::markdown("Between"),
+            Cell::sql("SELECT 2"),
+            Cell::plot(""),
+        ];
+        assert_eq!(data_cell(&cells, 3, None), Ok(2));
+        assert_eq!(data_cell(&cells, 3, Some("first")), Ok(0));
+        assert!(data_cell(&cells, 3, Some("missing")).is_err());
+        assert!(data_cell(&cells, 0, None).is_err());
+    }
+
+    #[test]
+    fn a_dash_cell_keeps_its_heredoc_and_indentation() {
+        let text = "\
+-- %% [dash]
+-- source \"orders\" { path = \"orders.csv\" }
+--
+-- query \"q\" {
+--   sql = <<SQL
+--     SELECT 1 AS n -- one
+--   SQL
+-- }
+";
+        let doc = parse(text);
+        assert_eq!(doc.cells.len(), 1);
+        assert_eq!(doc.cells[0].kind, CellKind::Dash);
+        assert_eq!(
+            doc.cells[0].source,
+            "source \"orders\" { path = \"orders.csv\" }\n\nquery \"q\" {\n  sql = <<SQL\n    SELECT 1 AS n -- one\n  SQL\n}"
+        );
+        assert_eq!(serialize(&doc), text);
+    }
+
+    #[test]
+    fn a_named_single_cell_keeps_its_marker() {
+        let mut doc = parse("SELECT 1;\n");
+        doc.cells[0].name = Some("one".into());
+        assert_eq!(serialize(&doc), "-- %% name=one\nSELECT 1;\n");
     }
 
     #[test]

@@ -121,6 +121,9 @@ const TEXT_MIN: f32 = 40.;
 /// The space between two plots' cards, and between the cards and the tab's
 /// edges.
 const PAGE_GAP: f32 = 4.;
+/// The room an embedded dashboard takes while it has no rows to measure:
+/// loading, empty, or a spec that did not read.
+const EMBEDDED_MIN_HEIGHT: f32 = 160.;
 /// A plot card's corner radius: a tool's panel, not a page's tile.
 const PANEL_RADIUS: f32 = 4.;
 
@@ -135,6 +138,13 @@ const TABLE_MIN: f32 = 120.;
 
 /// A `.dash` file open as a tab: its plots, and the run that produced them.
 pub struct Dashboard {
+    /// The spec's text when it is not a file's: a notebook's dash cell (see
+    /// `Dashboard::embedded`). `path` is then the notebook, for relative
+    /// paths to start beside.
+    inline: Option<String>,
+    /// How tall the rows stood together when last drawn, for an embedded
+    /// dashboard's host to give it that much room.
+    content_height: f32,
     /// The tab's id, baked into the resizable group's element id so two
     /// dashboards never share panel sizes.
     id: u64,
@@ -271,8 +281,47 @@ type Outcomes = HashMap<String, (String, Result<Arc<QueryResult>, String>)>;
 
 impl Dashboard {
     pub fn new(id: u64, path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::blank(id, path, cx);
+        this.load_comments();
+        this.load_proposal();
+        this.watch(cx);
+        this.reload(cx);
+        this
+    }
+
+    /// A dashboard whose spec is `source` rather than a file's: a notebook's
+    /// dash cell. `base` is the file its relative paths start beside — the
+    /// notebook. Nothing is watched and there are no comments or proposals:
+    /// the cell's text is the spec, and the notebook is the document.
+    pub fn embedded(id: u64, base: PathBuf, source: String, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::blank(id, base, cx);
+        this.inline = Some(source);
+        this.reload(cx);
+        this
+    }
+
+    /// An embedded dashboard's spec changed: run what it now says, keeping
+    /// every query whose SQL it left as it was.
+    pub fn set_inline_source(&mut self, source: String, cx: &mut Context<Self>) {
+        if self.inline.as_deref() == Some(source.as_str()) {
+            return;
+        }
+        self.inline = Some(source);
+        self.refilter(cx);
+    }
+
+    /// How tall an embedded dashboard's rows stand together, as last drawn:
+    /// the host gives it that much room, and the page scrolls, not the
+    /// dashboard.
+    pub fn content_height(&self) -> f32 {
+        self.content_height
+    }
+
+    fn blank(id: u64, path: PathBuf, cx: &mut Context<Self>) -> Self {
         let known_stamp = FileStamp::capture(&path);
-        let mut this = Self {
+        Self {
+            inline: None,
+            content_height: EMBEDDED_MIN_HEIGHT,
             id,
             path,
             spec_error: None,
@@ -317,12 +366,7 @@ impl Dashboard {
             proposal_error: None,
             proposal_stale: false,
             review: None,
-        };
-        this.load_comments();
-        this.load_proposal();
-        this.watch(cx);
-        this.reload(cx);
-        this
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -892,8 +936,9 @@ impl Dashboard {
         cx.notify();
         let path = self.path.clone();
         let picks = self.picks.clone();
+        let inline = self.inline.clone();
         cx.spawn(async move |this, cx| {
-            let run = smol::unblock(move || load(&path, &picks, &reuse)).await;
+            let run = smol::unblock(move || load(&path, inline.as_deref(), &picks, &reuse)).await;
             this.update(cx, |this, cx| {
                 this.running = false;
                 match run.spec_error {
@@ -1288,7 +1333,13 @@ impl Dashboard {
             }));
         // A text panel runs no query: there is no SQL to show.
         let has_sql = self.plots[ix].kind != "text";
-        let comments = self.render_comment_button(ix, window, cx);
+        // An embedded dashboard is part of a notebook, which has no review
+        // threads of its own to keep.
+        let comments = if self.inline.is_some() {
+            div().into_any_element()
+        } else {
+            self.render_comment_button(ix, window, cx)
+        };
         let open = self.comments.open_on(&name);
         let commenting = self.comment_open.as_deref() == Some(name.as_str());
         let hover_only = |this: Div, keep: bool| {
@@ -2742,6 +2793,23 @@ impl Render for Dashboard {
         let review = self.review.take();
         let reviewing = review.as_ref().map(|review| self.render_review(review, cx));
         self.review = review;
+        // Embedded, a state with no rows to measure still needs room: a
+        // message, or one plot blown up to a chart's full height.
+        if self.inline.is_some() {
+            let wanted = if self.spec_error.is_some() || self.plots.is_empty() {
+                Some(EMBEDDED_MIN_HEIGHT)
+            } else if self.maximized_ix().is_some() {
+                Some(PLOT_MAX)
+            } else {
+                None
+            };
+            if let Some(wanted) = wanted {
+                if (self.content_height - wanted).abs() > 0.5 {
+                    self.content_height = wanted;
+                    cx.notify();
+                }
+            }
+        }
         let body = if let Some(reviewing) = reviewing {
             reviewing
         } else if self.showing_source {
@@ -2859,94 +2927,110 @@ impl Render for Dashboard {
             // the group scales every row by the same factor, so a row of cards
             // would grow as much as a chart, all of it empty space. The rest
             // of the tab stays below the last row, as on a page.
+            // An embedded dashboard reports how tall its rows stand, for the
+            // notebook to give it that room; a change is drawn next frame.
+            if (self.content_height - stack).abs() > 0.5 {
+                self.content_height = stack;
+                cx.notify();
+            }
             let stack = px(stack);
-            let wheel = self.wheel.clone();
-            let viewport = self.wheel.viewport();
-            let painted = self.painted.clone();
-            // The canvas sits outside the scrolling div, so its bounds are
-            // the viewport's, not the scrolled content's.
-            let frame = self.wheel.clone();
-            let scroll = self.wheel.stack().clone();
-            div()
-                .size_full()
-                .relative()
-                // Painted first, so its listener hears a wheel event before
-                // the stack or any table in it: GPUI Kit's scroll areas take
-                // an event whole in the capture phase, the innermost first,
-                // and a table would keep every one from the dashboard.
-                .child(
-                    canvas(
-                        move |_, _, _| frame.begin_frame(),
-                        move |_, _, window, _| {
-                            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
-                                if phase == DispatchPhase::Capture && wheel.route(event, window) {
-                                    cx.stop_propagation();
-                                    window.refresh();
+            let grid = div().w_full().h(stack).child(
+                v_resizable(format!("dashboard-{}", self.id))
+                    // The page gap already parts the rows: a line across it
+                    // at rest would cut the page in strips. Under the
+                    // pointer the handle shows itself as everywhere else.
+                    .with_handle_appearance({
+                        let shown = resize_handle_appearance();
+                        Rc::new(
+                            move |handle: &ResizeHandleContext,
+                                  window: &mut Window,
+                                  cx: &mut App| {
+                                if handle.state() == ResizeHandleState::Idle {
+                                    Some(div().into_any_element())
+                                } else {
+                                    shown(handle, window, cx)
                                 }
-                            });
-                        },
+                            },
+                        )
+                    })
+                    .children(panels),
+            );
+            if self.inline.is_some() {
+                // Inside a notebook the page scrolls, not the dashboard: it
+                // stands at its full height with no scroller of its own to
+                // catch the wheel.
+                grid.into_any_element()
+            } else {
+                let wheel = self.wheel.clone();
+                let viewport = self.wheel.viewport();
+                let painted = self.painted.clone();
+                // The canvas sits outside the scrolling div, so its bounds
+                // are the viewport's, not the scrolled content's.
+                let frame = self.wheel.clone();
+                let scroll = self.wheel.stack().clone();
+                div()
+                    .size_full()
+                    .relative()
+                    // Painted first, so its listener hears a wheel event
+                    // before the stack or any table in it: GPUI Kit's scroll
+                    // areas take an event whole in the capture phase, the
+                    // innermost first, and a table would keep every one from
+                    // the dashboard.
+                    .child(
+                        canvas(
+                            move |_, _, _| frame.begin_frame(),
+                            move |_, _, window, _| {
+                                window.on_mouse_event(
+                                    move |event: &ScrollEvent, phase, window, cx| {
+                                        if phase == DispatchPhase::Capture
+                                            && wheel.route(event, window)
+                                        {
+                                            cx.stop_propagation();
+                                            window.refresh();
+                                        }
+                                    },
+                                );
+                            },
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
                     )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                )
-                .child(ScrollBounce::new(
-                    ("dashboard-bounce", self.id as usize),
-                    &scroll,
-                    div()
-                        .id(format!("dashboard-scroll-{}", self.id))
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .track_scroll(&scroll)
-                        .overflow_y_scroll()
-                        // A sideways swipe would otherwise be read as a
-                        // vertical one.
-                        .lock_scroll_axis()
-                        .child(
-                            v_flex()
-                                .w_full()
-                                .flex_none()
-                                .child(
-                                    div().w_full().h(stack).child(
-                                        v_resizable(format!("dashboard-{}", self.id))
-                                            // The page gap already parts the rows: a
-                                            // line across it at rest would cut the page
-                                            // in strips. Under the pointer the handle
-                                            // shows itself as everywhere else.
-                                            .with_handle_appearance({
-                                                let shown = resize_handle_appearance();
-                                                Rc::new(
-                                            move |handle: &ResizeHandleContext,
-                                                  window: &mut Window,
-                                                  cx: &mut App| {
-                                                if handle.state() == ResizeHandleState::Idle {
-                                                    Some(div().into_any_element())
-                                                } else {
-                                                    shown(handle, window, cx)
-                                                }
-                                            },
-                                        )
-                                            })
-                                            .children(panels),
-                                    ),
-                                )
-                                .children(self.render_adding(cx)),
-                        ),
-                ))
-                .vertical_scrollbar(&scroll)
-                .child(
-                    canvas(
-                        move |b, _, _| viewport.set(Some(b)),
-                        move |_, _, _, _| painted.set(Some(Instant::now())),
+                    .child(ScrollBounce::new(
+                        ("dashboard-bounce", self.id as usize),
+                        &scroll,
+                        div()
+                            .id(format!("dashboard-scroll-{}", self.id))
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .track_scroll(&scroll)
+                            .overflow_y_scroll()
+                            // A sideways swipe would otherwise be read as a
+                            // vertical one.
+                            .lock_scroll_axis()
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .flex_none()
+                                    .child(grid)
+                                    .children(self.render_adding(cx)),
+                            ),
+                    ))
+                    .vertical_scrollbar(&scroll)
+                    .child(
+                        canvas(
+                            move |b, _, _| viewport.set(Some(b)),
+                            move |_, _, _, _| painted.set(Some(Instant::now())),
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
                     )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
-                )
-                .into_any_element()
+                    .into_any_element()
+            }
         };
 
         v_flex()
@@ -3134,10 +3218,18 @@ struct Run {
 /// Read, parse, validate, run, prepare. Blocking — call it off the UI thread.
 /// `picks` narrow the queries that read their filters; a query whose SQL
 /// comes out as `reuse` last ran it keeps that outcome instead of running.
-fn load(path: &Path, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
-    let display = path.display().to_string();
+fn load(path: &Path, inline: Option<&str>, picks: &HashMap<String, Pick>, reuse: &Outcomes) -> Run {
+    // An embedded spec is the cell's own text, its errors numbered as the
+    // cell numbers its lines.
+    let display = match inline {
+        Some(_) => crate::i18n::tr("notebook.dash.label").to_string(),
+        None => path.display().to_string(),
+    };
     let spec = (|| -> Result<(Spec, String), String> {
-        let source = std::fs::read_to_string(path).map_err(|e| format!("{display}: {e}"))?;
+        let source = match inline {
+            Some(source) => source.to_string(),
+            None => std::fs::read_to_string(path).map_err(|e| format!("{display}: {e}"))?,
+        };
         let file =
             model::parse(&source).map_err(|e| format!("{display}:{}: {}", e.line, e.message))?;
         let spec = model::validate(&file).map_err(|diagnostics| {
@@ -3866,7 +3958,7 @@ impl TableDelegate for SpecTableDelegate {
 /// [`complete::complete`], wired exactly like the SQL provider — the rope
 /// gives the prefix and the replace range, the pure function gives the
 /// candidates.
-struct SpecCompletionProvider;
+pub(crate) struct SpecCompletionProvider;
 
 /// Don't pop the menu up before an identifier character or a `.` exists.
 const MAX_PREFIX_SCAN: usize = 64;
@@ -3944,6 +4036,145 @@ impl CompletionProvider for SpecCompletionProvider {
             .map(|c| c.is_alphanumeric() || c == '_' || c == '.')
             .unwrap_or(false)
     }
+}
+
+/// How tall a plot drawn on its own stands, by type: a card is a number, a
+/// text panel a few lines, everything else a chart.
+pub(crate) fn standalone_plot_height(kind: &str) -> f32 {
+    match kind {
+        "card" => 120.,
+        "text" => 110.,
+        _ => 300.,
+    }
+}
+
+/// One plot drawn on its own, outside a dashboard: a notebook's plot cell.
+/// The dashboard's face — title, the data's own warnings, a key for several
+/// series, then the chart, card or text — without what needs a whole
+/// dashboard: picking bands, sizing cards across a row, or a table grid.
+/// `key` keeps one cell's chart apart from another's.
+pub(crate) fn standalone_plot(key: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
+    if plot.kind == "card" && plot.failure.is_none() {
+        return render_card(plot, CARD_VALUE_MAX, cx);
+    }
+    if plot.kind == "text" {
+        return render_text(plot, cx);
+    }
+    let is_empty = match plot.kind.as_str() {
+        "map" => plot.geo.as_ref().is_none_or(|geo| geo.point_count() == 0),
+        "timeline" => plot
+            .timeline
+            .as_ref()
+            .is_none_or(|timeline| timeline.events.is_empty()),
+        "pie" => plot.pie.is_empty(),
+        _ => plot.points.is_empty(),
+    };
+    let drawn = plot.failure.is_none() && !is_empty;
+    let mut notice = plot.notice.clone();
+    let mut legend = Vec::new();
+    if drawn {
+        match plot.kind.as_str() {
+            "map" => {
+                if let Some(geo) = &plot.geo {
+                    let (notes, key) = map_notes(geo, cx);
+                    notice = match (notice.take(), notes) {
+                        (Some(a), Some(b)) => Some(crate::i18n::join(&a, &b)),
+                        (a, b) => a.or(b),
+                    };
+                    legend = key;
+                }
+            }
+            "pie" => {
+                legend = pie_parts(
+                    &plot.pie,
+                    plot.series_names.join(", ").into(),
+                    plot.format,
+                    PieLook::default(),
+                    ("notebook-pie-key", key),
+                    cx,
+                )
+                .1;
+            }
+            "heatmap" => legend = heat_key(&plot.points, plot.format, cx),
+            _ if plot.series_names.len() > 1 => {
+                legend = plot
+                    .series_names
+                    .iter()
+                    .enumerate()
+                    .map(|(s, name)| {
+                        (
+                            crate::ui::palette::color(plot.slot(s), cx),
+                            SharedString::from(name.clone()),
+                        )
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    let body = if let Some(message) = plot.failure.clone() {
+        div()
+            .size_full()
+            .p_3()
+            .child(
+                Alert::error(("notebook-plot-error", key), message)
+                    .title(tr("dashboard.plot_failed")),
+            )
+            .into_any_element()
+    } else if is_empty {
+        empty_chart(cx)
+    } else {
+        div()
+            .size_full()
+            .px_2()
+            .pb_2()
+            .child(chart_element(key, plot, cx))
+            .into_any_element()
+    };
+    let header = !plot.title.is_empty() || notice.is_some() || !legend.is_empty();
+    v_flex()
+        .size_full()
+        .when(header, |this| {
+            this.child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
+                    .px(px(CARD_INSET))
+                    .pt_3()
+                    .pb_2()
+                    .gap_1()
+                    .when(!plot.title.is_empty(), |this| {
+                        this.child(
+                            h_flex()
+                                .gap_1p5()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .text_base()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_ellipsis()
+                                        .child(plot.title.clone()),
+                                )
+                                .children(info_mark(plot, cx)),
+                        )
+                    })
+                    .when_some(notice, |this, notice| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_ellipsis()
+                                .child(notice),
+                        )
+                    })
+                    .when(!legend.is_empty(), |this| {
+                        this.child(legend_row(legend, cx))
+                    }),
+            )
+        })
+        .child(div().flex_1().min_h_0().child(body))
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -4370,7 +4601,7 @@ filter "channel" { plot = plot.channels }
         let path = dir.join("board.dash");
         std::fs::write(&path, BOARD).unwrap();
 
-        let fresh = load(&path, &HashMap::new(), &HashMap::new());
+        let fresh = load(&path, None, &HashMap::new(), &HashMap::new());
         assert_eq!(fresh.spec_error, None);
         assert_eq!(total(&fresh), "36");
 
@@ -4382,7 +4613,7 @@ filter "channel" { plot = plot.channels }
                 values: vec![Some("web".into())],
             },
         );
-        let narrowed = load(&path, &picks, &fresh.outcomes);
+        let narrowed = load(&path, None, &picks, &fresh.outcomes);
         assert_eq!(total(&narrowed), "15");
         // The picking plot's own query is not narrowed, and neither it nor a
         // query that reads no filter ran again: the same result comes back.
@@ -4396,17 +4627,17 @@ filter "channel" { plot = plot.channels }
 
         // The grid's NULL picks the rows with no channel.
         picks.get_mut("channel").unwrap().values = vec![None];
-        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "1");
+        assert_eq!(total(&load(&path, None, &picks, &narrowed.outcomes)), "1");
 
         // Several values read any of them, NULL included.
         picks.get_mut("channel").unwrap().values = vec![Some("web".into()), Some("shop".into())];
-        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "35");
+        assert_eq!(total(&load(&path, None, &picks, &narrowed.outcomes)), "35");
         picks.get_mut("channel").unwrap().values = vec![Some("shop".into()), None];
-        assert_eq!(total(&load(&path, &picks, &narrowed.outcomes)), "21");
+        assert_eq!(total(&load(&path, None, &picks, &narrowed.outcomes)), "21");
         picks.get_mut("channel").unwrap().values = vec![None];
 
         // A reload reuses nothing: every query runs.
-        let reloaded = load(&path, &picks, &HashMap::new());
+        let reloaded = load(&path, None, &picks, &HashMap::new());
         assert!(!Arc::ptr_eq(
             &fresh.results["count"],
             &reloaded.results["count"]
@@ -4437,7 +4668,7 @@ filter "seen" { plot = plot.times }
 "#,
         )
         .unwrap();
-        let run = load(&path, &HashMap::new(), &HashMap::new());
+        let run = load(&path, None, &HashMap::new(), &HashMap::new());
         assert_eq!(run.spec_error, None);
         assert_eq!(
             run.results["times"].rows[0],
