@@ -662,6 +662,10 @@ pub struct ResultsPanel {
     /// duplicate submissions are ignored until it finishes.
     exporting: bool,
     filter_input: Entity<InputState>,
+    /// The rows the last run opened on — its last result set, as a shell
+    /// leaves the screen — whichever step the strip shows later: what a
+    /// notebook plot draws.
+    primary: Option<Rc<QueryResult>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -771,6 +775,7 @@ impl ResultsPanel {
             export_input: None,
             exporting: false,
             filter_input,
+            primary: None,
             _subscriptions: vec![subscription],
         }
     }
@@ -785,7 +790,32 @@ impl ResultsPanel {
         cx.notify();
     }
 
+    /// The rows the last run opened on, when it returned any.
+    pub fn primary_rows(&self) -> Option<Rc<QueryResult>> {
+        self.primary.clone()
+    }
+
+    /// What a single statement that returned no rows changed — its count and
+    /// time — which a notebook says in one line rather than a whole panel.
+    /// `None` for rows, a failure, or a script, whose steps the strip lists.
+    pub fn affected(&self) -> Option<(u64, u128)> {
+        match self.view {
+            ResultView::Affected { count, elapsed_ms } if self.script.is_empty() => {
+                Some((count, elapsed_ms))
+            }
+            _ => None,
+        }
+    }
+
+    fn shown_rows(&self) -> Option<Rc<QueryResult>> {
+        match &self.view {
+            ResultView::Rows(result) => Some(result.clone()),
+            _ => None,
+        }
+    }
+
     pub fn set_running(&mut self, cx: &mut Context<Self>) {
+        self.primary = None;
         self.view = ResultView::Running;
         self.overview = OverviewState::Idle;
         self.overview_request += 1;
@@ -802,6 +832,7 @@ impl ResultsPanel {
     ) {
         self.script.clear();
         self.show(&shown_of(outcome), &sql, window, cx);
+        self.primary = self.shown_rows();
     }
 
     /// Show what a Run's script produced. One statement shows as it always
@@ -840,6 +871,7 @@ impl ResultsPanel {
             })
             .collect();
         self.select_step(selected.unwrap_or(0), window, cx);
+        self.primary = self.shown_rows();
     }
 
     fn select_step(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {

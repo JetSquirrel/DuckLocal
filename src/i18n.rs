@@ -1172,6 +1172,44 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("notebook.add.tooltip", "添加单元格", "Add a cell"),
     ("notebook.add.sql_cell", "SQL 单元格", "SQL cell"),
     ("notebook.add.markdown_cell", "Markdown 单元格", "Markdown cell"),
+    ("notebook.add.plot_cell", "Plot 单元格", "Plot cell"),
+    ("notebook.cell.edit", "编辑", "Edit"),
+    (
+        "notebook.plot.waiting",
+        "运行上方的 SQL 单元格后显示图表",
+        "Run the SQL cell it draws to see the chart",
+    ),
+    (
+        "notebook.plot.data_failed",
+        "它所画的 SQL 单元格运行失败",
+        "The SQL cell it draws failed",
+    ),
+    (
+        "notebook.plot.no_such_cell",
+        "没有名为 {} 的 SQL 单元格：在 SQL 单元格的标记行写 name={}",
+        "No SQL cell is named {}: write name={} on a SQL cell's marker line",
+    ),
+    (
+        "notebook.plot.no_cell_above",
+        "上方没有 SQL 单元格可画：把它移到一个 SQL 单元格下面，或用 data = 名称 指定",
+        "No SQL cell above to draw: move it under one, or name one with data = NAME",
+    ),
+    (
+        "notebook.plot.bad_data",
+        "data = {} 不是单元格名称：名称由字母、数字和下划线组成",
+        "data = {} is not a cell name: a name is letters, digits and underscores",
+    ),
+    ("notebook.plot.at_line", "第 {} 行：{}", "Line {}: {}"),
+    (
+        "notebook.plot.table",
+        "表格已经显示在 SQL 单元格下方；请选择一种图表类型",
+        "The SQL cell already shows its rows as a table; pick a chart type",
+    ),
+    (
+        "notebook.plot.empty",
+        "写下这个图的属性，例如 type = \"bar\"、x = \"列\"、y = \"列\"",
+        "Write the plot's attributes, such as type = \"bar\", x = \"column\", y = \"column\"",
+    ),
     (
         "notebook.cell.markdown.empty",
         "双击编辑 Markdown",

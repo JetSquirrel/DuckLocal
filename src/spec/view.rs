@@ -3946,6 +3946,145 @@ impl CompletionProvider for SpecCompletionProvider {
     }
 }
 
+/// How tall a plot drawn on its own stands, by type: a card is a number, a
+/// text panel a few lines, everything else a chart.
+pub(crate) fn standalone_plot_height(kind: &str) -> f32 {
+    match kind {
+        "card" => 120.,
+        "text" => 110.,
+        _ => 300.,
+    }
+}
+
+/// One plot drawn on its own, outside a dashboard: a notebook's plot cell.
+/// The dashboard's face — title, the data's own warnings, a key for several
+/// series, then the chart, card or text — without what needs a whole
+/// dashboard: picking bands, sizing cards across a row, or a table grid.
+/// `key` keeps one cell's chart apart from another's.
+pub(crate) fn standalone_plot(key: usize, plot: &PreparedPlot, cx: &App) -> AnyElement {
+    if plot.kind == "card" && plot.failure.is_none() {
+        return render_card(plot, CARD_VALUE_MAX, cx);
+    }
+    if plot.kind == "text" {
+        return render_text(plot, cx);
+    }
+    let is_empty = match plot.kind.as_str() {
+        "map" => plot.geo.as_ref().is_none_or(|geo| geo.point_count() == 0),
+        "timeline" => plot
+            .timeline
+            .as_ref()
+            .is_none_or(|timeline| timeline.events.is_empty()),
+        "pie" => plot.pie.is_empty(),
+        _ => plot.points.is_empty(),
+    };
+    let drawn = plot.failure.is_none() && !is_empty;
+    let mut notice = plot.notice.clone();
+    let mut legend = Vec::new();
+    if drawn {
+        match plot.kind.as_str() {
+            "map" => {
+                if let Some(geo) = &plot.geo {
+                    let (notes, key) = map_notes(geo, cx);
+                    notice = match (notice.take(), notes) {
+                        (Some(a), Some(b)) => Some(crate::i18n::join(&a, &b)),
+                        (a, b) => a.or(b),
+                    };
+                    legend = key;
+                }
+            }
+            "pie" => {
+                legend = pie_parts(
+                    &plot.pie,
+                    plot.series_names.join(", ").into(),
+                    plot.format,
+                    PieLook::default(),
+                    ("notebook-pie-key", key),
+                    cx,
+                )
+                .1;
+            }
+            "heatmap" => legend = heat_key(&plot.points, plot.format, cx),
+            _ if plot.series_names.len() > 1 => {
+                legend = plot
+                    .series_names
+                    .iter()
+                    .enumerate()
+                    .map(|(s, name)| {
+                        (
+                            crate::ui::palette::color(plot.slot(s), cx),
+                            SharedString::from(name.clone()),
+                        )
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    let body = if let Some(message) = plot.failure.clone() {
+        div()
+            .size_full()
+            .p_3()
+            .child(
+                Alert::error(("notebook-plot-error", key), message)
+                    .title(tr("dashboard.plot_failed")),
+            )
+            .into_any_element()
+    } else if is_empty {
+        empty_chart(cx)
+    } else {
+        div()
+            .size_full()
+            .px_2()
+            .pb_2()
+            .child(chart_element(key, plot, cx))
+            .into_any_element()
+    };
+    let header = !plot.title.is_empty() || notice.is_some() || !legend.is_empty();
+    v_flex()
+        .size_full()
+        .when(header, |this| {
+            this.child(
+                v_flex()
+                    .w_full()
+                    .flex_none()
+                    .px(px(CARD_INSET))
+                    .pt_3()
+                    .pb_2()
+                    .gap_1()
+                    .when(!plot.title.is_empty(), |this| {
+                        this.child(
+                            h_flex()
+                                .gap_1p5()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .text_base()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_ellipsis()
+                                        .child(plot.title.clone()),
+                                )
+                                .children(info_mark(plot, cx)),
+                        )
+                    })
+                    .when_some(notice, |this, notice| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .text_ellipsis()
+                                .child(notice),
+                        )
+                    })
+                    .when(!legend.is_empty(), |this| {
+                        this.child(legend_row(legend, cx))
+                    }),
+            )
+        })
+        .child(div().flex_1().min_h_0().child(body))
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     // Not `use super::*`: that brings `gpui_kit::*`, whose `test` macro

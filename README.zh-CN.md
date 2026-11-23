@@ -65,7 +65,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 - 语法高亮、自动补全、格式化
 - 多 Tab，`Cmd+Enter` / `Ctrl+Enter` 运行
 - 用 `EXPLAIN` 查看执行计划，用“性能分析”（`EXPLAIN ANALYZE`）找出耗时的算子
-- 笔记本：用 `-- %%` 标记分隔 SQL 与 Markdown 单元格的 `.sql` 文件，每个 SQL 单元格下方有自己的结果和图表
+- 笔记本：用 `-- %%` 标记分隔 SQL、Markdown 和 Plot 单元格的 `.sql` 文件，每个 SQL 单元格下方有自己的结果，Plot 单元格用仪表盘的图表类型把结果画成图
 
 </td>
 <td width="50%" valign="top">

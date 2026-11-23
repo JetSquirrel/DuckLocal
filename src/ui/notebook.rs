@@ -24,7 +24,9 @@ use gpui_kit::component::input::{
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, WindowExt};
+use gpui_kit::component::{
+    h_flex, v_flex, ActiveTheme, Disableable, Icon, IconName, Sizable, WindowExt,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -32,6 +34,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 
 use crate::i18n::{tr, trf};
 use crate::notebook::{Cell, CellKind, Document};
+use crate::spec::prepare::PreparedPlot;
 use crate::state::AppState;
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
@@ -73,8 +76,31 @@ struct NotebookCell {
     run_number: Option<u64>,
     /// The last run failed; its marker says so.
     failed: bool,
-    /// A Markdown cell shows its editor rather than its rendering.
+    /// A Markdown or plot cell shows its editor rather than its rendering.
     editing: bool,
+    /// What a plot's `data` calls this SQL cell: `name=` on its marker.
+    name: Option<String>,
+    /// Bumped by every result this SQL cell gets, so a plot drawing it
+    /// knows to prepare its chart again.
+    result_version: u64,
+    /// A plot cell's chart as last prepared, and what from.
+    plot: Option<PlotView>,
+}
+
+/// A plot cell's chart, prepared once per change rather than per frame.
+struct PlotView {
+    /// The cell's text, and the data cell and result it was prepared from:
+    /// a change to any of them prepares it again.
+    from: (String, Option<u64>, u64),
+    shown: PlotShown,
+}
+
+enum PlotShown {
+    Plot(Box<PreparedPlot>),
+    /// Nothing to draw yet, and why: the data cell has not run, or failed.
+    Waiting(SharedString),
+    /// The cell itself is wrong: what `.dash` would say, a line each.
+    Invalid(Vec<String>),
 }
 
 pub enum NotebookEvent {
@@ -167,10 +193,11 @@ impl Notebook {
         };
         this.plain = doc.plain;
         for cell in doc.cells {
-            let cell = this.new_cell(cell.kind, &cell.source, window, cx);
-            this.cells.push(cell);
+            let mut view = this.new_cell(cell.kind, &cell.source, window, cx);
+            view.name = cell.name;
+            this.cells.push(view);
         }
-        // Markdown opens rendered; only a new, empty one opens for editing.
+        // Markdown and plots open rendered; only a new one opens for editing.
         for cell in &mut this.cells {
             cell.editing = false;
         }
@@ -194,6 +221,7 @@ impl Notebook {
                 .map(|cell| Cell {
                     kind: cell.kind,
                     source: cell.editor.read(cx).value().to_string(),
+                    name: cell.name.clone(),
                 })
                 .collect(),
             plain: self.plain,
@@ -232,7 +260,7 @@ impl Notebook {
             });
             match kind {
                 CellKind::Sql => state.language("sql").line_number(true),
-                CellKind::Markdown => state.line_number(false),
+                CellKind::Markdown | CellKind::Plot => state.line_number(false),
             }
         });
         let (squiggles, fill) = editor.update(cx, |state, cx| {
@@ -265,10 +293,10 @@ impl Notebook {
                         }
                     }
                     InputEvent::Blur => {
-                        // Clicking away from a Markdown cell shows what it says,
-                        // unless there is nothing to show yet.
+                        // Clicking away from a Markdown or plot cell shows what
+                        // it says, unless there is nothing to show yet.
                         if let Some(cell) = this.cells.iter_mut().find(|cell| cell.id == id) {
-                            if cell.kind == CellKind::Markdown
+                            if cell.kind != CellKind::Sql
                                 && cell.editing
                                 && !editor.read(cx).value().trim().is_empty()
                             {
@@ -291,7 +319,10 @@ impl Notebook {
             run: RunState::Idle,
             run_number: None,
             failed: false,
-            editing: kind == CellKind::Markdown,
+            editing: kind != CellKind::Sql,
+            name: None,
+            result_version: 0,
+            plot: None,
         }
     }
 
@@ -310,11 +341,112 @@ impl Notebook {
         let at = after
             .and_then(|id| self.index_of(id))
             .map_or(self.cells.len(), |ix| ix + 1);
-        let cell = self.new_cell(kind, "", window, cx);
+        // A plot starts as a bar of the result above it — something to see
+        // at once and edit from — and, with a result to draw, shows it.
+        let columns = (kind == CellKind::Plot)
+            .then(|| self.rows_above(at, cx))
+            .flatten()
+            .map(|rows| {
+                rows.columns
+                    .iter()
+                    .map(|c| (c.name.clone(), c.kind == crate::query::ColumnKind::Numeric))
+                    .collect::<Vec<_>>()
+            });
+        let source = match kind {
+            CellKind::Plot => crate::notebook::plot::starter(columns.as_deref().unwrap_or(&[])),
+            _ => String::new(),
+        };
+        let cell = self.new_cell(kind, &source, window, cx);
         let id = cell.id;
         self.cells.insert(at, cell);
-        self.focus_cell(id, window, cx);
+        if kind == CellKind::Plot && columns.is_some() {
+            self.cells[at].editing = false;
+            self.selected = Some(id);
+        } else {
+            self.focus_cell(id, window, cx);
+        }
         cx.notify();
+    }
+
+    /// The result of the nearest SQL cell above `at`, when it has one.
+    fn rows_above(&self, at: usize, cx: &App) -> Option<std::rc::Rc<crate::query::QueryResult>> {
+        self.cells[..at.min(self.cells.len())]
+            .iter()
+            .rev()
+            .find(|cell| cell.kind == CellKind::Sql)?
+            .results
+            .as_ref()?
+            .read(cx)
+            .primary_rows()
+    }
+
+    /// Prepare each plot cell whose text, data cell or data changed since it
+    /// was last prepared. Called once per frame; a plot that has not changed
+    /// costs a parse of its few lines.
+    fn refresh_plots(&mut self, cx: &App) {
+        use crate::notebook::{data_cell, plot};
+        let index: Vec<Cell> = self
+            .cells
+            .iter()
+            .map(|cell| Cell {
+                kind: cell.kind,
+                source: String::new(),
+                name: cell.name.clone(),
+            })
+            .collect();
+        for ix in 0..self.cells.len() {
+            if self.cells[ix].kind != CellKind::Plot {
+                continue;
+            }
+            let source = self.cells[ix].editor.read(cx).value().to_string();
+            let read = plot::read(&source, self.cells[ix].id);
+            let data = data_cell(&index, ix, read.data.as_deref());
+            let from = (
+                source,
+                data.as_ref().ok().map(|&d| self.cells[d].id),
+                data.as_ref().map_or(0, |&d| self.cells[d].result_version),
+            );
+            if self.cells[ix]
+                .plot
+                .as_ref()
+                .is_some_and(|view| view.from == from)
+            {
+                continue;
+            }
+            let shown = match (read.plot, data) {
+                (Err(errors), _) => PlotShown::Invalid(errors),
+                (Ok(plot), _) if plot.kind == "text" => {
+                    PlotShown::Plot(Box::new(crate::spec::prepare::prepare::<
+                        crate::query::QueryResult,
+                    >(&plot, None)))
+                }
+                (Ok(_), Err(message)) => PlotShown::Invalid(vec![message]),
+                (Ok(plot), Ok(d)) => {
+                    let source = &self.cells[d];
+                    match source
+                        .results
+                        .as_ref()
+                        .and_then(|r| r.read(cx).primary_rows())
+                    {
+                        Some(rows) => {
+                            let mut prepared =
+                                crate::spec::prepare::prepare(&plot, Some(&Ok::<_, String>(rows)));
+                            // Unnamed, the plot would be titled by its made-up
+                            // name: better no title than `cell_7`.
+                            if plot.title.is_none() {
+                                prepared.title.clear();
+                            }
+                            PlotShown::Plot(Box::new(prepared))
+                        }
+                        None if source.failed => {
+                            PlotShown::Waiting(tr("notebook.plot.data_failed").into())
+                        }
+                        None => PlotShown::Waiting(tr("notebook.plot.waiting").into()),
+                    }
+                }
+            };
+            self.cells[ix].plot = Some(PlotView { from, shown });
+        }
     }
 
     fn delete_cell(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -356,7 +488,7 @@ impl Notebook {
         self.selected = Some(id);
         if let Some(ix) = self.index_of(id) {
             let cell = &mut self.cells[ix];
-            if cell.kind == CellKind::Markdown {
+            if cell.kind != CellKind::Sql {
                 cell.editing = true;
             }
             cell.editor.read(cx).focus_handle(cx).focus(window, cx);
@@ -393,13 +525,13 @@ impl Notebook {
         }
     }
 
-    /// Run one cell, after whatever is already queued. A Markdown cell's
-    /// "run" is showing it rendered.
+    /// Run one cell, after whatever is already queued. A Markdown or plot
+    /// cell's "run" is showing it rendered.
     pub fn run_cell(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.index_of(id) else {
             return;
         };
-        if self.cells[ix].kind == CellKind::Markdown {
+        if self.cells[ix].kind != CellKind::Sql {
             if !self.cells[ix].editor.read(cx).value().trim().is_empty() {
                 self.cells[ix].editing = false;
             }
@@ -560,6 +692,7 @@ impl Notebook {
         let cell = &mut self.cells[ix];
         cell.run = RunState::Idle;
         cell.failed = failed;
+        cell.result_version += 1;
         if failed && self.stop_on_failure {
             for queued in std::mem::take(&mut self.queue) {
                 if let Some(ix) = self.index_of(queued) {
@@ -648,6 +781,7 @@ impl Notebook {
                     "kind": match cell.kind {
                         CellKind::Sql => "sql",
                         CellKind::Markdown => "markdown",
+                        CellKind::Plot => "plot",
                     },
                     "source": cell.editor.read(cx).value().to_string(),
                     "selected": self.selected == Some(cell.id),
@@ -762,18 +896,95 @@ impl Notebook {
                     Self::editor_height(&cell.editor, cx),
                 ))
                 .children(cell.results.clone().map(|results| {
-                    div()
+                    // A statement that returned no rows is one line of news,
+                    // not a panel of empty space.
+                    let affected = (cell.run == RunState::Idle)
+                        .then(|| results.read(cx).affected())
+                        .flatten();
+                    match affected {
+                        Some((count, elapsed_ms)) => h_flex()
+                            .gap_1p5()
+                            .px_1()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(
+                                Icon::new(IconName::CircleCheck)
+                                    .small()
+                                    .text_color(theme.success),
+                            )
+                            .child(trf(
+                                "results.affected",
+                                &[
+                                    &count.to_string(),
+                                    &crate::state::format_duration(elapsed_ms as i64),
+                                ],
+                            ))
+                            .into_any_element(),
+                        None => div()
+                            .w_full()
+                            .h(crate::ui::scale::design(RESULTS_HEIGHT))
+                            .rounded(theme.radius)
+                            .border_1()
+                            .border_color(theme.border.opacity(0.6))
+                            .overflow_hidden()
+                            .child(results)
+                            .into_any_element(),
+                    }
+                }))
+                .into_any_element(),
+            CellKind::Markdown | CellKind::Plot if cell.editing => {
+                code_box(&cell.editor, Self::editor_height(&cell.editor, cx)).into_any_element()
+            }
+            CellKind::Plot => {
+                let content = match cell.plot.as_ref().map(|view| &view.shown) {
+                    Some(PlotShown::Plot(plot)) => div()
                         .w_full()
-                        .h(crate::ui::scale::design(RESULTS_HEIGHT))
+                        .h(crate::ui::scale::design(
+                            crate::spec::view::standalone_plot_height(&plot.kind),
+                        ))
                         .rounded(theme.radius)
                         .border_1()
                         .border_color(theme.border.opacity(0.6))
                         .overflow_hidden()
-                        .child(results)
-                }))
-                .into_any_element(),
-            CellKind::Markdown if cell.editing => {
-                code_box(&cell.editor, Self::editor_height(&cell.editor, cx)).into_any_element()
+                        .child(crate::spec::view::standalone_plot(id as usize, plot, cx))
+                        .into_any_element(),
+                    Some(PlotShown::Waiting(message)) => h_flex()
+                        .w_full()
+                        .h(crate::ui::scale::design(64.))
+                        .gap_2()
+                        .justify_center()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_dashed()
+                        .border_color(theme.border)
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(Icon::new(AssetIcon::ChartNoAxesColumn).small())
+                        .child(message.clone())
+                        .into_any_element(),
+                    Some(PlotShown::Invalid(errors)) => v_flex()
+                        .w_full()
+                        .gap_0p5()
+                        .px_3()
+                        .py_2()
+                        .rounded(theme.radius)
+                        .bg(theme.danger.opacity(0.08))
+                        .text_sm()
+                        .text_color(theme.danger)
+                        .children(errors.iter().map(|error| div().child(error.clone())))
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                };
+                div()
+                    .id(("cell-plot", id as usize))
+                    .w_full()
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.click_count() == 2 {
+                            this.focus_cell(id, window, cx);
+                        }
+                    }))
+                    .child(content)
+                    .into_any_element()
             }
             CellKind::Markdown => {
                 let text = cell.editor.read(cx).value();
@@ -817,6 +1028,20 @@ impl Notebook {
                 .border_color(theme.border.opacity(0.6)),
             selected,
         )
+        // Markdown and plots show what they say; this is the way back to
+        // the text, besides a double-click.
+        .when(cell.kind != CellKind::Sql && !cell.editing, |this| {
+            this.child(
+                Button::new(("cell-edit", id as usize))
+                    .ghost()
+                    .xsmall()
+                    .icon(AssetIcon::Code)
+                    .tooltip(tr("notebook.cell.edit"))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.focus_cell(id, window, cx)),
+                    ),
+            )
+        })
         .child(
             Button::new(("cell-up", id as usize))
                 .ghost()
@@ -963,10 +1188,16 @@ pub fn add_cell_menu(
         AssetIcon::Type,
         CellKind::Markdown,
     ))
+    .item(item(
+        "notebook.add.plot_cell",
+        AssetIcon::ChartNoAxesColumn,
+        CellKind::Plot,
+    ))
 }
 
 impl Render for Notebook {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_plots(cx);
         if let Some(error) = &self.load_error {
             return div()
                 .size_full()

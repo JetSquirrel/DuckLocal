@@ -107,7 +107,7 @@
                   "type": "object",
                   "required": ["kind", "source", "selected"],
                   "properties": {
-                    "kind": { "enum": ["sql", "markdown"] },
+                    "kind": { "enum": ["sql", "markdown", "plot"] },
                     "source": { "type": "string" },
                     "selected": { "type": "boolean" },
                     "source_withheld": { "type": "boolean" },

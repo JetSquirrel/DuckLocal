@@ -65,7 +65,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 - Syntax highlighting, autocompletion and formatting
 - Multiple tabs; run with `Cmd+Enter` / `Ctrl+Enter`
 - `EXPLAIN` for the query plan, and a profiler (`EXPLAIN ANALYZE`) that shows where time goes
-- Notebooks: a `.sql` file of SQL and Markdown cells (`-- %%` markers), each SQL cell with its own results and charts
+- Notebooks: a `.sql` file of SQL, Markdown and plot cells (`-- %%` markers), each SQL cell with its own results, and plot cells that chart them with the dashboard's plot types
 
 </td>
 <td width="50%" valign="top">
