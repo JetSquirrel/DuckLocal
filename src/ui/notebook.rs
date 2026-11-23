@@ -35,6 +35,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use crate::i18n::{tr, trf};
 use crate::notebook::{Cell, CellKind, Document};
 use crate::spec::prepare::PreparedPlot;
+use crate::spec::view::{Dashboard, DashboardEvent};
 use crate::state::AppState;
 use crate::ui::completion;
 use crate::ui::results::ResultsPanel;
@@ -54,6 +55,9 @@ const EDITOR_INSETS: f32 = 18.;
 const GUTTER_WIDTH: f32 = 40.;
 /// The space between cells, where the `+` appears.
 const GAP_HEIGHT: f32 = 14.;
+/// Ids for dash cells' dashboards, apart from any tab's: a dashboard keys its
+/// row sizes on its id.
+static NEXT_DASHBOARD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 40);
 
 /// Where a cell is in the run queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +87,8 @@ struct NotebookCell {
     /// Bumped by every result this SQL cell gets, so a plot drawing it
     /// knows to prepare its chart again.
     result_version: u64,
+    /// A dash cell's dashboard, and what it asks of the notebook.
+    dash: Option<(Entity<Dashboard>, Subscription)>,
     /// A plot cell's chart as last prepared, and what from.
     plot: Option<PlotView>,
 }
@@ -129,6 +135,8 @@ pub struct Notebook {
     /// A Run all stops at the first failure; a run of one cell does not
     /// clear what was queued after it.
     stop_on_failure: bool,
+    /// Run all is under way: its dash cells run when the queue empties.
+    dashboards_after_run: bool,
     scroll: ScrollHandle,
     /// The reason a file could not be read, shown in place of the cells.
     load_error: Option<String>,
@@ -156,6 +164,7 @@ impl Notebook {
             queue: VecDeque::new(),
             running: None,
             stop_on_failure: false,
+            dashboards_after_run: false,
             scroll: ScrollHandle::new(),
             load_error: None,
             _worker: None,
@@ -261,9 +270,20 @@ impl Notebook {
             match kind {
                 CellKind::Sql => state.language("sql").line_number(true),
                 CellKind::Markdown | CellKind::Plot => state.line_number(false),
+                CellKind::Dash => state
+                    .language(crate::spec::highlight::LANGUAGE)
+                    .line_number(true),
             }
         });
         let (squiggles, fill) = editor.update(cx, |state, cx| {
+            // A dash cell reads as a .dash file does: its colours, with the
+            // heredocs' SQL, and its completion. The highlighter goes in
+            // before the editor first draws, or the stock one takes the slot.
+            if kind == CellKind::Dash {
+                state.lsp_mut().completion_provider =
+                    Some(std::rc::Rc::new(crate::spec::view::SpecCompletionProvider));
+                state.set_highlighter_factory(crate::spec::highlight::factory(), cx);
+            }
             if kind == CellKind::Sql {
                 state.lsp_mut().completion_provider =
                     Some(completion::SqlCompletionProvider::new(self.state.clone()));
@@ -293,23 +313,27 @@ impl Notebook {
                         }
                     }
                     InputEvent::Blur => {
-                        // Clicking away from a Markdown or plot cell shows what
-                        // it says, unless there is nothing to show yet.
-                        if let Some(cell) = this.cells.iter_mut().find(|cell| cell.id == id) {
-                            if cell.kind != CellKind::Sql
+                        // Clicking away from a Markdown, plot or dash cell
+                        // shows what it says, unless there is nothing to show
+                        // yet; a dash cell runs what it now says.
+                        let leaving = this.cells.iter().any(|cell| {
+                            cell.id == id
+                                && cell.kind != CellKind::Sql
                                 && cell.editing
                                 && !editor.read(cx).value().trim().is_empty()
-                            {
-                                cell.editing = false;
-                                cx.notify();
-                            }
+                        });
+                        if leaving {
+                            this.show_rendered(id, window, cx);
                         }
                     }
                     _ => {}
                 }
             });
         self._subscriptions.push(subscription);
+        let dash = (kind == CellKind::Dash && !source.trim().is_empty())
+            .then(|| self.embed_dashboard(source.to_string(), window, cx));
         NotebookCell {
+            dash,
             id,
             kind,
             editor,
@@ -330,6 +354,74 @@ impl Notebook {
         self.cells.iter().position(|cell| cell.id == id)
     }
 
+    /// A dash cell's dashboard, running `source`. Its relative paths start
+    /// beside the notebook — or, untitled, in the folder the app runs in —
+    /// and "Open in a query tab" on one of its plots puts that SQL in a new
+    /// SQL cell under it instead.
+    fn embed_dashboard(
+        &mut self,
+        source: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<Dashboard>, Subscription) {
+        let base = self.path.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(tr("notebook.save.suggested_name"))
+        });
+        let id = NEXT_DASHBOARD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dash = cx.new(|cx| Dashboard::embedded(id, base, source, cx));
+        let events = cx.subscribe_in(&dash, window, |this, dash, event, window, cx| {
+            let DashboardEvent::OpenSql { sql, .. } = event;
+            let after = this
+                .cells
+                .iter()
+                .find(|cell| cell.dash.as_ref().is_some_and(|(d, _)| d == dash))
+                .map(|cell| cell.id);
+            this.insert_cell(CellKind::Sql, after, window, cx);
+            if let Some(editor) = this.focused_editor() {
+                editor.update(cx, |editor, cx| editor.set_value(sql.clone(), window, cx));
+            }
+        });
+        (dash, events)
+    }
+
+    /// Leave a Markdown, plot or dash cell's editor for what it says. A dash
+    /// cell's dashboard takes the text — made now, if the cell was empty
+    /// when it was added — and runs it, keeping what it already ran.
+    fn show_rendered(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.index_of(id) else {
+            return;
+        };
+        let source = self.cells[ix].editor.read(cx).value().to_string();
+        if source.trim().is_empty() {
+            return;
+        }
+        self.cells[ix].editing = false;
+        if self.cells[ix].kind == CellKind::Dash {
+            match &self.cells[ix].dash {
+                Some((dash, _)) => {
+                    dash.update(cx, |dash, cx| dash.set_inline_source(source, cx));
+                }
+                None => {
+                    let embedded = self.embed_dashboard(source, window, cx);
+                    self.cells[ix].dash = Some(embedded);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Re-run every dash cell's dashboard: after Run all, whose SQL cells
+    /// may have changed the tables the dashboards read.
+    fn reload_dashboards(&mut self, cx: &mut Context<Self>) {
+        for cell in &self.cells {
+            if let Some((dash, _)) = &cell.dash {
+                dash.update(cx, |dash, cx| dash.reload(cx));
+            }
+        }
+    }
+
     /// Put a new cell after `after` (or at the end), selected and focused.
     pub fn insert_cell(
         &mut self,
@@ -341,9 +433,10 @@ impl Notebook {
         let at = after
             .and_then(|id| self.index_of(id))
             .map_or(self.cells.len(), |ix| ix + 1);
-        // A plot starts as a bar of the result above it — something to see
-        // at once and edit from — and, with a result to draw, shows it.
-        let columns = (kind == CellKind::Plot)
+        // A plot starts as a bar of the result above it, and a dash cell as
+        // a dashboard of that SQL with that bar — something to see at once
+        // and edit from — and, with a result to draw, shows it.
+        let columns = matches!(kind, CellKind::Plot | CellKind::Dash)
             .then(|| self.rows_above(at, cx))
             .flatten()
             .map(|rows| {
@@ -354,18 +447,36 @@ impl Notebook {
             });
         let source = match kind {
             CellKind::Plot => crate::notebook::plot::starter(columns.as_deref().unwrap_or(&[])),
+            CellKind::Dash => crate::notebook::plot::dash_starter(
+                columns.as_ref().and(self.sql_above(at, cx)).as_deref(),
+                columns.as_deref().unwrap_or(&[]),
+            ),
             _ => String::new(),
         };
         let cell = self.new_cell(kind, &source, window, cx);
         let id = cell.id;
         self.cells.insert(at, cell);
-        if kind == CellKind::Plot && columns.is_some() {
+        if matches!(kind, CellKind::Plot | CellKind::Dash) && columns.is_some() {
             self.cells[at].editing = false;
             self.selected = Some(id);
         } else {
             self.focus_cell(id, window, cx);
         }
         cx.notify();
+    }
+
+    /// The statement whose rows the nearest SQL cell above `at` shows: its
+    /// last one, as a script's result is.
+    fn sql_above(&self, at: usize, cx: &App) -> Option<String> {
+        let cell = self.cells[..at.min(self.cells.len())]
+            .iter()
+            .rev()
+            .find(|cell| cell.kind == CellKind::Sql)?;
+        let text = cell.editor.read(cx).value().to_string();
+        let piece = crate::script::split(&text)
+            .into_iter()
+            .rfind(|piece| piece.kind == crate::script::PieceKind::Sql)?;
+        Some(text[piece.range].to_string())
     }
 
     /// The result of the nearest SQL cell above `at`, when it has one.
@@ -532,10 +643,14 @@ impl Notebook {
             return;
         };
         if self.cells[ix].kind != CellKind::Sql {
-            if !self.cells[ix].editor.read(cx).value().trim().is_empty() {
-                self.cells[ix].editing = false;
+            // Running a dash cell that is already showing runs its queries
+            // again, the way a dashboard tab's reload does.
+            if !self.cells[ix].editing {
+                if let Some((dash, _)) = &self.cells[ix].dash {
+                    dash.update(cx, |dash, cx| dash.reload(cx));
+                }
             }
-            cx.notify();
+            self.show_rendered(id, window, cx);
             return;
         }
         if !self.is_running() {
@@ -559,6 +674,13 @@ impl Notebook {
             .collect();
         for id in ids {
             self.enqueue(id, cx);
+        }
+        // The dashboards run once the SQL cells are done: they may read the
+        // tables those cells make.
+        self.dashboards_after_run = true;
+        if self.queue.is_empty() {
+            self.dashboards_after_run = false;
+            self.reload_dashboards(cx);
         }
         self.start_worker(window, cx);
     }
@@ -653,6 +775,9 @@ impl Notebook {
             self.running = Some(id);
             cx.notify();
             return Some((id, sql));
+        }
+        if std::mem::take(&mut self.dashboards_after_run) {
+            self.reload_dashboards(cx);
         }
         cx.notify();
         None
@@ -782,12 +907,16 @@ impl Notebook {
                         CellKind::Sql => "sql",
                         CellKind::Markdown => "markdown",
                         CellKind::Plot => "plot",
+                        CellKind::Dash => "dash",
                     },
                     "source": cell.editor.read(cx).value().to_string(),
                     "selected": self.selected == Some(cell.id),
                 });
                 if let Some(results) = &cell.results {
                     entry["result"] = results.read(cx).summary();
+                }
+                if let Some((dash, _)) = &cell.dash {
+                    entry["dashboard"] = dash.read(cx).summary();
                 }
                 entry
             })
@@ -932,9 +1061,30 @@ impl Notebook {
                     }
                 }))
                 .into_any_element(),
-            CellKind::Markdown | CellKind::Plot if cell.editing => {
+            CellKind::Markdown | CellKind::Plot | CellKind::Dash if cell.editing => {
                 code_box(&cell.editor, Self::editor_height(&cell.editor, cx)).into_any_element()
             }
+            // The dashboard at its own full height: the notebook scrolls,
+            // and the dashboard's grid, cards and filters work as in a tab.
+            CellKind::Dash => match &cell.dash {
+                Some((dash, _)) => div()
+                    .id(("cell-dash", id as usize))
+                    .w_full()
+                    .h(px(dash.read(cx).content_height()))
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.click_count() == 2 {
+                            this.focus_cell(id, window, cx);
+                        }
+                    }))
+                    .child(dash.clone())
+                    .into_any_element(),
+                None => div()
+                    .px_1()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(tr("notebook.cell.dash.empty"))
+                    .into_any_element(),
+            },
             CellKind::Plot => {
                 let content = match cell.plot.as_ref().map(|view| &view.shown) {
                     Some(PlotShown::Plot(plot)) => div()
@@ -1192,6 +1342,11 @@ pub fn add_cell_menu(
         "notebook.add.plot_cell",
         AssetIcon::ChartNoAxesColumn,
         CellKind::Plot,
+    ))
+    .item(item(
+        "notebook.add.dash_cell",
+        AssetIcon::LayoutDashboard,
+        CellKind::Dash,
     ))
 }
 

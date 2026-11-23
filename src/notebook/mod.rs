@@ -1,8 +1,10 @@
-//! Notebooks: a `.sql` file read as a run of cells — SQL, Markdown and plots.
+//! Notebooks: a `.sql` file read as a run of cells — SQL, Markdown, plots and
+//! dashboards.
 //!
 //! A notebook is plain SQL with cell markers, the "percent" format Jupytext
 //! and VS Code read: a line starting `-- %%` begins a cell, `-- %% [markdown]`
-//! a Markdown one and `-- %% [plot]` a plot, whose lines are SQL comments.
+//! a Markdown one, `-- %% [plot]` a plot and `-- %% [dash]` a dashboard, whose
+//! lines are SQL comments.
 //!
 //! ```text
 //! -- %% [markdown]
@@ -21,7 +23,9 @@
 //!
 //! A plot cell holds the attributes of a `.dash` plot block, checked by the
 //! same rules (see `plot`), with `data` naming the SQL cell it draws — by the
-//! `name=` on its marker — or, left out, the nearest SQL cell above it.
+//! `name=` on its marker — or, left out, the nearest SQL cell above it. A dash
+//! cell holds any `.dash` blocks — sources, queries, plots, filters — and is
+//! drawn as a dashboard, its relative paths starting beside the notebook.
 //!
 //! The file stays a script: `duckdb < notebook.sql` runs it, Markdown, plots
 //! and all, and it diffs like any other text. Results are not kept in it — a
@@ -54,12 +58,15 @@ pub enum CellKind {
     Markdown,
     /// A chart of a SQL cell's result: `.dash` plot attributes, one a line.
     Plot,
+    /// A dashboard of its own: any `.dash` blocks — sources, queries,
+    /// plots, filters — drawn in place as the dashboard view draws a file.
+    Dash,
 }
 
 impl CellKind {
     /// Whether the cell's lines are SQL comments in the file.
     fn commented(self) -> bool {
-        matches!(self, CellKind::Markdown | CellKind::Plot)
+        matches!(self, CellKind::Markdown | CellKind::Plot | CellKind::Dash)
     }
 }
 
@@ -147,6 +154,7 @@ fn marker(line: &str) -> Option<Marker> {
     let kind = match tag.as_deref() {
         Some("markdown" | "md") => CellKind::Markdown,
         Some("plot") => CellKind::Plot,
+        Some("dash") => CellKind::Dash,
         _ => CellKind::Sql,
     };
     let name = rest.split_whitespace().find_map(|word| {
@@ -266,6 +274,7 @@ pub fn serialize(doc: &Document) -> String {
             CellKind::Sql => {}
             CellKind::Markdown => out.push_str(" [markdown]"),
             CellKind::Plot => out.push_str(" [plot]"),
+            CellKind::Dash => out.push_str(" [dash]"),
         }
         if let Some(name) = cell.name.as_deref().filter(|name| is_cell_name(name)) {
             out.push_str(" name=");
@@ -518,6 +527,28 @@ SELECT channel, revenue FROM t;
         assert_eq!(data_cell(&cells, 3, Some("first")), Ok(0));
         assert!(data_cell(&cells, 3, Some("missing")).is_err());
         assert!(data_cell(&cells, 0, None).is_err());
+    }
+
+    #[test]
+    fn a_dash_cell_keeps_its_heredoc_and_indentation() {
+        let text = "\
+-- %% [dash]
+-- source \"orders\" { path = \"orders.csv\" }
+--
+-- query \"q\" {
+--   sql = <<SQL
+--     SELECT 1 AS n -- one
+--   SQL
+-- }
+";
+        let doc = parse(text);
+        assert_eq!(doc.cells.len(), 1);
+        assert_eq!(doc.cells[0].kind, CellKind::Dash);
+        assert_eq!(
+            doc.cells[0].source,
+            "source \"orders\" { path = \"orders.csv\" }\n\nquery \"q\" {\n  sql = <<SQL\n    SELECT 1 AS n -- one\n  SQL\n}"
+        );
+        assert_eq!(serialize(&doc), text);
     }
 
     #[test]

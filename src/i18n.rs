@@ -1108,7 +1108,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Dashboard 未更新",
         "Dashboard not updated",
     ),
-    ("workspace.open_dashboard", "打开 Dashboard", "Open dashboard"),
+    ("workspace.open_dashboard", "打开 Dashboard…", "Open dashboard…"),
     ("dashboard.picker.prompt", "选择 .dash 文件", "Choose a .dash file"),
     (
         "dashboard.picker.not_a_spec",
@@ -1117,8 +1117,8 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "workspace.add_tab.tooltip",
-        "新建查询或笔记本，或打开一个 Dashboard",
-        "New query or notebook, or open a dashboard",
+        "新建查询或笔记本",
+        "New query or notebook",
     ),
     ("workspace.new_notebook", "新建笔记本", "New notebook"),
     ("workspace.open_notebook", "打开笔记本…", "Open notebook…"),
@@ -1173,6 +1173,13 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("notebook.add.sql_cell", "SQL 单元格", "SQL cell"),
     ("notebook.add.markdown_cell", "Markdown 单元格", "Markdown cell"),
     ("notebook.add.plot_cell", "Plot 单元格", "Plot cell"),
+    ("notebook.add.dash_cell", "Dash 单元格", "Dash cell"),
+    ("notebook.dash.label", "Dash 单元格", "dash cell"),
+    (
+        "notebook.cell.dash.empty",
+        "双击编写 .dash：source、query、plot、filter 块",
+        "Double-click to write .dash: source, query, plot and filter blocks",
+    ),
     ("notebook.cell.edit", "编辑", "Edit"),
     (
         "notebook.plot.waiting",

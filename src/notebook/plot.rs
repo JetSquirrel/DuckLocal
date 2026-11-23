@@ -122,6 +122,41 @@ pub(crate) fn starter(columns: &[(String, bool)]) -> String {
     }
 }
 
+/// A new dash cell's text: a dashboard of `sql` — the statement above it —
+/// with a bar of its first column by its first number, ready to run and
+/// grow. Without SQL to start from, a placeholder query to replace.
+pub(crate) fn dash_starter(sql: Option<&str>, columns: &[(String, bool)]) -> String {
+    let (sql, x, y) = match sql {
+        Some(sql) => {
+            let x = columns.first().map(|(name, _)| name.clone());
+            let y = columns
+                .iter()
+                .skip(1)
+                .find(|(_, numeric)| *numeric)
+                .map(|(name, _)| name.clone());
+            (sql.to_string(), x, y)
+        }
+        None => (
+            "SELECT 'a' AS label, 1 AS value UNION ALL SELECT 'b', 2".to_string(),
+            Some("label".to_string()),
+            Some("value".to_string()),
+        ),
+    };
+    let body: Vec<String> = sql.lines().map(|line| format!("    {line}")).collect();
+    let mut plot = String::from("plot \"chart\" {\n  type  = \"bar\"\n  query = query.data\n");
+    if let Some(x) = x {
+        plot.push_str(&format!("  x     = \"{x}\"\n"));
+    }
+    if let Some(y) = y {
+        plot.push_str(&format!("  y     = \"{y}\"\n"));
+    }
+    plot.push('}');
+    format!(
+        "query \"data\" {{\n  sql = <<SQL\n{}\n  SQL\n}}\n\n{plot}",
+        body.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +214,22 @@ mod tests {
             starter(&columns),
             "type = \"bar\"\nx = \"channel\"\ny = \"revenue\""
         );
+    }
+
+    #[test]
+    fn a_dash_starter_is_a_spec_that_validates() {
+        let columns = [
+            ("channel".to_string(), false),
+            ("revenue".to_string(), true),
+        ];
+        for sql in [Some("SELECT channel, revenue\nFROM t"), None] {
+            let text = dash_starter(sql, &columns);
+            let file = model::parse(&text).unwrap();
+            let (spec, diagnostics) = model::validate_partial(&file);
+            assert!(diagnostics.is_empty(), "{text}\n{diagnostics:?}");
+            assert_eq!(spec.plots.len(), 1);
+            assert_eq!(spec.queries.len(), 1);
+        }
+        assert!(dash_starter(Some("SELECT 1"), &columns).contains("x     = \"channel\""));
     }
 }

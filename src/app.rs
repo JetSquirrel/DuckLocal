@@ -66,8 +66,8 @@ use crate::ui::title_bar::TitleBarView;
 use crate::ui::tour::{NeedsEditor, Tour};
 use crate::ui::workspace::Workspace;
 use crate::ui::{
-    apply_open_outcome, open_paths, ActivateTab, CloseTab, NewQuery, NextTab, OpenData, OpenSetup,
-    PreviousTab, ToggleSidebar,
+    apply_open_outcome, open_paths, ActivateTab, CloseTab, NewQuery, NextTab, OpenDashboard,
+    OpenData, OpenNotebook, OpenSetup, PreviousTab, ToggleSidebar,
 };
 
 pub struct DuckLocalApp {
@@ -629,6 +629,14 @@ impl Render for DuckLocalApp {
             }))
             .on_action(cx.listener(|_, _: &OpenSetup, window, cx| {
                 crate::ui::setup_dialog::open(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenNotebook, window, cx| {
+                this.workspace
+                    .update(cx, |ws, cx| ws.pick_notebook_file(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &OpenDashboard, window, cx| {
+                this.workspace
+                    .update(cx, |ws, cx| ws.pick_dashboard_file(window, cx));
             }))
             .on_action(cx.listener(|this, _: &OpenData, window, cx| {
                 this.title_bar
