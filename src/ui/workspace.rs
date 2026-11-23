@@ -116,7 +116,7 @@ impl TabKind {
         match self {
             TabKind::Query => AssetIcon::SquareTerminal,
             TabKind::Dashboard => AssetIcon::ChartNoAxesColumn,
-            TabKind::Notebook => AssetIcon::NotebookText,
+            TabKind::Notebook => AssetIcon::FileText,
         }
     }
 }
@@ -1941,30 +1941,18 @@ impl Workspace {
                         .on_click(on_host(|notebook, _, cx| notebook.stop(cx))),
                 )
             })
-            .child(
-                Button::new("notebook-add-sql")
+            .child({
+                let notebook = host.downgrade();
+                Button::new("notebook-add")
                     .ghost()
                     .small()
                     .icon(IconName::Plus)
-                    .label(tr("notebook.add.sql"))
+                    .tooltip(tr("notebook.add.tooltip"))
                     .disabled(broken)
-                    .on_click(on_host(|notebook, window, cx| {
-                        let after = notebook.selected_cell();
-                        notebook.insert_cell(crate::notebook::CellKind::Sql, after, window, cx)
-                    })),
-            )
-            .child(
-                Button::new("notebook-add-markdown")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .label(tr("notebook.add.markdown"))
-                    .disabled(broken)
-                    .on_click(on_host(|notebook, window, cx| {
-                        let after = notebook.selected_cell();
-                        notebook.insert_cell(crate::notebook::CellKind::Markdown, after, window, cx)
-                    })),
-            )
+                    .dropdown_menu(move |menu, _, _| {
+                        crate::ui::notebook::add_cell_menu(menu, notebook.clone(), None)
+                    })
+            })
             .child(
                 div()
                     .flex_1()

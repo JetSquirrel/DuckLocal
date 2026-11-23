@@ -1169,10 +1169,9 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "停止正在运行的语句，并取消排队的单元格",
         "Stop the running statement and drop the queued cells",
     ),
-    ("notebook.add.sql", "SQL", "SQL"),
-    ("notebook.add.markdown", "Markdown", "Markdown"),
-    ("notebook.cell.sql", "SQL", "SQL"),
-    ("notebook.cell.markdown", "Markdown", "Markdown"),
+    ("notebook.add.tooltip", "添加单元格", "Add a cell"),
+    ("notebook.add.sql_cell", "SQL 单元格", "SQL cell"),
+    ("notebook.add.markdown_cell", "Markdown 单元格", "Markdown cell"),
     (
         "notebook.cell.markdown.empty",
         "双击编辑 Markdown",

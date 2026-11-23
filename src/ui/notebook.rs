@@ -21,6 +21,7 @@ use gpui_kit::component::input::{
     Editor, EditorState, InputEvent, RangeDecorationCollection, RopeExt, TabSize,
     TextDecorationCollection,
 };
+use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme, Disableable, IconName, Sizable, WindowExt};
@@ -39,8 +40,17 @@ use crate::ui::results::ResultsPanel;
 /// result is a window onto its rows rather than the whole screen.
 const RESULTS_HEIGHT: f32 = 300.;
 /// The fewest and most lines a SQL cell's editor shows before it scrolls.
-const EDITOR_MIN_LINES: usize = 2;
+const EDITOR_MIN_LINES: usize = 1;
 const EDITOR_MAX_LINES: usize = 30;
+/// The editor's rows, as a multiple of its code font size, and its insets
+/// above and below together (with a pixel each for the box's border): what
+/// `gpui_kit`'s `Editor` draws at its default size.
+const EDITOR_LINE_HEIGHT: f32 = 1.5;
+const EDITOR_INSETS: f32 = 18.;
+/// The column left of each cell holding its run button and run number.
+const GUTTER_WIDTH: f32 = 40.;
+/// The space between cells, where the `+` appears.
+const GAP_HEIGHT: f32 = 14.;
 
 /// Where a cell is in the run queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,11 +176,6 @@ impl Notebook {
         }
         this.selected = this.cells.first().map(|cell| cell.id);
         this
-    }
-
-    /// The cell new cells go after: the selected one.
-    pub fn selected_cell(&self) -> Option<u64> {
-        self.selected
     }
 
     pub fn is_running(&self) -> bool {
@@ -656,139 +661,119 @@ impl Notebook {
         json!({"running": self.is_running(), "cells": cells})
     }
 
-    fn render_cell(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// How tall an editor stands for what it holds: the editor's own rows —
+    /// its code font at its line height — and its insets, so a one-line cell
+    /// is one line tall and a long one stops at `EDITOR_MAX_LINES`.
+    fn editor_height(editor: &Entity<EditorState>, cx: &App) -> Pixels {
+        let lines = editor
+            .read(cx)
+            .text()
+            .lines_len()
+            .clamp(EDITOR_MIN_LINES, EDITOR_MAX_LINES);
+        cx.theme().mono_font_size * EDITOR_LINE_HEIGHT * lines as f32 + px(EDITOR_INSETS)
+    }
+
+    /// A cell: a gutter with its run button and run number, the editor or
+    /// the rendered Markdown, its results, and — on hover or while selected —
+    /// move and delete at its top right. The selected cell is marked by a bar
+    /// down its left edge rather than a box around it, so a column of cells
+    /// reads as one document.
+    fn render_cell(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let cell = &self.cells[ix];
         let id = cell.id;
         let selected = self.selected == Some(id);
         let count = self.cells.len();
         let theme = cx.theme();
-        let border = if selected {
-            theme.primary
-        } else {
-            theme.border
+        let group: SharedString = format!("notebook-cell-{id}").into();
+        // Controls that stay out of the way until the pointer is on the
+        // cell, unless the cell is selected or they show something going on.
+        let hover_only = |element: Div, keep: bool| {
+            if keep {
+                element
+            } else {
+                element
+                    .opacity(0.)
+                    .group_hover(group.clone(), |style| style.opacity(1.))
+            }
         };
 
-        let marker: SharedString = match (cell.kind, cell.run, cell.run_number) {
-            (CellKind::Markdown, _, _) => "".into(),
-            (_, RunState::Running, _) => "[*]".into(),
-            (_, RunState::Queued, _) => "[…]".into(),
-            (_, RunState::Idle, Some(n)) => format!("[{n}]").into(),
-            (_, RunState::Idle, None) => "[ ]".into(),
+        let marker: Option<SharedString> = match (cell.kind, cell.run, cell.run_number) {
+            (CellKind::Markdown, _, _) => None,
+            (_, RunState::Running, _) => Some("[*]".into()),
+            (_, RunState::Queued, _) => Some("[…]".into()),
+            (_, RunState::Idle, Some(n)) => Some(format!("[{n}]").into()),
+            (_, RunState::Idle, None) => None,
         };
-        let marker_color = if cell.failed {
-            theme.danger
-        } else {
-            theme.muted_foreground
-        };
-
-        let toolbar = h_flex()
-            .gap_1()
+        let busy = cell.run != RunState::Idle;
+        let gutter = v_flex()
+            .w(crate::ui::scale::design(GUTTER_WIDTH))
+            .flex_none()
             .items_center()
-            .child(
-                Button::new(("cell-up", id as usize))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::ArrowUp)
-                    .tooltip(tr("notebook.cell.move_up"))
-                    .disabled(ix == 0)
-                    .on_click(cx.listener(move |this, _, _, cx| this.move_cell(id, true, cx))),
-            )
-            .child(
-                Button::new(("cell-down", id as usize))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::ArrowDown)
-                    .tooltip(tr("notebook.cell.move_down"))
-                    .disabled(ix + 1 >= count)
-                    .on_click(cx.listener(move |this, _, _, cx| this.move_cell(id, false, cx))),
-            )
-            .child(
-                Button::new(("cell-delete", id as usize))
-                    .ghost()
-                    .xsmall()
-                    .icon(AssetIcon::Trash)
-                    .tooltip(tr("notebook.cell.delete"))
-                    .disabled(count <= 1 || cell.run == RunState::Running)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.delete_cell(id, window, cx)),
-                    ),
-            );
-
-        let header = h_flex()
-            .w_full()
-            .gap_2()
-            .items_center()
-            .child(
-                div()
-                    .w(crate::ui::scale::design(40.))
-                    .text_xs()
-                    .font_family(theme.mono_font_family.clone())
-                    .text_color(marker_color)
-                    .child(marker),
-            )
+            .gap_0p5()
+            .pt_1()
             .when(cell.kind == CellKind::Sql, |this| {
                 this.child(
-                    Button::new(("cell-run", id as usize))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Play)
-                        .loading(cell.run == RunState::Running)
-                        .tooltip(tr("notebook.cell.run.tooltip"))
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| this.run_cell(id, window, cx)),
-                        ),
+                    hover_only(div(), selected || busy).child(
+                        Button::new(("cell-run", id as usize))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Play)
+                            .loading(cell.run == RunState::Running)
+                            .tooltip(tr("notebook.cell.run.tooltip"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_cell(id, window, cx)
+                            })),
+                    ),
                 )
-            })
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(match cell.kind {
-                        CellKind::Sql => tr("notebook.cell.sql"),
-                        CellKind::Markdown => tr("notebook.cell.markdown"),
-                    }),
-            )
-            .child(div().flex_1())
-            .when(selected, |this| this.child(toolbar));
+                .children(marker.map(|marker| {
+                    div()
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(if cell.failed {
+                            theme.danger
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(marker)
+                }))
+            });
 
+        // Code sits in a quiet box, the way a code block does in prose.
+        let code_box = |editor: &Entity<EditorState>, height: Pixels| {
+            div()
+                .w_full()
+                .h(height)
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(if selected {
+                    theme.border
+                } else {
+                    theme.border.opacity(0.6)
+                })
+                .overflow_hidden()
+                .child(Editor::new(editor).h(relative(1.)).bordered(false))
+        };
         let body = match cell.kind {
-            CellKind::Sql => {
-                let lines = cell
-                    .editor
-                    .read(cx)
-                    .text()
-                    .lines_len()
-                    .clamp(EDITOR_MIN_LINES, EDITOR_MAX_LINES);
-                let height = window.line_height() * lines as f32 + px(12.);
-                v_flex()
-                    .w_full()
-                    .child(
-                        div()
-                            .w_full()
-                            .h(height)
-                            .child(Editor::new(&cell.editor).h(relative(1.)).bordered(false)),
-                    )
-                    .children(cell.results.clone().map(|results| {
-                        div()
-                            .w_full()
-                            .h(crate::ui::scale::design(RESULTS_HEIGHT))
-                            .child(results)
-                    }))
-                    .into_any_element()
-            }
+            CellKind::Sql => v_flex()
+                .w_full()
+                .gap_2()
+                .child(code_box(
+                    &cell.editor,
+                    Self::editor_height(&cell.editor, cx),
+                ))
+                .children(cell.results.clone().map(|results| {
+                    div()
+                        .w_full()
+                        .h(crate::ui::scale::design(RESULTS_HEIGHT))
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.border.opacity(0.6))
+                        .overflow_hidden()
+                        .child(results)
+                }))
+                .into_any_element(),
             CellKind::Markdown if cell.editing => {
-                let lines = cell
-                    .editor
-                    .read(cx)
-                    .text()
-                    .lines_len()
-                    .clamp(EDITOR_MIN_LINES, EDITOR_MAX_LINES);
-                let height = window.line_height() * lines as f32 + px(12.);
-                div()
-                    .w_full()
-                    .h(height)
-                    .child(Editor::new(&cell.editor).h(relative(1.)).bordered(false))
-                    .into_any_element()
+                code_box(&cell.editor, Self::editor_height(&cell.editor, cx)).into_any_element()
             }
             CellKind::Markdown => {
                 let text = cell.editor.read(cx).value();
@@ -796,16 +781,12 @@ impl Notebook {
                 div()
                     .id(("cell-markdown", id as usize))
                     .w_full()
-                    .px_3()
-                    .py_2()
-                    .min_h(crate::ui::scale::design(32.))
+                    .px_1()
+                    .min_h(crate::ui::scale::design(28.))
                     .cursor_text()
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if event.click_count() == 2 {
                             this.focus_cell(id, window, cx);
-                        } else {
-                            this.selected = Some(id);
-                            cx.notify();
                         }
                     }))
                     .map(|this| {
@@ -823,69 +804,169 @@ impl Notebook {
             }
         };
 
-        v_flex()
+        let actions = hover_only(
+            h_flex()
+                .absolute()
+                .top_1()
+                .right_1()
+                .gap_0p5()
+                .p_0p5()
+                .rounded(theme.radius)
+                .bg(theme.background)
+                .border_1()
+                .border_color(theme.border.opacity(0.6)),
+            selected,
+        )
+        .child(
+            Button::new(("cell-up", id as usize))
+                .ghost()
+                .xsmall()
+                .icon(IconName::ArrowUp)
+                .tooltip(tr("notebook.cell.move_up"))
+                .disabled(ix == 0)
+                .on_click(cx.listener(move |this, _, _, cx| this.move_cell(id, true, cx))),
+        )
+        .child(
+            Button::new(("cell-down", id as usize))
+                .ghost()
+                .xsmall()
+                .icon(IconName::ArrowDown)
+                .tooltip(tr("notebook.cell.move_down"))
+                .disabled(ix + 1 >= count)
+                .on_click(cx.listener(move |this, _, _, cx| this.move_cell(id, false, cx))),
+        )
+        .child(
+            Button::new(("cell-delete", id as usize))
+                .ghost()
+                .xsmall()
+                .icon(AssetIcon::Trash)
+                .tooltip(tr("notebook.cell.delete"))
+                .disabled(count <= 1 || cell.run == RunState::Running)
+                .on_click(cx.listener(move |this, _, window, cx| this.delete_cell(id, window, cx))),
+        );
+
+        h_flex()
             .id(("notebook-cell", id as usize))
+            .group(group.clone())
+            .relative()
             .w_full()
+            .items_start()
             .gap_1()
-            .child(
-                v_flex()
-                    .w_full()
-                    .px_2()
-                    .pt_1()
-                    .pb_2()
-                    .gap_1()
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(border)
-                    .bg(theme.background)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            if this.selected != Some(id) {
-                                this.selected = Some(id);
-                                cx.notify();
-                            }
-                        }),
-                    )
-                    .child(header)
-                    .child(body),
+            .py_1p5()
+            .pr_2()
+            .rounded(theme.radius)
+            .border_l_2()
+            .border_color(if selected {
+                theme.primary
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .when(!selected, |this| {
+                this.hover(|style| style.bg(theme.muted.opacity(0.35)))
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    if this.selected != Some(id) {
+                        this.selected = Some(id);
+                        cx.notify();
+                    }
+                }),
             )
-            .child(self.render_add_bar(Some(id), cx))
+            .child(gutter)
+            .child(div().flex_1().min_w_0().child(body))
+            .child(actions)
             .into_any_element()
     }
 
-    /// The quiet strip under a cell: add a SQL or a Markdown cell there.
-    fn render_add_bar(&self, after: Option<u64>, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The space between two cells, where a new one goes: a hairline and a
+    /// `+` that appear only under the pointer, so the column stays quiet.
+    /// `always` keeps the `+` showing — at the end of the notebook, where it
+    /// is the obvious way to keep going.
+    fn render_gap(&self, after: Option<u64>, always: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = after.unwrap_or(0) as usize;
-        h_flex()
+        let group: SharedString = format!("notebook-gap-{key}").into();
+        let theme = cx.theme();
+        let reveal = |element: Div| {
+            if always {
+                element
+            } else {
+                element
+                    .opacity(0.)
+                    .group_hover(group.clone(), |style| style.opacity(1.))
+            }
+        };
+        let notebook = cx.entity().downgrade();
+        div()
+            .id(("notebook-gap", key))
+            .group(group.clone())
+            .relative()
             .w_full()
+            .h(crate::ui::scale::design(GAP_HEIGHT))
+            .flex()
+            .items_center()
             .justify_center()
-            .gap_2()
+            .when(!always, |this| {
+                this.child(reveal(
+                    div()
+                        .absolute()
+                        .left(crate::ui::scale::design(GUTTER_WIDTH))
+                        .right_0()
+                        .top(crate::ui::scale::design(GAP_HEIGHT / 2.))
+                        .h(px(1.))
+                        .bg(theme.border),
+                ))
+            })
             .child(
-                Button::new(("add-sql", key))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .label(tr("notebook.add.sql"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.insert_cell(CellKind::Sql, after, window, cx)
-                    })),
+                reveal(div().rounded_full().bg(theme.background)).child(
+                    Button::new(("notebook-add", key))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .tooltip(tr("notebook.add.tooltip"))
+                        .dropdown_menu(move |menu, _, _| {
+                            add_cell_menu(menu, notebook.clone(), after)
+                        }),
+                ),
             )
-            .child(
-                Button::new(("add-markdown", key))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .label(tr("notebook.add.markdown"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.insert_cell(CellKind::Markdown, after, window, cx)
-                    })),
-            )
+            .into_any_element()
     }
 }
 
+/// The two kinds of cell a `+` can add. `after` is the cell the new one
+/// follows; `None` is the selected cell, which is what the toolbar's `+` means.
+pub fn add_cell_menu(
+    menu: PopupMenu,
+    notebook: WeakEntity<Notebook>,
+    after: Option<u64>,
+) -> PopupMenu {
+    let item = |label: &'static str, icon: AssetIcon, kind: CellKind| {
+        let notebook = notebook.clone();
+        PopupMenuItem::new(tr(label))
+            .icon(icon)
+            .on_click(move |_, window, cx| {
+                notebook
+                    .update(cx, |notebook, cx| {
+                        let after = after.or(notebook.selected);
+                        notebook.insert_cell(kind, after, window, cx);
+                    })
+                    .ok();
+            })
+    };
+    menu.item(item(
+        "notebook.add.sql_cell",
+        AssetIcon::SquareTerminal,
+        CellKind::Sql,
+    ))
+    .item(item(
+        "notebook.add.markdown_cell",
+        AssetIcon::Type,
+        CellKind::Markdown,
+    ))
+}
+
 impl Render for Notebook {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(error) = &self.load_error {
             return div()
                 .size_full()
@@ -895,24 +976,27 @@ impl Render for Notebook {
                 .child(error.clone())
                 .into_any_element();
         }
-        let cells: Vec<AnyElement> = (0..self.cells.len())
-            .map(|ix| self.render_cell(ix, window, cx))
-            .collect();
+        let last = self.cells.len().saturating_sub(1);
+        let mut column: Vec<AnyElement> = Vec::with_capacity(self.cells.len() * 2);
+        for ix in 0..self.cells.len() {
+            column.push(self.render_cell(ix, cx));
+            let id = self.cells[ix].id;
+            column.push(self.render_gap(Some(id), ix == last, cx));
+        }
         div()
             .id("notebook-cells")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .bg(cx.theme().muted.opacity(0.3))
+            .bg(cx.theme().background)
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(crate::ui::scale::design(1200.))
+                    .max_w(crate::ui::scale::design(1100.))
                     .mx_auto()
                     .px_4()
                     .py_3()
-                    .gap_1()
-                    .children(cells),
+                    .children(column),
             )
             .into_any_element()
     }
