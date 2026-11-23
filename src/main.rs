@@ -15,6 +15,7 @@ mod handoff;
 mod history;
 mod html_page;
 mod i18n;
+mod notebook;
 mod overview;
 #[cfg(test)]
 mod perf_probe;

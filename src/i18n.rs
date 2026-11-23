@@ -246,6 +246,7 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("sidebar.history.failed", "失败", "Failed"),
     ("sidebar.group.local_files", "本地文件", "Local files"),
     ("sidebar.group.dashboards", "仪表盘", "Dashboards"),
+    ("sidebar.group.notebooks", "笔记本", "Notebooks"),
     ("sidebar.group.metrics", "指标", "Metrics"),
     ("sidebar.metrics.run", "运行这个指标", "Run this metric"),
     ("sidebar.metrics.by_day", "按天运行（{}）", "Run by day ({})"),
@@ -1116,9 +1117,75 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ),
     (
         "workspace.add_tab.tooltip",
-        "新建查询，或打开一个 Dashboard",
-        "New query, or open a dashboard",
+        "新建查询或笔记本，或打开一个 Dashboard",
+        "New query or notebook, or open a dashboard",
     ),
+    ("workspace.new_notebook", "新建笔记本", "New notebook"),
+    ("workspace.open_notebook", "打开笔记本…", "Open notebook…"),
+
+    // ── src/ui/notebook.rs ────────────────────────────────────────────────
+    ("notebook.untitled", "未命名笔记本", "Untitled notebook"),
+    ("notebook.not_saved", "尚未保存", "Not saved yet"),
+    ("notebook.picker.prompt", "选择 .sql 笔记本", "Choose a .sql notebook"),
+    (
+        "notebook.picker.not_a_notebook",
+        "{} 不是 .sql 文件",
+        "{} is not a .sql file",
+    ),
+    ("notebook.save.suggested_name", "notebook.sql", "notebook.sql"),
+    (
+        "notebook.save.tooltip",
+        "把单元格保存到 .sql 文件（结果不会保存）",
+        "Save the cells to the .sql file (results are not saved)",
+    ),
+    (
+        "notebook.save_failed",
+        "无法保存 {}：{}",
+        "Could not save {}: {}",
+    ),
+    (
+        "notebook.open_failed",
+        "无法打开笔记本 {}：{}",
+        "Could not open the notebook {}: {}",
+    ),
+    (
+        "notebook.restore.gone",
+        "无法恢复上次打开的笔记本 {}（{}）：文件已不存在",
+        "Could not restore notebook {} ({}) from last session: the file is gone",
+    ),
+    (
+        "notebook.run.tooltip",
+        "运行选中的单元格",
+        "Run the selected cell",
+    ),
+    ("notebook.run_all", "全部运行", "Run all"),
+    (
+        "notebook.run_all.tooltip",
+        "从上到下运行每个 SQL 单元格，遇到第一个错误时停止",
+        "Run every SQL cell top to bottom, stopping at the first error",
+    ),
+    (
+        "notebook.stop.tooltip",
+        "停止正在运行的语句，并取消排队的单元格",
+        "Stop the running statement and drop the queued cells",
+    ),
+    ("notebook.add.sql", "SQL", "SQL"),
+    ("notebook.add.markdown", "Markdown", "Markdown"),
+    ("notebook.cell.sql", "SQL", "SQL"),
+    ("notebook.cell.markdown", "Markdown", "Markdown"),
+    (
+        "notebook.cell.markdown.empty",
+        "双击编辑 Markdown",
+        "Double-click to write Markdown",
+    ),
+    (
+        "notebook.cell.run.tooltip",
+        "运行此单元格（⌘↵ / Ctrl+↵；⇧↵ 运行并跳到下一个）",
+        "Run this cell (⌘↵ / Ctrl+↵; ⇧↵ runs and moves on)",
+    ),
+    ("notebook.cell.move_up", "上移", "Move up"),
+    ("notebook.cell.move_down", "下移", "Move down"),
+    ("notebook.cell.delete", "删除单元格", "Delete cell"),
 
     // ── src/spec/view.rs ──────────────────────────────────────────────────
     ("dashboard.share.tooltip", "分享", "Share"),

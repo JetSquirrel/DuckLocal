@@ -65,6 +65,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 - 语法高亮、自动补全、格式化
 - 多 Tab，`Cmd+Enter` / `Ctrl+Enter` 运行
 - 用 `EXPLAIN` 查看执行计划，用“性能分析”（`EXPLAIN ANALYZE`）找出耗时的算子
+- 笔记本：用 `-- %%` 标记分隔 SQL 与 Markdown 单元格的 `.sql` 文件，每个 SQL 单元格下方有自己的结果和图表
 
 </td>
 <td width="50%" valign="top">
@@ -124,6 +125,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 ducklocal schema ./data/                                  # 列出可查询的内容及列
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal check dashboard.dash                            # 校验 dashboard 文件
+ducklocal notebook run analysis.sql --format md           # 运行笔记本的单元格，输出报告
 ducklocal propose dashboard.dash --from new.dash          # 提出修改，交给人审阅
 ducklocal session show                                    # 分析是怎么走到这一步的，哪些结论已经不成立
 ducklocal open --run --sql "SELECT ..."                   # 把结果交给正在运行的窗口

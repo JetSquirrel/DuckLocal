@@ -292,6 +292,32 @@ pub fn run(script: &str) -> Result<ScriptOutcome> {
     crate::db::with_connection(|conn| Ok(run_of(conn, script)))
 }
 
+/// `run`, with relative file paths looked up in `search_path` as well — a
+/// notebook's folder, as `query::run_searching` does for a dashboard. The
+/// connection is shared, so its own setting is put back before the lock is
+/// let go, whatever the script did.
+pub fn run_searching(search_path: Option<&str>, script: &str) -> Result<ScriptOutcome> {
+    let Some(search_path) = search_path else {
+        return run(script);
+    };
+    crate::db::with_connection(|conn| run_searching_of(conn, search_path, script))
+}
+
+pub fn run_searching_of(
+    conn: &Connection,
+    search_path: &str,
+    script: &str,
+) -> Result<ScriptOutcome> {
+    let previous: String =
+        conn.query_row("SELECT current_setting('file_search_path')", [], |row| {
+            row.get(0)
+        })?;
+    conn.execute_batch(&crate::query::set_file_search_path(search_path))?;
+    let outcome = run_of(conn, script);
+    conn.execute_batch(&crate::query::set_file_search_path(&previous))?;
+    Ok(outcome)
+}
+
 pub fn run_of(conn: &Connection, script: &str) -> ScriptOutcome {
     let mut failed = false;
     let steps = split(script)
@@ -351,8 +377,38 @@ pub fn summary(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_command_sql, run_of, split, summary, PieceKind};
+    use super::{dot_command_sql, run_of, run_searching_of, split, summary, PieceKind};
     use crate::query::QueryOutcome;
+
+    /// A notebook's relative paths are found beside it, and the shared
+    /// connection's own setting is back once the script is done.
+    #[test]
+    fn a_searching_run_finds_files_in_the_folder_and_restores_the_setting() {
+        let folder =
+            std::env::temp_dir().join(format!("ducklocal_nb_search_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("nb_rows.csv"), "n\n1\n2\n3\n").unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        let setting = |conn: &duckdb::Connection| -> String {
+            conn.query_row("SELECT current_setting('file_search_path')", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        let before = setting(&conn);
+        let outcome = run_searching_of(
+            &conn,
+            &folder.to_string_lossy(),
+            "SELECT count(*) AS n FROM 'nb_rows.csv'",
+        )
+        .unwrap();
+        let Some(Ok(QueryOutcome::Rows(result))) = &outcome.steps[0].outcome else {
+            panic!("expected rows");
+        };
+        assert_eq!(result.rows, [["3"]]);
+        assert_eq!(setting(&conn), before);
+        std::fs::remove_dir_all(&folder).ok();
+    }
 
     fn texts(script: &str) -> Vec<(PieceKind, &str)> {
         split(script)

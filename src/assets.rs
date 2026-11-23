@@ -40,7 +40,10 @@ icon_assets!(
         ChartLine,
         ListChecks,
         Share,
-        FileCode
+        FileCode,
+        Trash,
+        FastForward,
+        NotebookText
     ]
 );
 

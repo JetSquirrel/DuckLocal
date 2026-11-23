@@ -1,4 +1,4 @@
-//! Recently opened documents: `.dash` dashboards.
+//! Recently opened documents: `.dash` dashboards and `.sql` notebooks.
 //!
 //! The sidebar lists these so a document can be reopened the way a file is —
 //! click, and the tab is back. The list is not the session's open tabs (those
@@ -20,6 +20,8 @@ const MAX: usize = 20;
 pub enum RecentKind {
     /// A `.dash` file, opened as a dashboard tab.
     Dashboard,
+    /// A `.sql` file, opened as a notebook tab.
+    Notebook,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,5 +169,16 @@ mod tests {
         let paths: Vec<String> = parse(json).into_iter().map(|d| d.path).collect();
         assert_eq!(paths, vec!["/d/usage.dash"]);
         assert!(parse("not json").is_empty());
+    }
+
+    #[test]
+    fn a_notebook_entry_reads_back_as_one() {
+        let json = r#"[{"path": "/d/review.sql", "kind": "notebook", "title": "review"}]"#;
+        let documents = parse(json);
+        assert_eq!(documents[0].kind, RecentKind::Notebook);
+        assert_eq!(
+            serde_json::to_value(&documents[0]).unwrap()["kind"],
+            "notebook"
+        );
     }
 }

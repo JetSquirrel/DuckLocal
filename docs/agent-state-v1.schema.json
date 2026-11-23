@@ -90,11 +90,33 @@
           },
           "title": { "type": "string" },
           "active": { "type": "boolean" },
-          "kind": { "enum": ["query", "dashboard"] },
+          "kind": { "enum": ["query", "dashboard", "notebook"] },
           "sql": { "type": "string" },
           "path": { "type": "string" },
           "unsaved": { "type": "boolean" },
           "dashboard": { "type": "object" },
+          "notebook": {
+            "type": "object",
+            "description": "A notebook tab's cells, in order. A SQL cell that has run carries its `result`, shaped like a query tab's.",
+            "required": ["running", "cells"],
+            "properties": {
+              "running": { "type": "boolean" },
+              "cells": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "source", "selected"],
+                  "properties": {
+                    "kind": { "enum": ["sql", "markdown"] },
+                    "source": { "type": "string" },
+                    "selected": { "type": "boolean" },
+                    "source_withheld": { "type": "boolean" },
+                    "result": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
           "result": {
             "type": "object",
             "required": ["status", "view"],

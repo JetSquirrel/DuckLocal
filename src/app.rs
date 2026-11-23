@@ -126,6 +126,9 @@ impl DuckLocalApp {
                 // A `.dash` file is a dashboard, not data: it opens as a tab,
                 // and the rest of the command line keeps the behaviour it had.
                 let (dashboards, data) = crate::spec::tabs::split(paths);
+                // A `.sql` file is a notebook, the same way.
+                let remembered_notebooks = crate::notebook::restore();
+                let (notebooks, data) = crate::notebook::split(data);
                 let crashed = crate::crash::take_pending();
                 let show_tour = crate::ui::tour::offer_at_launch();
                 let result = (|| {
@@ -136,14 +139,21 @@ impl DuckLocalApp {
                     Ok::<_, anyhow::Error>((outcome, offer_setup))
                 })();
                 (
-                    (query_tabs, remembered_dashboards, dashboards),
+                    (
+                        query_tabs,
+                        remembered_dashboards,
+                        dashboards,
+                        remembered_notebooks,
+                        notebooks,
+                    ),
                     crashed,
                     show_tour,
                     result,
                 )
             })
             .await;
-            let (query_tabs, remembered_dashboards, dashboards) = tabs;
+            let (query_tabs, remembered_dashboards, dashboards, remembered_notebooks, notebooks) =
+                tabs;
 
             this.update_in(cx, |this, window, cx| {
                 this.started = true;
@@ -178,19 +188,26 @@ impl DuckLocalApp {
                 // The dashboards come back whether or not the data opened: a
                 // launch that failed to open a file must not lose them, and
                 // the next tab closed would have written them off for good.
-                let named_dashboards = !dashboards.is_empty();
+                let named_dashboards = !dashboards.is_empty() || !notebooks.is_empty();
                 this.workspace.update(cx, |ws, cx| {
                     // The remembered ones first, so a dashboard named on the
                     // command line opens last: in front, which is what asking
                     // for it means.
+                    for notebook in &remembered_notebooks.notebooks {
+                        ws.open_notebook(std::path::PathBuf::from(&notebook.path), window, cx);
+                    }
                     for spec in &remembered_dashboards.specs {
                         ws.open_dashboard(std::path::PathBuf::from(&spec.path), window, cx);
+                    }
+                    for path in notebooks {
+                        ws.open_notebook(path, window, cx);
                     }
                     for path in dashboards {
                         ws.open_dashboard(path, window, cx);
                     }
                     // Written once, whole, now that they are all back.
                     ws.dashboards_restored();
+                    ws.notebooks_restored();
                     // The query tab that was in front last time is again,
                     // unless a dashboard was just asked for.
                     match query_in_front.filter(|_| !named_dashboards) {
@@ -200,7 +217,11 @@ impl DuckLocalApp {
                 });
                 // A remembered dashboard that is gone, or is no longer one, is
                 // named rather than silently dropped.
-                for problem in remembered_dashboards.problems {
+                for problem in remembered_dashboards
+                    .problems
+                    .into_iter()
+                    .chain(remembered_notebooks.problems)
+                {
                     window.push_notification(Notification::error(problem), cx);
                 }
                 match result {
@@ -313,9 +334,14 @@ impl DuckLocalApp {
         cx: &mut Context<Self>,
     ) {
         let (dashboards, data) = crate::spec::tabs::split(requested);
+        let (notebooks, data) = crate::notebook::split(data);
         for path in dashboards {
             self.workspace
                 .update(cx, |ws, cx| ws.open_dashboard(path, window, cx));
+        }
+        for path in notebooks {
+            self.workspace
+                .update(cx, |ws, cx| ws.open_notebook(path, window, cx));
         }
         if !data.is_empty() {
             open_paths(self.state.clone(), data, window, cx);

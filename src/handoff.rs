@@ -135,6 +135,32 @@ pub(crate) fn withhold_credentials(snapshot: &mut Value) {
     use crate::session::{may_hold_credentials, REDACTED};
     let holds = |value: &Value| value.as_str().is_some_and(may_hold_credentials);
     for tab in snapshot["tabs"].as_array_mut().into_iter().flatten() {
+        // A notebook's SQL cells are held to the same check, one by one.
+        if tab["kind"] == json!("notebook") {
+            let cells = tab["notebook"]["cells"]
+                .as_array_mut()
+                .into_iter()
+                .flatten();
+            for cell in cells {
+                let withheld = holds(&cell["source"]) || holds(&cell["result"]["sql"]);
+                if withheld {
+                    cell["source"] = json!(REDACTED);
+                    cell["source_withheld"] = json!(true);
+                    if cell["result"]["sql"].is_string() {
+                        cell["result"]["sql"] = json!(REDACTED);
+                    }
+                    if cell["result"]["chart"]["dash"].is_string() {
+                        cell["result"]["chart"]["dash"] = json!(REDACTED);
+                    }
+                }
+                if cell["result"]["error"].is_string()
+                    && (withheld || holds(&cell["result"]["error"]))
+                {
+                    cell["result"]["error"] = json!(REDACTED);
+                }
+            }
+            continue;
+        }
         if tab["kind"] != json!("query") {
             continue;
         }
@@ -282,6 +308,37 @@ mod tests {
         let mut log = ActionLog::default();
         log.record(Action::new("abc".into(), ActionStatus::Queued));
         let state = publish(body(), &log);
+        assert_eq!(schema_violations(&state), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_notebook_fits_the_schema_and_keeps_a_secret_cell_back() {
+        let mut state = body();
+        state["tabs"].as_array_mut().unwrap().push(json!({
+            "id": 2,
+            "title": "review",
+            "active": false,
+            "kind": "notebook",
+            "path": "/data/review.sql",
+            "unsaved": false,
+            "notebook": {
+                "running": false,
+                "cells": [
+                    {"kind": "markdown", "source": "# Review", "selected": false},
+                    {"kind": "sql", "source": "CREATE SECRET s (TYPE s3, KEY_ID 'k', SECRET 'v')",
+                     "selected": true,
+                     "result": {"status": "affected", "view": "table", "count": 0, "elapsed_ms": 1}},
+                    {"kind": "sql", "source": "SELECT 1", "selected": false},
+                ],
+            },
+        }));
+        withhold_credentials(&mut state);
+        let cells = &state["tabs"][1]["notebook"]["cells"];
+        assert_eq!(cells[1]["source"], json!(crate::session::REDACTED));
+        assert_eq!(cells[1]["source_withheld"], json!(true));
+        assert_eq!(cells[0]["source"], "# Review");
+        assert_eq!(cells[2]["source"], "SELECT 1");
+        let state = publish(state, &ActionLog::default());
         assert_eq!(schema_violations(&state), Vec::<String>::new());
     }
 
