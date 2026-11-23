@@ -460,8 +460,11 @@ impl ColumnOverviewPanel {
             .collect();
         let cancel = Arc::new(Cancel::default());
         lazy.cancel = Some(cancel.clone());
-        let (relation, stamp, row_count) =
-            (lazy.relation.clone(), lazy.stamp.clone(), lazy.shell.row_count);
+        let (relation, stamp, row_count) = (
+            lazy.relation.clone(),
+            lazy.stamp.clone(),
+            lazy.shell.row_count,
+        );
         let request = self.request;
         cx.spawn(async move |this, cx| {
             let outcome = smol::unblock(move || {
@@ -556,9 +559,7 @@ impl ColumnOverviewPanel {
             .py_2()
             .gap_2()
             .when(lazy.stale, |this| {
-                this.child(
-                    Alert::warning("overview-stale", tr("results.overview.stale")).small(),
-                )
+                this.child(Alert::warning("overview-stale", tr("results.overview.stale")).small())
             })
             .child(
                 h_flex()
@@ -703,11 +704,7 @@ impl ColumnOverviewPanel {
                 .text_color(cx.theme().danger)
                 .child(Icon::new(IconName::CircleX).xsmall())
                 .child(tr("results.overview.column_failed"))
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(tr("results.overview.retry")),
-                )
+                .child(div().text_color(muted).child(tr("results.overview.retry")))
                 .into_any_element(),
         };
 
@@ -775,7 +772,13 @@ impl ColumnOverviewPanel {
                     h_flex()
                         .gap_2()
                         .text_xs()
-                        .child(div().w(px(110.)).flex_none().text_color(muted).child(tr(label)))
+                        .child(
+                            div()
+                                .w(px(110.))
+                                .flex_none()
+                                .text_color(muted)
+                                .child(tr(label)),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -1030,7 +1033,9 @@ fn mini_distribution(
     cx: &mut Context<ColumnOverviewPanel>,
 ) -> AnyElement {
     match &column.distribution {
-        Distribution::Bins(bins) => histogram(bins, CHART_WIDTH, CHART_HEIGHT, cx).into_any_element(),
+        Distribution::Bins(bins) => {
+            histogram(bins, CHART_WIDTH, CHART_HEIGHT, cx).into_any_element()
+        }
         Distribution::Top(values) => {
             let names = values
                 .iter()
@@ -1056,10 +1061,7 @@ fn mini_distribution(
                                     div()
                                         .h_full()
                                         .w(relative(share))
-                                        .bg(cx
-                                            .theme()
-                                            .primary
-                                            .opacity(0.8 - 0.12 * rank as f32)),
+                                        .bg(cx.theme().primary.opacity(0.8 - 0.12 * rank as f32)),
                                 )
                             })),
                     )
@@ -1137,12 +1139,11 @@ fn detail_distribution(
                                 .child(div().px_1().truncate().child(value.clone())),
                         )
                         .when_some(*n, |this, n| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .text_color(muted)
-                                    .child(format!("{} · {:.1}%", group_digits(n), share * 100.)),
-                            )
+                            this.child(div().flex_none().text_color(muted).child(format!(
+                                "{} · {:.1}%",
+                                group_digits(n),
+                                share * 100.
+                            )))
                         })
                 }))
                 .into_any_element()
@@ -1153,8 +1154,10 @@ fn detail_distribution(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::overview::Shape;
+    // Deliberately not `use super::*`: that pulls in `gpui_kit::*`, whose
+    // `test` macro shadows the built-in `#[test]`.
+    use super::{format_age, Outcome, Plan, Slot};
+    use crate::overview::{ColumnOverview, Distribution, Shape};
 
     fn column(name: &str) -> ColumnOverview {
         ColumnOverview {

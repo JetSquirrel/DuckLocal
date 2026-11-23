@@ -451,9 +451,7 @@ mod tests {
         assert_eq!(overview.row_count, 334);
         let (empty, columns) = overview_of(&conn, "(SELECT * FROM t WHERE false)").unwrap();
         assert_eq!(empty.row_count, 0);
-        assert!(columns
-            .iter()
-            .all(|c| c.distribution == Distribution::None));
+        assert!(columns.iter().all(|c| c.distribution == Distribution::None));
     }
 
     #[test]
@@ -521,8 +519,10 @@ mod tests {
     fn cancel_interrupts_a_running_statement_and_only_that() {
         let conn = Connection::open_in_memory().unwrap();
         // Long enough to still be running when the cancel lands.
-        conn.execute_batch("CREATE VIEW slow AS SELECT a.range AS x FROM range(100000) a, range(100000) b")
-            .unwrap();
+        conn.execute_batch(
+            "CREATE VIEW slow AS SELECT a.range AS x FROM range(100000) a, range(100000) b",
+        )
+        .unwrap();
         let cancel = Arc::new(Cancel::default());
         let canceller = {
             let cancel = cancel.clone();

@@ -149,8 +149,7 @@ fn literals_of(sql: &str) -> Vec<String> {
 /// `SELECT * FROM sales` reads `sales.csv` through it.
 fn view_definitions(conn: &Connection, relation: &str) -> Vec<String> {
     let lower = relation.to_lowercase();
-    let Ok(mut stmt) =
-        conn.prepare("SELECT view_name, sql FROM duckdb_views() WHERE NOT internal")
+    let Ok(mut stmt) = conn.prepare("SELECT view_name, sql FROM duckdb_views() WHERE NOT internal")
     else {
         return Vec::new();
     };
@@ -304,9 +303,7 @@ mod tests {
     #[test]
     fn literals_are_read_with_their_escapes_and_comments_are_skipped() {
         assert_eq!(
-            literals_of(
-                "SELECT 'it''s', \"a\"\"b\" -- don't\nFROM read_csv('/tmp/x.csv')"
-            ),
+            literals_of("SELECT 'it''s', \"a\"\"b\" -- don't\nFROM read_csv('/tmp/x.csv')"),
             ["it's", "a\"b", "/tmp/x.csv"]
         );
     }
