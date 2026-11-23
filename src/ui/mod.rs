@@ -7,8 +7,10 @@ pub mod encoding;
 pub mod geo;
 #[cfg(test)]
 mod language_toggle_tests;
+pub mod notebook;
 pub mod palette;
 pub mod results;
+pub mod run;
 pub mod save_database;
 pub mod scale;
 #[cfg(feature = "scroll-bench")]

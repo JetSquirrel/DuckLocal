@@ -15,6 +15,7 @@ Usage:
   ducklocal schema [PATH ...]   Relations and columns; --stats per column
   ducklocal open [OPTIONS]      Show work in the window; --state reads it back
   ducklocal check FILE          Validate a .dash dashboard spec
+  ducklocal notebook run FILE   Run a .sql notebook's cells; `cells` lists them
   ducklocal metrics [MODEL]     A semantic model's metrics; compile or query them
   ducklocal comments FILE       Read and answer review comments on a dashboard
   ducklocal propose FILE        Suggest a dashboard change for the person to review
@@ -1032,6 +1033,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             | "project"
             | "session"
             | "presence"
+            | "notebook"
             | "lsp"
             | "--help"
             | "--version"
@@ -1054,8 +1056,17 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
     {
         return Some(crate::spec::lsp::main(&args[1..]));
     }
+    // A command whose output is a report keeps it on stdout when part of the
+    // work failed, and says so with the exit code instead of an error.
+    let mut exit_code = 0;
     let result = match (first, args.len()) {
         ("--help", 1) => Ok(HELP.to_string()),
+        ("notebook", 2) if args[1] == "--help" => Ok(crate::notebook::cli::HELP.to_string()),
+        ("notebook", 3) if args[2] == "--help" => Ok(crate::notebook::cli::HELP.to_string()),
+        ("notebook", _) => crate::notebook::cli::run(&args[1..]).map(|(output, code)| {
+            exit_code = code;
+            output
+        }),
         ("--version", 1) => Ok(format!("ducklocal {}", env!("CARGO_PKG_VERSION"))),
         ("query", 2) if args[1] == "--help" => Ok(QUERY_HELP.to_string()),
         ("query", _) => query(&args[1..]),
@@ -1095,7 +1106,7 @@ pub fn dispatch(args: &[OsString]) -> Option<i32> {
             .map_err(|e| CliError::failure("io", e))
     });
     Some(match result {
-        Ok(()) => 0,
+        Ok(()) => exit_code,
         Err(error) => {
             let hint = error
                 .hint

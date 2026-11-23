@@ -12,7 +12,7 @@ use super::model::{
 };
 use super::s3::{s3_children_items, S3Browse};
 use crate::i18n::tr;
-use crate::recents::RecentDocument;
+use crate::recents::{RecentDocument, RecentKind};
 use crate::schema::{DatabaseInfo, NodeKind, TableInfo};
 use crate::semantic::browse::ModelEntry;
 use crate::state::{format_rows, AttachedFileView};
@@ -53,13 +53,27 @@ pub(super) fn build_tree_items(
         );
     }
 
-    if let Some(group) = recents_group(
-        "group:dashboards",
-        tr("sidebar.group.dashboards"),
-        recents,
-        &mut meta,
-    ) {
-        items.push(group);
+    // One group per kind of document, each under its own heading.
+    for (id, label, kind) in [
+        (
+            "group:dashboards",
+            tr("sidebar.group.dashboards"),
+            RecentKind::Dashboard,
+        ),
+        (
+            "group:notebooks",
+            tr("sidebar.group.notebooks"),
+            RecentKind::Notebook,
+        ),
+    ] {
+        let of_kind: Vec<RecentDocument> = recents
+            .iter()
+            .filter(|doc| doc.kind == kind)
+            .cloned()
+            .collect();
+        if let Some(group) = recents_group(id, label, &of_kind, &mut meta) {
+            items.push(group);
+        }
     }
 
     if let Some(group) = metrics_group(models, &mut meta) {
@@ -146,7 +160,7 @@ pub(super) fn build_tree_items(
     (items, meta)
 }
 
-/// The recent dashboards group: a row per remembered document,
+/// A recent documents group (dashboards, or notebooks): a row per remembered document,
 /// in a stable order, like files the user can click back open.
 fn recents_group(
     id: &str,
@@ -547,6 +561,46 @@ mod file_hint_tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn dashboards_and_notebooks_each_get_their_own_group() {
+        let doc = |kind, path: &str| RecentDocument {
+            kind,
+            path: path.to_string(),
+            title: path.to_string(),
+        };
+        let recents = [
+            doc(RecentKind::Notebook, "/ex/review.sql"),
+            doc(RecentKind::Dashboard, "/ex/sales.dash"),
+        ];
+        let (items, meta) = super::build_tree_items(&[], &[], &recents, &[], None);
+        let groups: Vec<(String, Vec<String>)> = items
+            .iter()
+            .map(|group| {
+                let rows = group
+                    .children
+                    .iter()
+                    .map(|row| row.id.to_string())
+                    .collect();
+                (group.id.to_string(), rows)
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (
+                    "group:dashboards".to_string(),
+                    vec!["group:dashboards:/ex/sales.dash".to_string()]
+                ),
+                (
+                    "group:notebooks".to_string(),
+                    vec!["group:notebooks:/ex/review.sql".to_string()]
+                ),
+            ]
+        );
+        let row = &meta[&gpui_kit::SharedString::from("group:notebooks:/ex/review.sql")];
+        assert_eq!(row.doc.as_ref().unwrap().kind, RecentKind::Notebook);
     }
 
     #[test]

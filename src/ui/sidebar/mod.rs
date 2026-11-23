@@ -43,12 +43,13 @@ use gpui_kit::*;
 
 use crate::history::HistoryEntry;
 use crate::i18n::{tr, trf, Language};
-use crate::recents::RecentDocument;
+use crate::recents::{RecentDocument, RecentKind};
 use crate::semantic::browse::ModelEntry;
 use crate::state::{
     format_rows, AppState, AttachedFilesChanged, CatalogChanged, ConnectionChanged, HistoryChanged,
     RecentsChanged, S3ConfigChanged,
 };
+use crate::ui::workspace::TabKind;
 use crate::ui::workspace::Workspace;
 
 use self::extensions::ExtensionList;
@@ -110,7 +111,7 @@ pub struct Sidebar {
     node_meta: Rc<HashMap<SharedString, SchemaNodeMeta>>,
     /// S3 browse tree, present while S3 is configured.
     s3_browse: Option<S3Browse>,
-    /// Recently opened dashboards, shown as a clickable group.
+    /// Recently opened dashboards and notebooks, shown as clickable groups.
     recents: Rc<Vec<RecentDocument>>,
     /// The semantic models beside those dashboards, read off the UI thread
     /// whenever the list changes.
@@ -605,10 +606,11 @@ impl Sidebar {
                 } else {
                     IconName::Folder.into()
                 }),
-                SchemaNodeKind::RecentDocument => m
-                    .doc
-                    .as_ref()
-                    .map(|_| gpui_kit::assets::IconName::ChartNoAxesColumn),
+                // The glyph its tab wears, so a document reads the same here.
+                SchemaNodeKind::RecentDocument => m.doc.as_ref().map(|doc| match doc.kind {
+                    RecentKind::Dashboard => TabKind::Dashboard.glyph(),
+                    RecentKind::Notebook => TabKind::Notebook.glyph(),
+                }),
                 SchemaNodeKind::SemanticModel => Some(IconName::BookOpen.into()),
                 SchemaNodeKind::Metric => Some(gpui_kit::assets::IconName::Sigma),
                 SchemaNodeKind::Table => Some(IconName::GalleryVerticalEnd.into()),
@@ -839,8 +841,13 @@ impl Sidebar {
                                                 });
                                                 return;
                                             }
-                                            workspace.update(cx, |ws, cx| {
-                                                ws.open_dashboard(path, window, cx)
+                                            workspace.update(cx, |ws, cx| match doc.kind {
+                                                RecentKind::Dashboard => {
+                                                    ws.open_dashboard(path, window, cx)
+                                                }
+                                                RecentKind::Notebook => {
+                                                    ws.open_notebook(path, window, cx)
+                                                }
                                             });
                                         })
                                 }),

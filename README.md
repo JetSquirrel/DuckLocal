@@ -65,6 +65,7 @@ ducklocal examples/orders_dashboard/dashboard.dash
 - Syntax highlighting, autocompletion and formatting
 - Multiple tabs; run with `Cmd+Enter` / `Ctrl+Enter`
 - `EXPLAIN` for the query plan, and a profiler (`EXPLAIN ANALYZE`) that shows where time goes
+- Notebooks: a `.sql` file of SQL and Markdown cells (`-- %%` markers), each SQL cell with its own results and charts
 
 </td>
 <td width="50%" valign="top">
@@ -124,6 +125,7 @@ The same binary runs headless and returns structured JSON, so an AI agent can ex
 ducklocal schema ./data/                                  # what can be queried, with columns
 ducklocal query --sql "SELECT * FROM 'sales.csv'" --limit 20
 ducklocal check dashboard.dash                            # validate a dashboard spec
+ducklocal notebook run analysis.sql --format md           # run a notebook's cells, print a report
 ducklocal propose dashboard.dash --from new.dash          # suggest a change for a person to review
 ducklocal session show                                    # how an analysis got here, and what no longer holds
 ducklocal open --run --sql "SELECT ..."                   # hand a result to the running window

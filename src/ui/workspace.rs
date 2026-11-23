@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{
-    Editor, EditorState, Input, InputEvent, InputState, RangeDecoration, RangeDecorationCollection,
-    RangeDecorationStyle, TabSize, TextDecoration, TextDecorationCollection,
+    Editor, EditorState, Input, InputEvent, InputState, RangeDecorationCollection, TabSize,
+    TextDecorationCollection,
 };
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -28,11 +28,11 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::i18n::{tr, trf};
-use crate::query::QueryOutcome;
 use crate::spec::tabs::OpenDocument;
 use crate::spec::view::{Dashboard, DashboardEvent};
-use crate::state::{AppState, CatalogChanged, ConnectionChanged, QueryStats};
+use crate::state::{AppState, CatalogChanged, ConnectionChanged};
 use crate::ui::completion;
+use crate::ui::notebook::{Notebook, NotebookEvent};
 use crate::ui::results::ResultsPanel;
 use crate::ui::{pick_paths, PickerTarget, RunQuery, SaveSpec, StopQuery, WORKSPACE_KEY_CONTEXT};
 use gpui_kit::assets::IconName as AssetIcon;
@@ -76,9 +76,24 @@ pub struct DashboardTab {
     _events: Subscription,
 }
 
+/// A notebook — a `.sql` file of cells — open as a tab, or an untitled one
+/// not yet saved.
+pub struct NotebookTab {
+    pub id: u64,
+    pub title: SharedString,
+    /// The file, once there is one; kept here as well as in the notebook so
+    /// the strip can tell same-named notebooks apart without reading it.
+    pub path: Option<PathBuf>,
+    pub host: Entity<Notebook>,
+    /// Redraws the strip's unsaved dot as cells are edited, and follows a
+    /// Save As to its new file; dropped with the tab.
+    _subscriptions: [Subscription; 2],
+}
+
 pub enum WorkspaceTab {
     Query(QueryTab),
     Dashboard(DashboardTab),
+    Notebook(NotebookTab),
 }
 
 /// Which kind a tab is, without borrowing it.
@@ -91,6 +106,7 @@ pub enum WorkspaceTab {
 pub enum TabKind {
     Query,
     Dashboard,
+    Notebook,
 }
 
 impl TabKind {
@@ -100,6 +116,7 @@ impl TabKind {
         match self {
             TabKind::Query => AssetIcon::SquareTerminal,
             TabKind::Dashboard => AssetIcon::ChartNoAxesColumn,
+            TabKind::Notebook => AssetIcon::NotebookText,
         }
     }
 }
@@ -251,6 +268,7 @@ impl WorkspaceTab {
         match self {
             WorkspaceTab::Query(tab) => tab.id,
             WorkspaceTab::Dashboard(tab) => tab.id,
+            WorkspaceTab::Notebook(tab) => tab.id,
         }
     }
 
@@ -258,6 +276,7 @@ impl WorkspaceTab {
         match self {
             WorkspaceTab::Query(tab) => &tab.title,
             WorkspaceTab::Dashboard(tab) => &tab.title,
+            WorkspaceTab::Notebook(tab) => &tab.title,
         }
     }
 
@@ -267,6 +286,7 @@ impl WorkspaceTab {
         match self {
             WorkspaceTab::Query(_) => None,
             WorkspaceTab::Dashboard(tab) => parent_name(&tab.path),
+            WorkspaceTab::Notebook(tab) => tab.path.as_deref().and_then(parent_name),
         }
     }
 
@@ -275,7 +295,7 @@ impl WorkspaceTab {
     pub fn as_query(&self) -> Option<&QueryTab> {
         match self {
             WorkspaceTab::Query(tab) => Some(tab),
-            WorkspaceTab::Dashboard(_) => None,
+            WorkspaceTab::Dashboard(_) | WorkspaceTab::Notebook(_) => None,
         }
     }
 
@@ -283,22 +303,42 @@ impl WorkspaceTab {
         match self {
             WorkspaceTab::Query(_) => TabKind::Query,
             WorkspaceTab::Dashboard(_) => TabKind::Dashboard,
+            WorkspaceTab::Notebook(_) => TabKind::Notebook,
         }
     }
 
     pub fn as_dashboard(&self) -> Option<&DashboardTab> {
         match self {
             WorkspaceTab::Dashboard(tab) => Some(tab),
-            WorkspaceTab::Query(_) => None,
+            WorkspaceTab::Query(_) | WorkspaceTab::Notebook(_) => None,
         }
     }
 
-    /// The tab's focusable text editor: a query's SQL editor, or a
-    /// dashboard's source editor once its source view has been opened.
+    pub fn as_notebook(&self) -> Option<&NotebookTab> {
+        match self {
+            WorkspaceTab::Notebook(tab) => Some(tab),
+            WorkspaceTab::Query(_) | WorkspaceTab::Dashboard(_) => None,
+        }
+    }
+
+    /// The document holds edits its file does not: a dashboard's source, or
+    /// a notebook's cells.
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        match self {
+            WorkspaceTab::Query(_) => false,
+            WorkspaceTab::Dashboard(tab) => tab.host.read(cx).is_dirty(cx),
+            WorkspaceTab::Notebook(tab) => tab.host.read(cx).is_dirty(cx),
+        }
+    }
+
+    /// The tab's focusable text editor: a query's SQL editor, a dashboard's
+    /// source editor once its source view has been opened, or a notebook's
+    /// selected cell.
     pub fn editor(&self, cx: &App) -> Option<Entity<EditorState>> {
         match self {
             WorkspaceTab::Query(tab) => Some(tab.editor.clone()),
             WorkspaceTab::Dashboard(tab) => tab.host.read(cx).source_editor(),
+            WorkspaceTab::Notebook(tab) => tab.host.read(cx).focused_editor(),
         }
     }
 }
@@ -346,6 +386,8 @@ pub struct Workspace {
     /// list is not rewritten: each reopening would write a partial list, and
     /// a tab closed before the restore landed would write none.
     dashboards_restored: bool,
+    /// The same, for the open notebooks.
+    notebooks_restored: bool,
     /// The pending write of the open query tabs; replacing it debounces.
     _remember_query_tabs: Option<Task<()>>,
     /// Whether a run has gone on long enough to offer Stop, and the wait
@@ -371,6 +413,7 @@ impl Workspace {
             _rename_subscription: None,
             query_tabs_restored: false,
             dashboards_restored: false,
+            notebooks_restored: false,
             _remember_query_tabs: None,
             stop_offered: false,
             _offer_stop: None,
@@ -457,7 +500,7 @@ impl Workspace {
                     ..
                 }
             ) {
-                Self::remove_secondary_enter_newline(editor, window, cx);
+                crate::ui::run::remove_enter_newline(editor, window, cx);
                 this.run_active(window, cx);
             }
         });
@@ -512,6 +555,138 @@ impl Workspace {
         self.note_recent(&path, crate::recents::RecentKind::Dashboard, &title, cx);
         self.remember_dashboards();
         cx.notify();
+    }
+
+    /// Open a `.sql` file as a notebook tab; the same file twice is the same
+    /// tab brought forward.
+    pub fn open_notebook(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        let existing = self.tabs.iter().position(|tab| {
+            tab.as_notebook()
+                .and_then(|notebook| notebook.path.as_deref())
+                .is_some_and(|open| crate::recents::same_file(open, &path))
+        });
+        if let Some(ix) = existing {
+            let title = self.tabs[ix].title().to_string();
+            self.note_recent(&path, crate::recents::RecentKind::Notebook, &title, cx);
+            self.activate(ix, window, cx);
+            return;
+        }
+        let title = crate::notebook::title_for(&path);
+        self.note_recent(&path, crate::recents::RecentKind::Notebook, &title, cx);
+        self.push_notebook(Some(path), title, window, cx);
+    }
+
+    /// The `+` menu's "New notebook": one empty SQL cell, saved to a file
+    /// the first time it is saved.
+    pub fn new_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.push_notebook(None, tr("notebook.untitled").to_string(), window, cx);
+    }
+
+    fn push_notebook(
+        &mut self,
+        path: Option<PathBuf>,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let state = self.state.clone();
+        let host = cx.new(|cx| Notebook::new(state, path.clone(), window, cx));
+        let observe = cx.observe(&host, |_, _, cx| cx.notify());
+        let events = cx.subscribe(
+            &host,
+            move |this, _, event: &NotebookEvent, cx| match event {
+                NotebookEvent::SavedAs(path) => {
+                    let untitled = tr("notebook.untitled");
+                    let mut title = None;
+                    if let Some(WorkspaceTab::Notebook(tab)) =
+                        this.tabs.iter_mut().find(|tab| tab.id() == id)
+                    {
+                        // A tab still called "Untitled" takes the file's name; one
+                        // the user named keeps it.
+                        if tab.title.as_ref() == untitled {
+                            tab.title = crate::notebook::title_for(path).into();
+                        }
+                        tab.path = Some(path.clone());
+                        title = Some(tab.title.to_string());
+                    }
+                    if let Some(title) = title {
+                        this.note_recent(path, crate::recents::RecentKind::Notebook, &title, cx);
+                    }
+                    this.remember_notebooks();
+                    cx.notify();
+                }
+            },
+        );
+        self.tabs.push(WorkspaceTab::Notebook(NotebookTab {
+            id,
+            title: title.into(),
+            path,
+            host,
+            _subscriptions: [observe, events],
+        }));
+        self.active = self.tabs.len() - 1;
+        self.editor_shown = true;
+        self.remember_notebooks();
+        cx.notify();
+        self.focus_active_editor(window, cx);
+    }
+
+    /// Startup has reopened the remembered notebooks: from here on the open
+    /// set is written whenever it changes.
+    pub fn notebooks_restored(&mut self) {
+        self.notebooks_restored = true;
+        self.remember_notebooks();
+    }
+
+    /// Write the open notebooks that have a file down for the next launch.
+    /// An untitled one has nowhere to be reopened from.
+    fn remember_notebooks(&self) {
+        if !self.notebooks_restored {
+            return;
+        }
+        let open: Vec<OpenDocument> = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let notebook = tab.as_notebook()?;
+                let path = notebook.path.clone()?;
+                Some(OpenDocument::new(path, notebook.title.to_string()))
+            })
+            .collect();
+        crate::notebook::remember(&open);
+    }
+
+    /// The `+` menu's "Open notebook…": a `.sql` file, from the system
+    /// picker.
+    fn pick_notebook_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(tr("notebook.picker.prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                for path in paths {
+                    if crate::notebook::is_notebook(&path) {
+                        this.open_notebook(path, window, cx);
+                    } else {
+                        window.push_notification(
+                            trf("notebook.picker.not_a_notebook", &[&path.to_string_lossy()]),
+                            cx,
+                        );
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Note an opening in the sidebar's recent-documents list, and let the
@@ -725,41 +900,6 @@ impl Workspace {
         self.run_active(window, cx);
     }
 
-    /// The editor inserts `"\n" + indent` before emitting `PressEnter`; the
-    /// cursor then sits right after the insertion. Delete exactly that
-    /// insertion — walk back over the indent, then require a newline, and do
-    /// nothing if the text before the cursor does not match that shape.
-    /// With multiple cursors only the active one is repaired.
-    fn remove_secondary_enter_newline(
-        editor: &Entity<EditorState>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let range = editor.update(cx, |editor, _| {
-            let cursor = editor.cursor();
-            let text = editor.text();
-            let mut start = cursor;
-            let mut chars = text.chars_at(cursor);
-            let mut prev = chars.prev();
-            // The inserted indent is plain spaces/tabs (ASCII), so byte
-            // arithmetic on `start` stays on char boundaries.
-            while matches!(prev, Some(' ' | '\t')) {
-                start -= 1;
-                prev = chars.prev();
-            }
-            if prev != Some('\n') {
-                return None;
-            }
-            Some(start - 1..cursor)
-        });
-        if let Some(range) = range {
-            editor.update(cx, |editor, cx| {
-                editor.set_selected_range(range, cx);
-                editor.replace("", window, cx);
-            });
-        }
-    }
-
     /// Every tab as `ducklocal open --state` reports it, and which is in front.
     pub fn snapshot(&self, cx: &App) -> serde_json::Value {
         use serde_json::json;
@@ -785,6 +925,15 @@ impl Workspace {
                         entry["path"] = json!(tab.path.display().to_string());
                         entry["unsaved"] = json!(host.is_dirty(cx));
                         entry["dashboard"] = host.summary();
+                    }
+                    WorkspaceTab::Notebook(tab) => {
+                        let host = tab.host.read(cx);
+                        entry["kind"] = json!("notebook");
+                        if let Some(path) = &tab.path {
+                            entry["path"] = json!(path.display().to_string());
+                        }
+                        entry["unsaved"] = json!(host.is_dirty(cx));
+                        entry["notebook"] = host.summary(cx);
                     }
                 }
                 entry
@@ -922,12 +1071,10 @@ impl Workspace {
         let Some(ix) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
             return;
         };
-        // A dashboard with unsaved edits asks first; everything else closes.
-        if let Some(dashboard) = self.tabs[ix].as_dashboard() {
-            if dashboard.host.read(cx).is_dirty(cx) {
-                self.confirm_close_dashboard(tab_id, window, cx);
-                return;
-            }
+        // A document with unsaved edits asks first; everything else closes.
+        if self.tabs[ix].is_dirty(cx) {
+            self.confirm_close_dashboard(tab_id, window, cx);
+            return;
         }
         self.close_tab_confirmed(tab_id, window, cx);
     }
@@ -943,6 +1090,7 @@ impl Workspace {
         self.active = active_after_close(self.active, ix, self.tabs.len());
         self.refresh_stale_dashboard(cx);
         self.remember_dashboards();
+        self.remember_notebooks();
         self.remember_query_tabs(cx);
         cx.notify();
         self.focus_active_editor(window, cx);
@@ -969,10 +1117,7 @@ impl Workspace {
             .enumerate()
             .filter(|&(index, _)| index != anchor && which(index, anchor))
             .filter_map(|(_, tab)| {
-                let dirty = tab
-                    .as_dashboard()
-                    .is_some_and(|dashboard| dashboard.host.read(cx).is_dirty(cx));
-                if dirty {
+                if tab.is_dirty(cx) {
                     kept_dirty += 1;
                     None
                 } else {
@@ -1013,12 +1158,13 @@ impl Workspace {
             .position(|tab| tab.id() == active)
             .unwrap_or(to);
         self.remember_dashboards();
+        self.remember_notebooks();
         self.remember_query_tabs(cx);
         cx.notify();
     }
 
-    /// Closing a dashboard whose source holds unsaved edits: save and close,
-    /// close without saving, or stay.
+    /// Closing a dashboard or notebook that holds unsaved edits: save and
+    /// close, close without saving, or stay.
     fn confirm_close_dashboard(
         &mut self,
         tab_id: u64,
@@ -1078,13 +1224,11 @@ impl Workspace {
                                         window.close_dialog(cx);
                                         if let Some(view) = view.upgrade() {
                                             view.update(cx, |this, cx| {
-                                                // A failed save keeps the tab:
-                                                // closing now would lose the
-                                                // edits the dialog promised to
-                                                // keep.
-                                                if this.save_dashboard(tab_id, window, cx) {
-                                                    this.close_tab_confirmed(tab_id, window, cx);
-                                                }
+                                                // A failed or cancelled save
+                                                // keeps the tab: closing now
+                                                // would lose the edits the
+                                                // dialog promised to keep.
+                                                this.save_tab(tab_id, true, window, cx);
                                             });
                                         }
                                     }
@@ -1115,15 +1259,15 @@ impl Workspace {
         }
     }
 
-    /// ⌘S saves the active dashboard's source, or a query tab's SQL to a
-    /// `.sql` file.
+    /// ⌘S saves the active dashboard's source or notebook, or a query tab's
+    /// SQL to a `.sql` file.
     fn save_spec_action(&mut self, _: &SaveSpec, window: &mut Window, cx: &mut Context<Self>) {
         match self.tabs.get(self.active) {
-            Some(WorkspaceTab::Dashboard(tab)) => {
-                let tab_id = tab.id;
-                self.save_dashboard(tab_id, window, cx);
-            }
             Some(WorkspaceTab::Query(_)) => self.save_query_as_sql(window, cx),
+            Some(tab) => {
+                let tab_id = tab.id();
+                self.save_tab(tab_id, false, window, cx);
+            }
             None => {}
         }
     }
@@ -1153,6 +1297,37 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Save a dashboard's source or a notebook's cells, then close the tab
+    /// when `close` asks and the save went through. An untitled notebook asks
+    /// where to save first, so its close waits for the answer.
+    fn save_tab(&mut self, tab_id: u64, close: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id() == tab_id) else {
+            return;
+        };
+        match tab {
+            WorkspaceTab::Query(_) => {}
+            WorkspaceTab::Dashboard(_) => {
+                if self.save_dashboard(tab_id, window, cx) && close {
+                    self.close_tab_confirmed(tab_id, window, cx);
+                }
+            }
+            WorkspaceTab::Notebook(tab) => {
+                let host = tab.host.clone();
+                let view = cx.entity().downgrade();
+                host.update(cx, |notebook, cx| {
+                    notebook.save(window, cx, move |window, cx| {
+                        if close {
+                            view.update(cx, |this, cx| {
+                                this.close_tab_confirmed(tab_id, window, cx)
+                            })
+                            .ok();
+                        }
+                    })
+                });
+            }
+        }
     }
 
     /// The active query's SQL, with everything a run delivers into: the
@@ -1233,6 +1408,10 @@ impl Workspace {
         let default_title = self.tabs.get(index).map(|tab| match tab {
             WorkspaceTab::Query(tab) => trf("workspace.tab.default_title", &[&tab.id.to_string()]),
             WorkspaceTab::Dashboard(tab) => crate::spec::tabs::title_for(&tab.path),
+            WorkspaceTab::Notebook(tab) => match &tab.path {
+                Some(path) => crate::notebook::title_for(path),
+                None => tr("notebook.untitled").to_string(),
+            },
         });
         let Some(tab) = self.tabs.get_mut(index) else {
             return;
@@ -1246,8 +1425,10 @@ impl Workspace {
         match tab {
             WorkspaceTab::Query(tab) => tab.title = title.into(),
             WorkspaceTab::Dashboard(tab) => tab.title = title.into(),
+            WorkspaceTab::Notebook(tab) => tab.title = title.into(),
         }
         self.remember_dashboards();
+        self.remember_notebooks();
         self.remember_query_tabs(cx);
         cx.notify();
     }
@@ -1256,6 +1437,13 @@ impl Workspace {
         // A key press reads the editor as it is now, not a toolbar press
         // that never became a click.
         self.toolbar_press = None;
+        // A notebook runs its selected cell; a cell's own editor handles ⌘↵
+        // before it gets here.
+        if let Some(notebook) = self.active_tab().and_then(WorkspaceTab::as_notebook) {
+            let host = notebook.host.clone();
+            host.update(cx, |notebook, cx| notebook.run_selected(window, cx));
+            return;
+        }
         self.run_active(window, cx);
     }
 
@@ -1294,107 +1482,17 @@ impl Workspace {
         let state = self.state.clone();
         cx.spawn_in(window, async move |this, cx| {
             let run_sql = sql.clone();
-            let (script, history, catalog) = smol::unblock(move || {
-                // Decided before `run_sql` is handed to the history entry.
-                let reload_catalog = crate::query::may_change_catalog(&run_sql);
-                let script = crate::script::run(&run_sql);
-                // A `LOAD` typed here is kept for the next connection, as
-                // the sidebar's Load button is.
-                if crate::extensions::may_load(&run_sql) {
-                    let _ = crate::db::with_connection(crate::extensions::remember_loaded_of);
-                }
-                // A script is one history entry: its total time, the row
-                // count of the result it shows, and its first error.
-                let (duration_ms, row_count, ok, error) = match &script {
-                    Ok(script) => {
-                        let mut duration_ms = 0i64;
-                        let mut error = None;
-                        for step in &script.steps {
-                            match &step.outcome {
-                                Some(Ok(outcome)) => duration_ms += outcome_elapsed(outcome) as i64,
-                                Some(Err(e)) => error = Some(e.to_string()),
-                                None => {}
-                            }
-                        }
-                        let row_count = script
-                            .primary()
-                            .and_then(|ix| script.steps[ix].outcome.as_ref())
-                            .and_then(|outcome| outcome.as_ref().ok())
-                            .map(outcome_count);
-                        (duration_ms, row_count, error.is_none(), error)
-                    }
-                    Err(e) => (0, None, false, Some(e.to_string())),
-                };
-                crate::history::record(&crate::history::HistoryEntry {
-                    id: 0,
-                    sql: run_sql,
-                    started_at: crate::history::now_timestamp(),
-                    duration_ms,
-                    row_count,
-                    ok,
-                    error,
-                })
-                .ok();
-                let history = crate::history::recent(200).unwrap_or_default();
-                // A plain read leaves the sidebar valid, so skip the reload
-                // instead of paying for it on the way back from every query.
-                let catalog =
-                    reload_catalog.then(|| crate::schema::load_catalog().unwrap_or_default());
-                (script, history, catalog)
-            })
-            .await;
+            let executed = smol::unblock(move || crate::ui::run::execute(&run_sql)).await;
 
             this.update_in(cx, move |this, window, cx| {
                 this.running = false;
-                let script = script.unwrap_or_else(|e| crate::script::ScriptOutcome {
-                    // The connection itself was unavailable: one failure for
-                    // the whole script, as a single statement's would be.
-                    steps: Vec::from([crate::script::Step {
-                        piece: crate::script::Piece {
-                            kind: crate::script::PieceKind::Sql,
-                            range: 0..sql.len(),
-                        },
-                        outcome: Some(Err(e)),
-                    }]),
-                    search_path: None,
-                });
-                let primary = script
-                    .primary()
-                    .and_then(|ix| Some((ix, script.steps[ix].outcome.as_ref()?)));
-                let stats = match primary {
-                    Some((_, Ok(QueryOutcome::Rows(result)))) => Some(QueryStats {
-                        elapsed_ms: result.elapsed_ms,
-                        rows: result.row_count(),
-                        cols: result.columns.len(),
-                    }),
-                    Some((_, Ok(QueryOutcome::Affected { elapsed_ms, count }))) => {
-                        Some(QueryStats {
-                            elapsed_ms: *elapsed_ms,
-                            rows: *count as usize,
-                            cols: 0,
-                        })
-                    }
-                    Some((_, Err(_))) | None => None,
-                };
-                if let Some((ix, Err(error))) = primary {
-                    let range = script.steps[ix].piece.range.clone();
+                if let Some((ix, Err(error))) = executed.primary() {
+                    let range = executed.script.steps[ix].piece.range.clone();
                     Self::mark_sql_error(&query, range, error, cx);
                 }
-                let search_path = script.search_path;
+                let steps = executed.publish(&state, &sql, cx);
                 query.results.update(cx, |results, cx| {
-                    results.set_script(script.steps, sql.clone(), window, cx);
-                });
-                state.update(cx, |s, cx| {
-                    s.set_history(history, cx);
-                    if let Some(catalog) = catalog {
-                        s.set_catalog(catalog, cx);
-                    }
-                    if search_path.is_some() {
-                        s.set_search_path(search_path, cx);
-                    }
-                    if let Some(stats) = stats {
-                        s.set_last_query(stats, sql.clone(), cx);
-                    }
+                    results.set_script(steps, sql.clone(), window, cx);
                 });
                 cx.notify();
             })
@@ -1424,45 +1522,21 @@ impl Workspace {
         });
     }
 
-    /// Underline the span a failed run's error named, if it named one: a wavy
-    /// underline on the token and a quiet fill behind it, both in the theme's
-    /// danger color. The collections follow edits and sit outside undo
-    /// history, so nothing here is replayed by ⌘Z.
-    /// `piece` is the byte range of the statement that failed: DuckDB's
-    /// position is relative to that statement, not to the whole script.
+    /// Underline the span a failed run's error named in the query's editor;
+    /// see `run::mark_sql_error`.
     fn mark_sql_error(
         query: &ActiveQuery,
         piece: std::ops::Range<usize>,
         error: &anyhow::Error,
         cx: &mut App,
     ) {
-        let Some(sql) = query.sql.get(piece.clone()) else {
-            return;
-        };
-        let Some(range) = crate::query::error_byte_range(sql, &error.to_string()) else {
-            return;
-        };
-        let start = query.offset + piece.start;
-        let range = start + range.start..start + range.end;
-        let danger = cx.theme().danger;
-        query.squiggles.set(
-            vec![TextDecoration::new(
-                range.clone(),
-                HighlightStyle {
-                    underline: Some(UnderlineStyle {
-                        color: Some(danger),
-                        thickness: px(1.),
-                        wavy: true,
-                    }),
-                    ..Default::default()
-                },
-            )],
-            cx,
-        );
-        query.fill.set(
-            vec![RangeDecoration::new(range)
-                .with_style(RangeDecorationStyle::Fill)
-                .with_color(danger.opacity(0.1))],
+        crate::ui::run::mark_sql_error(
+            &query.sql,
+            query.offset,
+            &query.squiggles,
+            &query.fill,
+            piece,
+            error,
             cx,
         );
     }
@@ -1607,9 +1681,7 @@ impl Workspace {
                 let glyph = tab.kind().glyph();
                 // A dashboard shows a dot while its source buffer holds edits
                 // the file does not.
-                let dirty = tab
-                    .as_dashboard()
-                    .is_some_and(|dashboard| dashboard.host.read(cx).is_dirty(cx));
+                let dirty = tab.is_dirty(cx);
                 // An agent at work on a dashboard in another tab shows on
                 // that tab, so the person knows where to look.
                 let agent_here = tab
@@ -1740,6 +1812,8 @@ impl Workspace {
                     .tooltip(tr("workspace.add_tab.tooltip"))
                     .dropdown_menu(move |menu, _window, _cx| {
                         let new_query = view.clone();
+                        let new_notebook = view.clone();
+                        let open_notebook = view.clone();
                         let open_dashboard = view.clone();
                         // Each entry wears the glyph its tab will wear.
                         menu.item(
@@ -1748,6 +1822,26 @@ impl Workspace {
                                 .on_click(move |_, window, cx| {
                                     if let Some(view) = new_query.upgrade() {
                                         view.update(cx, |this, cx| this.add_query_tab(window, cx));
+                                    }
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr("workspace.new_notebook"))
+                                .icon(TabKind::Notebook.glyph())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(view) = new_notebook.upgrade() {
+                                        view.update(cx, |this, cx| this.new_notebook(window, cx));
+                                    }
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(tr("workspace.open_notebook"))
+                                .icon(TabKind::Notebook.glyph())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(view) = open_notebook.upgrade() {
+                                        view.update(cx, |this, cx| {
+                                            this.pick_notebook_file(window, cx)
+                                        });
                                     }
                                 }),
                         )
@@ -1771,8 +1865,131 @@ impl Workspace {
             Some(WorkspaceTab::Dashboard(_)) => {
                 self.render_dashboard_toolbar(cx).into_any_element()
             }
+            Some(WorkspaceTab::Notebook(_)) => self.render_notebook_toolbar(cx).into_any_element(),
             _ => self.render_query_toolbar(cx).into_any_element(),
         }
+    }
+
+    /// A notebook's toolbar: run the selected cell or every cell, stop, add
+    /// cells, and save — with the file it is, or "not saved yet".
+    fn render_notebook_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(tab) = self.active_tab().and_then(WorkspaceTab::as_notebook) else {
+            return div().into_any_element();
+        };
+        let host = tab.host.clone();
+        let notebook = host.read(cx);
+        let running = notebook.is_running();
+        let broken = notebook.has_load_error();
+        let dirty = notebook.is_dirty(cx);
+        let untitled = tab.path.is_none();
+        let path = tab
+            .path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| tr("notebook.not_saved").to_string());
+        let tab_id = tab.id;
+        let on_host = |f: fn(&mut Notebook, &mut Window, &mut Context<Notebook>)| {
+            let host = host.clone();
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                host.update(cx, |notebook, cx| f(notebook, window, cx));
+            }
+        };
+
+        h_flex()
+            .w_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("notebook-run")
+                    .primary()
+                    .small()
+                    .icon(IconName::Play)
+                    .label(tr("workspace.run"))
+                    .disabled(broken)
+                    .tooltip_with_action(
+                        tr("notebook.run.tooltip"),
+                        &RunQuery,
+                        Some(WORKSPACE_KEY_CONTEXT),
+                    )
+                    .on_click(on_host(|notebook, window, cx| {
+                        notebook.run_selected(window, cx)
+                    })),
+            )
+            .child(
+                Button::new("notebook-run-all")
+                    .outline()
+                    .small()
+                    .icon(AssetIcon::FastForward)
+                    .label(tr("notebook.run_all"))
+                    .loading(running)
+                    .disabled(broken || running)
+                    .tooltip(tr("notebook.run_all.tooltip"))
+                    .on_click(on_host(|notebook, window, cx| notebook.run_all(window, cx))),
+            )
+            .when(running, |this| {
+                this.child(
+                    Button::new("notebook-stop")
+                        .outline()
+                        .small()
+                        .icon(AssetIcon::CircleStop)
+                        .label(tr("workspace.stop"))
+                        .tooltip(tr("notebook.stop.tooltip"))
+                        .on_click(on_host(|notebook, _, cx| notebook.stop(cx))),
+                )
+            })
+            .child(
+                Button::new("notebook-add-sql")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .label(tr("notebook.add.sql"))
+                    .disabled(broken)
+                    .on_click(on_host(|notebook, window, cx| {
+                        let after = notebook.selected_cell();
+                        notebook.insert_cell(crate::notebook::CellKind::Sql, after, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("notebook-add-markdown")
+                    .ghost()
+                    .small()
+                    .icon(IconName::Plus)
+                    .label(tr("notebook.add.markdown"))
+                    .disabled(broken)
+                    .on_click(on_host(|notebook, window, cx| {
+                        let after = notebook.selected_cell();
+                        notebook.insert_cell(crate::notebook::CellKind::Markdown, after, window, cx)
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(path),
+            )
+            .child(
+                Button::new("notebook-save")
+                    .outline()
+                    .small()
+                    .icon(AssetIcon::Save)
+                    .tooltip_with_action(
+                        tr("notebook.save.tooltip"),
+                        &SaveSpec,
+                        Some(WORKSPACE_KEY_CONTEXT),
+                    )
+                    .disabled(broken || !(dirty || untitled))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.save_tab(tab_id, false, window, cx);
+                    })),
+            )
+            .into_any_element()
     }
 
     fn render_query_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2019,6 +2236,11 @@ impl Workspace {
                 .min_h_0()
                 .child(tab.host.clone())
                 .into_any_element(),
+            Some(WorkspaceTab::Notebook(tab)) => div()
+                .flex_1()
+                .min_h_0()
+                .child(tab.host.clone())
+                .into_any_element(),
             _ => {
                 let query = self.tabs.get(self.active).and_then(WorkspaceTab::as_query);
                 let editor = query.map(|tab| tab.editor.clone());
@@ -2147,22 +2369,6 @@ impl Workspace {
 fn rename_width(input: &Entity<InputState>, cx: &App) -> f32 {
     let chars = input.read(cx).value().chars().count() as f32;
     (chars * 8. + 24.).clamp(64., 240.)
-}
-
-/// How long a statement took.
-fn outcome_elapsed(outcome: &QueryOutcome) -> u128 {
-    match outcome {
-        QueryOutcome::Rows(result) => result.elapsed_ms,
-        QueryOutcome::Affected { elapsed_ms, .. } => *elapsed_ms,
-    }
-}
-
-/// The rows a statement returned, or the rows it changed.
-fn outcome_count(outcome: &QueryOutcome) -> i64 {
-    match outcome {
-        QueryOutcome::Rows(result) => result.row_count() as i64,
-        QueryOutcome::Affected { count, .. } => *count as i64,
-    }
 }
 
 /// Ask where, beside the spec by default, and write the dashboard there as
