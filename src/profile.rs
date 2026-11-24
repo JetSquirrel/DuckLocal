@@ -307,7 +307,7 @@ const WORKERS: usize = 4;
 
 /// How many columns of a `row_count`-row relation one statement profiles
 /// when `workers` statements run at once.
-fn batch_size(row_count: i64, workers: usize) -> usize {
+pub(crate) fn batch_size(row_count: i64, workers: usize) -> usize {
     let by_rows = CELLS_IN_FLIGHT / row_count.max(1) / workers.max(1) as i64;
     usize::try_from(by_rows)
         .unwrap_or(1)

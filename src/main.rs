@@ -17,6 +17,7 @@ mod html_page;
 mod i18n;
 mod notebook;
 mod overview;
+mod overview_cache;
 #[cfg(test)]
 mod perf_probe;
 mod profile;

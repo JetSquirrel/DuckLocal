@@ -624,6 +624,11 @@ pub(crate) fn set_file_search_path(path: &str) -> String {
 #[hotpath::measure]
 pub fn run_of(conn: &Connection, sql: &str) -> Result<QueryOutcome> {
     let started = Instant::now();
+    // Before it runs, and whether or not it succeeds: a statement that fails
+    // halfway may still have written. A read leaves profiles valid.
+    if !is_subquery(sql) || may_change_catalog(sql) {
+        crate::overview_cache::data_changed();
+    }
     let mut stmt = conn.prepare(sql)?;
 
     if !returns_rows(sql) {

@@ -2,6 +2,7 @@
 
 pub mod agent_avatar;
 pub mod chart;
+pub mod column_overview;
 pub mod completion;
 pub mod encoding;
 pub mod geo;
