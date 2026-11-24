@@ -179,7 +179,7 @@ fn open_without_a_second_instance(path: &str) -> Result<Connection> {
                     // A failed switch must not leave the old workspace with
                     // a missing attachment or a different default database.
                     attach_database_of(conn, attachment)?;
-                    conn.execute_batch(&format!("USE \"{}\"", current.replace('"', "\"\"")))?;
+                    conn.execute_batch(&format!("USE {}", crate::sql::ident(&current)))?;
                     Err(error.into())
                 }
             }
@@ -259,8 +259,8 @@ pub fn copy_memory_database_of(conn: &Connection, path: &str) -> Result<()> {
         },
     )?;
     let copied = conn.execute_batch(&format!(
-        "COPY FROM DATABASE \"{}\" TO \"{SAVE_ALIAS}\"",
-        name.replace('"', "\"\"")
+        "COPY FROM DATABASE {} TO \"{SAVE_ALIAS}\"",
+        crate::sql::ident(&name)
     ));
     // Detached either way: the file must not stay open under this instance
     // when it is opened as the main database next, or removed after a failure.
@@ -481,11 +481,11 @@ pub fn attach_data_file_as_of(conn: &Connection, path: &str, view_name: &str) ->
     let reader = data_file_reader(&expanded)
         .ok_or_else(|| anyhow!(trf("error.unsupported_file_type", &[&expanded])))?;
     ensure_replaceable_of(conn, &expanded, view_name)?;
-    let quoted_ident = view_name.replace('"', "\"\"");
-    let quoted_path = expanded.replace('\'', "''");
+    let view = crate::sql::ident(view_name);
+    let source = crate::sql::literal(&expanded);
     conn.execute_batch(&format!(
-        "CREATE OR REPLACE VIEW \"{quoted_ident}\" AS SELECT * FROM {reader}('{quoted_path}');
-         COMMENT ON VIEW \"{quoted_ident}\" IS '{OWNED_COMMENT}';"
+        "CREATE OR REPLACE VIEW {view} AS SELECT * FROM {reader}({source});
+         COMMENT ON VIEW {view} IS '{OWNED_COMMENT}';"
     ))?;
     Ok(())
 }
@@ -667,9 +667,9 @@ pub fn attach_database_of(conn: &Connection, attachment: &DatabaseAttachment) ->
         format!(" ({})", options.join(", "))
     };
     let sql = format!(
-        "ATTACH '{}' AS \"{}\"{options}",
-        expanded.replace('\'', "''"),
-        attachment.alias.replace('"', "\"\""),
+        "ATTACH {} AS {}{options}",
+        crate::sql::literal(&expanded),
+        crate::sql::ident(&attachment.alias),
     );
     conn.execute_batch(&sql).map_err(|e| {
         anyhow!(crate::storage::explain_error(
@@ -693,12 +693,11 @@ pub fn detach_database_of(conn: &Connection, alias: &str) -> Result<()> {
         [alias],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let quoted = alias.replace('"', "\"\"");
     if current.eq_ignore_ascii_case(alias) {
         let default = default.ok_or_else(|| anyhow!("No other database to switch to"))?;
-        conn.execute_batch(&format!("USE \"{}\"", default.replace('"', "\"\"")))?;
+        conn.execute_batch(&format!("USE {}", crate::sql::ident(&default)))?;
     }
-    conn.execute_batch(&format!("DETACH \"{quoted}\""))?;
+    conn.execute_batch(&format!("DETACH {}", crate::sql::ident(alias)))?;
     Ok(())
 }
 

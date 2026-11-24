@@ -117,7 +117,7 @@ pub(crate) fn points(
 /// SQL that bins `x` over `relation` (parenthesized) the way [`Bins::of`]
 /// does: one row per bin that has rows, in order, in the columns above.
 pub(crate) fn sql(x: &str, relation: &str) -> String {
-    let x = crate::overview::quote(x);
+    let x = crate::sql::ident(x);
     format!(
         "WITH v AS (\n\
          SELECT {x}::DOUBLE AS v FROM {relation}\n\

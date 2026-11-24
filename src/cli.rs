@@ -176,7 +176,7 @@ pub(crate) fn sniffed_type_hint(message: &str) -> Option<String> {
     let file = message
         .lines()
         .find_map(|line| line.trim().strip_prefix("file = "))
-        .map(|path| format!("'{}'", path.replace('\'', "''")))
+        .map(crate::sql::literal)
         .unwrap_or_else(|| "'PATH'".to_string());
     let short = !value.is_empty() && value.chars().count() <= 6 && !value.contains('\'');
     Some(if short {

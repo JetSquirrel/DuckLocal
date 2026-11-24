@@ -25,6 +25,8 @@ use anyhow::{anyhow, Result};
 use duckdb::Connection;
 use serde_json::{json, Value};
 
+use crate::sql::{ident, literal};
+
 /// What kind of statistics a column's type supports.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Shape {
@@ -57,11 +59,6 @@ fn shape_of(data_type: &str) -> Shape {
     }
 }
 
-/// `name` as a quoted SQL identifier.
-fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
 /// The relation to profile, as SQL.
 ///
 /// A path that names a CSV/Parquet/JSON file this build can read becomes that
@@ -83,7 +80,7 @@ pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
         if !found {
             return Err(anyhow!("No such file: {target}"));
         }
-        return Ok(format!("{reader}('{}')", expanded.replace('\'', "''")));
+        return Ok(format!("{reader}({})", literal(&expanded)));
     }
     if crate::db::is_excel_file(&expanded) {
         if !std::path::Path::new(&expanded).is_file() {
@@ -95,12 +92,12 @@ pub fn relation_of(conn: &Connection, target: &str) -> Result<String> {
             .ok_or_else(|| anyhow!("Workbook has no sheets: {target}"))?;
         let name = crate::db::available_view_name_of(conn, &crate::db::view_name_for(&expanded)?);
         crate::excel::attach_temporary_sheet(conn, &expanded, &sheet, &name)?;
-        return Ok(quote(&name));
+        return Ok(ident(&name));
     }
     if target.trim().is_empty() {
         return Err(anyhow!("Name a data file, a table or a view to profile"));
     }
-    Ok(target.split('.').map(quote).collect::<Vec<_>>().join("."))
+    Ok(target.split('.').map(ident).collect::<Vec<_>>().join("."))
 }
 
 /// How many statistics [`aggregates`] gives each column.
@@ -113,7 +110,7 @@ const STATISTICS: usize = 11;
 /// typed `NULL` rather than a missing expression.
 fn aggregates(name: &str, data_type: &str) -> [String; STATISTICS] {
     let shape = shape_of(data_type);
-    let column = quote(name);
+    let column = ident(name);
 
     let (distinct, min, max) = match shape {
         Shape::Nested => (
@@ -253,7 +250,6 @@ fn marker_hint(relation: &str, found: &[(&str, &str)]) -> String {
         .map(|(name, _)| *name)
         .collect::<Vec<_>>()
         .join(", ");
-    let literal = |m: &str| format!("'{}'", m.replace('\'', "''"));
     let nullstr = match markers.as_slice() {
         [one] => literal(one),
         many => format!(

@@ -132,7 +132,7 @@ impl Sidebar {
         cx.spawn_in(window, async move |_, cx| {
             let result = smol::unblock(move || {
                 crate::db::with_connection(|conn| {
-                    conn.execute_batch(&format!("USE \"{}\"", name.replace('"', "\"\"")))?;
+                    conn.execute_batch(&format!("USE {}", crate::sql::ident(&name)))?;
                     Ok(crate::script::search_path_of(conn))
                 })
             })
@@ -194,8 +194,8 @@ impl Sidebar {
                     .filter(|file| {
                         let result = crate::history::remove_attached_file(file.id).and_then(|()| {
                             crate::db::with_connection(|conn| {
-                                let quoted = file.view_name.replace('"', "\"\"");
-                                conn.execute_batch(&format!("DROP VIEW IF EXISTS \"{quoted}\""))?;
+                                let view = crate::sql::ident(&file.view_name);
+                                conn.execute_batch(&format!("DROP VIEW IF EXISTS {view}"))?;
                                 Ok(())
                             })
                         });

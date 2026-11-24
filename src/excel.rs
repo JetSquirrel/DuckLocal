@@ -13,6 +13,8 @@ use calamine::{Data, DataType, Reader};
 use duckdb::types::{TimeUnit, Value};
 use duckdb::Connection;
 
+use crate::sql::ident;
+
 /// The sheet names of a workbook, in workbook order.
 pub fn sheets(path: &str) -> Result<Vec<String>> {
     let workbook = open(path)?;
@@ -59,13 +61,13 @@ fn import(
     let columns = names
         .iter()
         .zip(&kinds)
-        .map(|(name, kind)| format!("{} {}", quote(name), sql_type(*kind)))
+        .map(|(name, kind)| format!("{} {}", ident(name), sql_type(*kind)))
         .collect::<Vec<_>>()
         .join(", ");
     if temporary {
         conn.execute_batch(&format!(
             "CREATE OR REPLACE TEMP TABLE {} ({columns})",
-            quote(table_name)
+            ident(table_name)
         ))?;
     } else {
         crate::db::ensure_replaceable_of(conn, path, table_name)?;
@@ -73,7 +75,7 @@ fn import(
             "CREATE OR REPLACE TABLE {name} ({columns});
              COMMENT ON TABLE {name} IS '{}';",
             crate::db::OWNED_COMMENT,
-            name = quote(table_name),
+            name = ident(table_name),
         ))?;
     }
 
@@ -104,11 +106,6 @@ fn import(
 
 fn open(path: &str) -> Result<calamine::Sheets<std::io::BufReader<std::fs::File>>> {
     calamine::open_workbook_auto(path).map_err(|e| anyhow!("Cannot read workbook {path}: {e}"))
-}
-
-/// `name` as a quoted SQL identifier.
-fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// The header row, made into usable column names: an empty cell becomes
@@ -294,7 +291,7 @@ mod tests {
     }
 
     fn column_types(conn: &Connection, table: &str) -> Vec<(String, String)> {
-        conn.prepare(&format!("DESCRIBE {}", quote(table)))
+        conn.prepare(&format!("DESCRIBE {}", ident(table)))
             .unwrap()
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

@@ -23,6 +23,7 @@ use duckdb::Connection;
 use serde_json::{json, Value};
 
 use crate::cli::{Arg, CliError};
+use crate::sql::literal;
 
 pub(crate) const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 pub(crate) const DEFAULT_MEMORY_LIMIT: &str = "2GB";
@@ -142,12 +143,8 @@ fn valid_memory_limit(limit: &str) -> bool {
         )
 }
 
-fn quoted(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "''"))
-}
-
 fn list(items: &[String]) -> String {
-    let items: Vec<String> = items.iter().map(|item| quoted(item)).collect();
+    let items: Vec<String> = items.iter().map(|item| literal(item)).collect();
     format!("[{}]", items.join(", "))
 }
 
@@ -200,7 +197,7 @@ impl Policy {
             format!("SET allowed_paths = {}", list(&self.files)),
             // A spill to disk would be a write nothing here allowed.
             "SET temp_directory = ''".to_string(),
-            format!("SET memory_limit = {}", quoted(&self.memory_limit)),
+            format!("SET memory_limit = {}", literal(&self.memory_limit)),
             "SET autoinstall_known_extensions = false".to_string(),
             "SET autoload_known_extensions = false".to_string(),
             "SET allow_community_extensions = false".to_string(),

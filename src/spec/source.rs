@@ -128,9 +128,9 @@ pub(crate) fn expand(sql: &str, sources: &[Source], views: &[View], base: &Path)
             // Validation has already said the extension has a reader.
             let reader = crate::db::data_file_reader(&path).unwrap_or("read_csv_auto");
             format!(
-                "\"{}\" AS (SELECT * FROM {reader}('{}'))",
-                source.name.replace('"', "\"\""),
-                path.replace('\'', "''")
+                "{} AS (SELECT * FROM {reader}({}))",
+                crate::sql::ident(&source.name),
+                crate::sql::literal(&path)
             )
         })
         .chain(used_views.iter().map(|view| {

@@ -478,14 +478,14 @@ impl ChartData {
         if unique.len() != names.len() {
             return None;
         }
-        let x = crate::overview::quote(&self.label_name);
+        let x = crate::sql::ident(&self.label_name);
         let series: Vec<String> = self
             .series_names
             .iter()
-            .map(|name| crate::overview::quote(name))
+            .map(|name| crate::sql::ident(name))
             .collect();
-        let bucket = crate::overview::quote(BUCKET_COLUMN);
-        let rows = crate::overview::quote(ROWS_COLUMN);
+        let bucket = crate::sql::ident(BUCKET_COLUMN);
+        let rows = crate::sql::ident(ROWS_COLUMN);
         // Each series keeps its name: a time's total, then a point's mean.
         let totals: Vec<String> = series
             .iter()

@@ -139,15 +139,6 @@ impl MetricsPage {
     }
 }
 
-/// Whether `a` and `b` name the same file, however each is spelled.
-fn same_file(a: &Path, b: &Path) -> bool {
-    a == b
-        || matches!(
-            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
-            (Ok(a), Ok(b)) if a == b
-        )
-}
-
 impl Sidebar {
     /// The models the tree found, readable ones only, as the tab offers them.
     fn model_choices(&self) -> Vec<(String, ModelSource)> {
@@ -205,7 +196,7 @@ impl Sidebar {
                 let views = this
                     .models
                     .iter()
-                    .find(|found| same_file(&found.path, &model))
+                    .find(|found| crate::recents::same_file(&found.path, &model))
                     .and_then(|found| found.views.clone());
                 this.select_metrics_model(ModelSource { model, views }, cx);
             })

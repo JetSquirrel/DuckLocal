@@ -19,6 +19,7 @@
 use std::io::Read;
 
 use crate::i18n::{trf_in, Language};
+use crate::sql::literal;
 
 const MAGIC: &[u8; 4] = b"DUCK";
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -101,7 +102,7 @@ fn release(version: &str) -> Option<(u64, u64, u64)> {
 pub fn explain_open_failure(path: &str, ours: &str, error: &str, lang: Language) -> Option<String> {
     let text = |key, args: &[&str]| Some(trf_in(lang, key, args));
     match file_kind(path)? {
-        FileKind::Sqlite => text("storage.sqlite", &[&sql_string(path)]),
+        FileKind::Sqlite => text("storage.sqlite", &[&literal(path)]),
         FileKind::Other => text("storage.not_duckdb", &[]),
         FileKind::Duckdb { storage, .. }
             if storage < FIRST_STABLE_STORAGE && refused_for_its_version(error) =>
@@ -113,7 +114,7 @@ pub fn explain_open_failure(path: &str, ours: &str, error: &str, lang: Language)
             ..
         } if release(&created_by) > release(ours) && refused_for_its_version(error) => text(
             "storage.too_new",
-            &[&created_by, ours, &sql_string(path), ours],
+            &[&created_by, ours, &literal(path), ours],
         ),
         FileKind::Duckdb { .. } => None,
     }
@@ -147,11 +148,6 @@ pub fn explain_error(path: &str, error: impl std::fmt::Display, lang: Language) 
         Some(explanation) => format!("{explanation}\n\n{message}"),
         None => message,
     }
-}
-
-/// `path` as a single-quoted SQL string literal.
-fn sql_string(path: &str) -> String {
-    format!("'{}'", path.replace('\'', "''"))
 }
 
 #[cfg(test)]
@@ -303,15 +299,15 @@ mod tests {
         conn.execute_batch(&format!(
             "ATTACH {} AS made (STORAGE_VERSION 'v1.5.0'); \
              CREATE TABLE made.t AS SELECT 42 AS n; DETACH made;",
-            sql_string(src.to_str().unwrap())
+            literal(src.to_str().unwrap())
         ))
         .unwrap();
         conn.execute_batch(&format!(
             "ATTACH {} AS src (READ_ONLY); \
              ATTACH {} AS dst (STORAGE_VERSION 'v1.0.0'); \
              COPY FROM DATABASE src TO dst;",
-            sql_string(src.to_str().unwrap()),
-            sql_string(dst.to_str().unwrap()),
+            literal(src.to_str().unwrap()),
+            literal(dst.to_str().unwrap()),
         ))
         .unwrap();
         let n: i64 = conn

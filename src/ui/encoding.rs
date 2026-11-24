@@ -16,6 +16,7 @@
 use crate::i18n::tr;
 use crate::query::{ColumnKind, ColumnMeta};
 use crate::spec::model::Plot;
+use crate::sql::ident;
 use crate::ui::chart::{ChartKind, MAX_BARS, MAX_SERIES};
 
 /// How many categories come back: a bar chart's worth. A pie folds them
@@ -157,14 +158,13 @@ impl Encoding {
     /// the kept bands and series only, each row's band in `BAND_COLUMN` and
     /// the totals in `BANDS_COLUMN` and `SERIES_COLUMN`.
     pub fn sql(&self, relation: &str, x_ordered: bool) -> String {
-        let quote = crate::overview::quote;
-        let x = quote(&self.x);
-        let value = quote(&self.value_name());
+        let x = ident(&self.x);
+        let value = ident(&self.value_name());
         let measure = match &self.y {
-            Some(y) => format!("{}({})::DOUBLE", self.agg.function(), quote(y)),
+            Some(y) => format!("{}({})::DOUBLE", self.agg.function(), ident(y)),
             None => "count(*)::DOUBLE".to_string(),
         };
-        let series = self.series.as_deref().map(quote);
+        let series = self.series.as_deref().map(ident);
         let split = series
             .as_deref()
             .map(|s| format!("{s}, "))
@@ -197,8 +197,8 @@ impl Encoding {
                 String::new(),
             ),
         };
-        let bands = quote(BANDS_COLUMN);
-        let series_column = quote(SERIES_COLUMN);
+        let bands = ident(BANDS_COLUMN);
+        let series_column = ident(SERIES_COLUMN);
         format!(
             "WITH grouped AS (\n\
              SELECT {x}, {split}{measure} AS {value}\n\
@@ -226,8 +226,7 @@ impl Encoding {
     /// it drawn as `kind`, titled `title`. The query groups plainly, without
     /// the chart's caps: a dashboard plot applies its own.
     pub fn dash(&self, statement: &str, kind: &str, title: &str, ordered: bool) -> String {
-        let quote = crate::overview::quote;
-        let x = quote(&self.x);
+        let x = ident(&self.x);
         // A histogram bins the rows themselves: its query hands them over,
         // and its plot names x alone.
         if kind == "histogram" {
@@ -240,12 +239,12 @@ impl Encoding {
                 dash_string(title),
             );
         }
-        let value = quote(&self.value_name());
+        let value = ident(&self.value_name());
         let measure = match &self.y {
-            Some(y) => format!("{}({})", self.agg.function(), quote(y)),
+            Some(y) => format!("{}({})", self.agg.function(), ident(y)),
             None => "count(*)".to_string(),
         };
-        let series = self.series.as_deref().map(quote);
+        let series = self.series.as_deref().map(ident);
         let split = series
             .as_deref()
             .map(|s| format!("{s}, "))

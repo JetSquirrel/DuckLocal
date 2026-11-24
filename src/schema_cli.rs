@@ -426,7 +426,7 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
         .strip_prefix(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| file.to_string());
-    let literal = format!("'{}'", shown.replace('\'', "''"));
+    let literal = crate::sql::literal(&shown);
     if crate::db::is_excel_file(file) {
         return Relation {
             name: shown.clone(),
@@ -446,7 +446,7 @@ fn file_relation(connection: &duckdb::Connection, file: &str, cwd: &Path) -> Rel
         };
     }
     let reader = crate::db::data_file_reader(file).unwrap_or("read_csv_auto");
-    let absolute = format!("'{}'", file.replace('\'', "''"));
+    let absolute = crate::sql::literal(file);
     // DuckDB reads an empty CSV as one VARCHAR column named column0, which
     // is a column the file does not have.
     let empty = std::fs::metadata(file).is_ok_and(|m| m.len() == 0);
@@ -512,8 +512,7 @@ fn glob_relation(
         .strip_prefix(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| pattern.to_string());
-    let literal = |path: &str| format!("'{}'", path.replace('\'', "''"));
-    let read = literal(&absolute.to_string_lossy());
+    let read = crate::sql::literal(&absolute.to_string_lossy());
     let (columns, error) = match describe(connection, &format!("SELECT * FROM {reader}({read})")) {
         Ok(columns) => (columns, None),
         Err(message) => (Vec::new(), Some(message)),
@@ -535,9 +534,9 @@ fn glob_relation(
         name: shown.clone(),
         kind: "glob",
         from: if reader == "read_csv_auto" && !csv {
-            format!("{reader}({})", literal(&shown))
+            format!("{reader}({})", crate::sql::literal(&shown))
         } else {
-            literal(&shown)
+            crate::sql::literal(&shown)
         },
         target: shown.clone(),
         path: Some(shown),
@@ -607,7 +606,7 @@ fn quote(name: &str) -> String {
     if plain {
         name.to_string()
     } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
+        crate::sql::ident(name)
     }
 }
 
