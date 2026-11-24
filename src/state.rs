@@ -869,8 +869,8 @@ pub fn load_attached_files() -> Vec<AttachedFileView> {
                         return Ok(count);
                     }
                     let count = crate::db::with_connection(|conn| {
-                        let quoted = file.view_name.replace('"', "\"\"");
-                        conn.query_row(&format!("SELECT count(*) FROM \"{quoted}\""), [], |r| {
+                        let view = crate::sql::ident(&file.view_name);
+                        conn.query_row(&format!("SELECT count(*) FROM {view}"), [], |r| {
                             r.get::<_, i64>(0)
                         })
                         .map_err(Into::into)
@@ -1153,9 +1153,9 @@ mod tests {
 
             crate::db::open_memory().unwrap();
             assert!(reattach_registered_files().is_empty());
-            let quoted = registered[0].view_name.replace('"', "\"\"");
+            let view = crate::sql::ident(&registered[0].view_name);
             let n: i64 = crate::db::with_connection(|conn| {
-                conn.query_row(&format!("SELECT n FROM \"{quoted}\""), [], |r| r.get(0))
+                conn.query_row(&format!("SELECT n FROM {view}"), [], |r| r.get(0))
                     .map_err(Into::into)
             })
             .unwrap();

@@ -26,6 +26,7 @@ use serde_json::Value;
 use super::ast::{self, Sql};
 use super::model::{closest, Dataset, Field, Metric, Model, Relationship};
 use super::Refusal;
+use crate::sql::ident;
 
 /// What `date_trunc` takes, as a time dimension's grain.
 pub(crate) const GRAINS: &[&str] = &[
@@ -509,16 +510,16 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
     let render = |tree: &Value| sql.render(tree).map_err(|e| Refusal::new("internal", e));
     let mut items = Vec::new();
     for (column, tree, _) in &dimensions {
-        items.push(format!("{} AS {}", render(tree)?, ast::quote(&column.name)));
+        items.push(format!("{} AS {}", render(tree)?, ident(&column.name)));
     }
     for (name, _, tree) in &selected {
-        items.push(format!("{} AS {}", render(tree)?, ast::quote(name)));
+        items.push(format!("{} AS {}", render(tree)?, ident(name)));
     }
     let mut text = format!(
         "SELECT {}\nFROM {} AS {}",
         items.join(", "),
         table(base_dataset),
-        ast::quote(&base_dataset.name)
+        ident(&base_dataset.name)
     );
     for r in &joins {
         let (Some(from), Some(to)) = (model.dataset(&r.from), model.dataset(&r.to)) else {
@@ -538,7 +539,7 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
         text.push_str(&format!(
             "\nLEFT JOIN {} AS {} ON {}",
             table(to),
-            ast::quote(&to.name),
+            ident(&to.name),
             keys.join(" AND ")
         ));
     }
@@ -597,7 +598,7 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
             };
             keys.push(format!(
                 "{}{}",
-                ast::quote(&column.name),
+                ident(&column.name),
                 if order.descending { " DESC" } else { "" }
             ));
         }
@@ -732,7 +733,7 @@ fn table(dataset: &Dataset) -> String {
     dataset
         .table
         .iter()
-        .map(|part| ast::quote(part))
+        .map(|part| ident(part))
         .collect::<Vec<_>>()
         .join(".")
 }

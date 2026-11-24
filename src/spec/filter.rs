@@ -60,13 +60,13 @@ pub(crate) struct Pick {
 impl Pick {
     /// The predicate that stands in for the placeholder.
     pub(crate) fn predicate(&self) -> String {
-        let column = format!("\"{}\"", self.column.replace('"', "\"\""));
+        let column = crate::sql::ident(&self.column);
         let null = self.values.iter().any(Option::is_none);
         let literals: Vec<String> = self
             .values
             .iter()
             .flatten()
-            .map(|value| format!("'{}'", value.replace('\'', "''")))
+            .map(|value| crate::sql::literal(value))
             .collect();
         let listed = match literals.as_slice() {
             [] => None,

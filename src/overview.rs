@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use duckdb::{Connection, InterruptHandle};
 
+use crate::sql::{ident, literal};
+
 /// How many bars a histogram gets. Few enough to read as a shape at a glance
 /// in a narrow cell.
 const BINS: usize = 12;
@@ -140,7 +142,7 @@ fn summarize(
 ) -> Result<Vec<ColumnOverview>> {
     let projection = wanted
         .iter()
-        .map(|(name, _)| quote(name))
+        .map(|(name, _)| ident(name))
         .collect::<Vec<_>>()
         .join(", ");
     let mut stmt = conn.prepare(&format!("SUMMARIZE SELECT {projection} FROM {relation}"))?;
@@ -298,18 +300,10 @@ fn shape_of(data_type: &str) -> Shape {
     Shape::Text
 }
 
-pub(crate) fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
-fn literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
 /// The SQL that yields one column's distribution as a JSON string, or
 /// `None` when there is nothing to chart.
 fn distribution_sql(column: &ColumnOverview) -> Option<String> {
-    let name = quote(&column.name);
+    let name = ident(&column.name);
     // Entries sorted by count, most first, as `[{n, v}, …]`. A struct sorts
     // by its first field, so the count leads.
     let ranked = |histogram: String| {

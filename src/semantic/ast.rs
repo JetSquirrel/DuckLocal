@@ -358,11 +358,6 @@ impl Sql {
     }
 }
 
-/// `"name"`, for SQL the compiler writes around DuckDB's own.
-pub(crate) fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

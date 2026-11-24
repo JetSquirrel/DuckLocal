@@ -203,18 +203,18 @@ impl TitleBarView {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = smol::unblock(move || {
-                let esc = |s: &str| s.replace('\'', "''");
+                use crate::sql::literal;
                 crate::db::with_connection(|conn| {
                     conn.execute_batch(&format!(
                         "INSTALL httpfs; LOAD httpfs;
                          CREATE OR REPLACE SECRET ducklocal_s3 (
                              TYPE s3, PROVIDER config,
-                             KEY_ID '{}', SECRET '{}', REGION '{}', ENDPOINT '{}'
+                             KEY_ID {}, SECRET {}, REGION {}, ENDPOINT {}
                          )",
-                        esc(&key_id),
-                        esc(&secret),
-                        esc(&region),
-                        esc(&endpoint),
+                        literal(&key_id),
+                        literal(&secret),
+                        literal(&region),
+                        literal(&endpoint),
                     ))
                     .map_err(Into::into)
                 })

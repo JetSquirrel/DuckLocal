@@ -69,7 +69,7 @@ pub(super) fn drop_relation_sql(table: &TableRef) -> String {
 }
 
 pub(super) fn select_s3_file_sql(uri: &str) -> String {
-    format!("SELECT *\nFROM '{}'\nLIMIT 100;", uri.replace('\'', "''"))
+    format!("SELECT *\nFROM {}\nLIMIT 100;", crate::sql::literal(uri))
 }
 
 /// A table as Markdown, for pasting into a chat, an issue or an agent's

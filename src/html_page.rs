@@ -121,7 +121,7 @@ fn page(body: &str) -> String {
 }
 
 /// Text for an element or a double-quoted attribute.
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {

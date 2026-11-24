@@ -36,6 +36,7 @@ mod session;
 mod setup;
 mod sources;
 mod spec;
+mod sql;
 mod state;
 mod storage;
 mod ui;

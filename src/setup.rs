@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
+use crate::recents::same_file;
+
 /// The skill agents load to learn the CLI: `skills/ducklocal` in this
 /// repository, compiled in so the app can install the copy that matches it.
 const SKILL: &str = include_str!("../skills/ducklocal/SKILL.md");
@@ -47,13 +49,6 @@ fn executable() -> Result<PathBuf> {
         return Ok(exe);
     }
     Ok(exe.canonicalize().unwrap_or(exe))
-}
-
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 // --- macOS and Linux: a symlink in a directory on the PATH -----------------

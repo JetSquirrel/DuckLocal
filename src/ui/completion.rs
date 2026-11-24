@@ -387,7 +387,7 @@ pub(crate) fn identifier_insert(name: &str) -> String {
     if bare_safe {
         name.to_string()
     } else {
-        format!("\"{}\"", name.replace('"', "\"\""))
+        crate::sql::ident(name)
     }
 }
 

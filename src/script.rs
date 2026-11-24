@@ -179,7 +179,7 @@ pub fn dot_command_sql(command: &str) -> Result<String> {
         return Err(anyhow!(trf("script.dot.too_many_args", &[name])));
     }
     let filter = |column: &str| match pattern {
-        Some(p) => format!("WHERE {column} ILIKE '{}'", p.replace('\'', "''")),
+        Some(p) => format!("WHERE {column} ILIKE {}", crate::sql::literal(p)),
         None => String::new(),
     };
     let no_pattern = |sql: String| {
@@ -236,7 +236,13 @@ fn supported_commands() -> String {
 fn help_sql() -> String {
     let rows: Vec<String> = DOT_COMMANDS
         .iter()
-        .map(|(usage, key)| format!("('{usage}', '{}')", tr(key).replace('\'', "''")))
+        .map(|(usage, key)| {
+            format!(
+                "({}, {})",
+                crate::sql::literal(usage),
+                crate::sql::literal(tr(key))
+            )
+        })
         .collect();
     format!(
         "SELECT * FROM (VALUES {}) AS t(command, description)",

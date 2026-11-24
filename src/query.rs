@@ -618,7 +618,7 @@ pub fn run_searching(search_path: Option<&str>, sql: &str) -> Result<QueryOutcom
 
 /// The statement that sets `file_search_path` to `path`.
 pub(crate) fn set_file_search_path(path: &str) -> String {
-    format!("SET file_search_path = '{}'", path.replace('\'', "''"))
+    format!("SET file_search_path = {}", crate::sql::literal(path))
 }
 
 #[hotpath::measure]
@@ -1053,10 +1053,10 @@ impl ExportFormat {
 
 pub fn export_of(conn: &Connection, sql: &str, path: &str, format: ExportFormat) -> Result<()> {
     let trimmed = sql.trim().trim_end_matches(';');
-    let escaped_path = path.replace('\'', "''");
-    let expanded = crate::db::expand_tilde(&escaped_path);
+    // Expanded before it is quoted: a home folder can hold a quote too.
+    let target = crate::sql::literal(&crate::db::expand_tilde(path));
     conn.execute_batch(&format!(
-        "COPY ({trimmed}) TO '{expanded}' (FORMAT {}{})",
+        "COPY ({trimmed}) TO {target} (FORMAT {}{})",
         format.duckdb_format(),
         format.copy_options()
     ))?;
@@ -1784,6 +1784,23 @@ mod tests {
         let content = std::fs::read_to_string(&dir).unwrap();
         assert!(content.contains("a,b"));
         std::fs::remove_file(&dir).ok();
+    }
+
+    #[test]
+    fn export_writes_to_a_path_with_a_quote() {
+        let conn = mem();
+        let dir = std::env::temp_dir().join(format!("ducklocal_o'brien_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("it's.csv");
+        export_of(
+            &conn,
+            "SELECT 1 AS a",
+            path.to_str().unwrap(),
+            ExportFormat::Csv,
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains('a'));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

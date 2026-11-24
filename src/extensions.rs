@@ -331,8 +331,18 @@ pub fn may_load(sql: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// An in-memory connection with an empty extension directory of its own:
+    /// what happens to be installed on the machine running the tests (say,
+    /// mssql in `~/.duckdb`) must not decide them.
     fn mem() -> Connection {
-        Connection::open_in_memory().unwrap()
+        let conn = Connection::open_in_memory().unwrap();
+        let dir = std::env::temp_dir().join(format!("ducklocal_extensions_{}", std::process::id()));
+        conn.execute_batch(&format!(
+            "SET extension_directory = {}",
+            crate::sql::literal(&dir.to_string_lossy())
+        ))
+        .unwrap();
+        conn
     }
 
     #[test]
