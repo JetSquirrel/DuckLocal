@@ -192,6 +192,11 @@ static STRINGS: &[(&str, &str, &str)] = &[
         "Downloads it from DuckDB's extension server",
     ),
     (
+        "sidebar.extensions.install.large_tooltip",
+        "从 DuckDB 的扩展服务器下载，约 700 MB，可能需要几分钟。首次加载时还会从社区仓库下载与显卡驱动匹配的 CUDA 后端",
+        "Downloads it from DuckDB's extension server: about 700 MB, which can take minutes. The first Load also downloads the CUDA backend for your driver from the community repository",
+    ),
+    (
         "notify.network.tiles_on",
         "在线底图已开启：地图会向 {} 请求所查看区域的地图瓦片，不会发送你的数据。",
         "Online base map on: maps now ask {} for the tiles of the area you view. Your rows are not sent.",

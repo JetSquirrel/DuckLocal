@@ -262,7 +262,9 @@ impl Sidebar {
                              action: ExtensionAction,
                              cx: &mut Context<Self>| {
             let name = ext.name.clone();
-            let install_tooltip = if ext.community {
+            let install_tooltip = if crate::extensions::is_large_download(&ext.name) {
+                "sidebar.extensions.install.large_tooltip"
+            } else if ext.community {
                 "sidebar.extensions.install.community_tooltip"
             } else {
                 "sidebar.extensions.install.tooltip"
