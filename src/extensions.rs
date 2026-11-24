@@ -70,6 +70,28 @@ pub const COMMUNITY: &[(&str, &str)] = &[
 /// The community repository's name in `INSTALL ... FROM`.
 const COMMUNITY_REPOSITORY: &str = "community";
 
+/// NVIDIA's GPU engine for DuckDB, a core extension since v2.0.1. It is
+/// built for Linux (glibc, x86-64 and arm64) only, its download is about
+/// 700 MB, and, since it takes over every query rather than adding
+/// functions, no query autoloads it.
+pub const SIRIUS: &str = "sirius";
+
+/// Whether DuckDB publishes a build of `name` for this platform, as far as
+/// this build knows: only Sirius is known to have none outside Linux.
+pub fn available_here(name: &str) -> bool {
+    name != SIRIUS || cfg!(target_os = "linux")
+}
+
+/// Whether installing `name` is a download large enough to say so first.
+pub fn is_large_download(name: &str) -> bool {
+    name == SIRIUS
+}
+
+/// DuckDB's HTTP timeout while a large extension downloads, in seconds: the
+/// default 30 cuts off Sirius's 700 MB on most connections. Sirius's own
+/// install instructions use 900.
+const LARGE_DOWNLOAD_TIMEOUT_SECS: u32 = 900;
+
 impl ExtensionInfo {
     pub fn can_install(&self) -> bool {
         !self.installed
@@ -97,6 +119,7 @@ pub enum ExtensionAction {
 /// the rest, each group by name.
 pub fn list_of(conn: &Connection) -> Result<Vec<ExtensionInfo>> {
     let mut list = engine_list_of(conn)?;
+    list.retain(|e| e.installed || available_here(&e.name));
     for (name, description) in COMMUNITY {
         if !list.iter().any(|e| e.name == *name) {
             list.push(ExtensionInfo {
@@ -159,12 +182,20 @@ fn engine_list_of(conn: &Connection) -> Result<Vec<ExtensionInfo>> {
 /// parameter. A name the engine does not know installs from the community
 /// repository.
 pub fn apply_of(conn: &Connection, name: &str, action: ExtensionAction) -> Result<()> {
+    if action == ExtensionAction::Install && !available_here(name) {
+        return Err(anyhow!(
+            "DuckDB publishes no {name} for this platform: it runs on Linux only"
+        ));
+    }
     let engine_knows = engine_list_of(conn)?.iter().any(|e| e.name == name);
     let curated = COMMUNITY.iter().any(|(n, _)| *n == name);
     if !is_extension_name(name) || !(engine_knows || curated) {
         return Err(anyhow!("Unknown extension: {name}"));
     }
     match action {
+        ExtensionAction::Install if engine_knows && is_large_download(name) => {
+            install_large_of(conn, name)?
+        }
         ExtensionAction::Install if engine_knows => {
             conn.execute_batch(&format!("INSTALL {name}"))?
         }
@@ -181,6 +212,19 @@ pub fn apply_of(conn: &Connection, name: &str, action: ExtensionAction) -> Resul
     Ok(())
 }
 
+/// Install a core extension whose download outlasts DuckDB's default HTTP
+/// timeout. The timeout is raised through httpfs, as Sirius's instructions
+/// do, and put back afterwards whatever the install did, so that later S3
+/// and HTTP reads keep the usual one.
+fn install_large_of(conn: &Connection, name: &str) -> Result<()> {
+    conn.execute_batch(&format!(
+        "INSTALL httpfs; LOAD httpfs; SET http_timeout = {LARGE_DOWNLOAD_TIMEOUT_SECS}"
+    ))?;
+    let installed = conn.execute_batch(&format!("INSTALL {name}"));
+    let _ = conn.execute_batch("RESET http_timeout");
+    Ok(installed?)
+}
+
 /// Install `name` from DuckDB's community repository, for one a person typed.
 ///
 /// A name with no build for this DuckDB is the usual failure, since
@@ -189,6 +233,10 @@ pub fn apply_of(conn: &Connection, name: &str, action: ExtensionAction) -> Resul
 pub fn install_community_of(conn: &Connection, name: &str) -> Result<()> {
     if !is_extension_name(name) {
         return Err(anyhow!("Not an extension name: {name}"));
+    }
+    if name == SIRIUS {
+        // A core extension: the community repository has only its backends.
+        return apply_of(conn, name, ExtensionAction::Install);
     }
     match conn.execute_batch(&format!("INSTALL {name} FROM {COMMUNITY_REPOSITORY}")) {
         Ok(()) => Ok(()),
@@ -225,13 +273,17 @@ pub const AT_LAUNCH_SETTING: &str = "extensions_at_launch";
 /// A builtin is always loaded and a core extension autoloads when a query
 /// needs it; one from the community repository, another repository or a
 /// file does neither.
+///
+/// Sirius is the exception among core extensions: no query names it, so
+/// none autoloads it, and without a `LOAD` every query runs on the CPU.
 pub fn needs_loading(ext: &ExtensionInfo) -> bool {
     ext.installed
         && matches!(ext.origin, Origin::Repository | Origin::Other)
-        && !ext
-            .installed_from
-            .as_deref()
-            .is_some_and(|from| from.starts_with("core"))
+        && (ext.name == SIRIUS
+            || !ext
+                .installed_from
+                .as_deref()
+                .is_some_and(|from| from.starts_with("core")))
 }
 
 /// The extensions on the launch list: loaded on every new connection.
@@ -431,6 +483,32 @@ mod tests {
             Some("core_nightly")
         )));
         assert!(!needs_loading(&ext(Origin::NotInstalled, None)));
+    }
+
+    #[test]
+    fn sirius_is_the_core_extension_that_needs_loading() {
+        let sirius = ExtensionInfo {
+            name: SIRIUS.to_string(),
+            ..ext(Origin::Repository, Some("core"))
+        };
+        assert!(needs_loading(&sirius));
+        assert!(!needs_loading(&ExtensionInfo {
+            origin: Origin::NotInstalled,
+            installed: false,
+            ..sirius
+        }));
+    }
+
+    #[test]
+    fn sirius_is_offered_on_linux_only() {
+        assert_eq!(available_here(SIRIUS), cfg!(target_os = "linux"));
+        assert!(available_here("httpfs"));
+        let listed = list_of(&mem()).unwrap().iter().any(|e| e.name == SIRIUS);
+        if !cfg!(target_os = "linux") {
+            assert!(!listed);
+            let refused = apply_of(&mem(), SIRIUS, ExtensionAction::Install);
+            assert!(refused.unwrap_err().to_string().contains("Linux only"));
+        }
     }
 
     #[test]

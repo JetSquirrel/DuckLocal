@@ -22,7 +22,7 @@ members = ["quicklook"]
 # `tree-sitter-sql`: the SQL editor and the SQL in `.dash` heredocs are the only
 # code DuckLocal highlights, so it links that one grammar rather than the set.
 gpui-kit = { version = "0.10.0", features = ["tree-sitter-sql"] }
-duckdb = { version = "1.20000.1", features = ["bundled", "json", "parquet"] }
+duckdb = { version = "1.20001.0", features = ["bundled", "json", "parquet"] }
 calamine = { version = "0.36", features = ["dates"] }
 smol = "2"
 anyhow = "1"

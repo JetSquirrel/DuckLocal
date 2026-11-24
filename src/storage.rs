@@ -95,7 +95,7 @@ fn release(version: &str) -> Option<(u64, u64, u64)> {
 /// `None` when the header does not explain the failure and DuckDB's own
 /// message is the best there is.
 ///
-/// `ours` is the bundled DuckDB's version (`v2.0.0`); `error` is DuckDB's
+/// `ours` is the bundled DuckDB's version (`v2.0.1`); `error` is DuckDB's
 /// message. A file's version only explains a failure DuckDB blamed on the
 /// version: a newer release's file that this one can still read fails for
 /// other reasons too — a lock held by that release, above all.
@@ -120,7 +120,7 @@ pub fn explain_open_failure(path: &str, ours: &str, error: &str, lang: Language)
     }
 }
 
-/// The bundled DuckDB's release, `v2.0.0`, without opening a database.
+/// The bundled DuckDB's release, `v2.0.1`, without opening a database.
 pub fn library_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {

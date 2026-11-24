@@ -881,12 +881,13 @@ fn a_new_database_file_opens_in_duckdb_1() {
 }
 
 /// The bundled DuckDB names itself a release, so INSTALL looks for
-/// extensions under `v2.0.0/` rather than under its commit, which
+/// extensions under `v2.0.1/` rather than under its commit, which
 /// extensions.duckdb.org does not serve. duckdb-rs 1.20000.0 packaged the
 /// v2.0.0 tag as `v2.0.0-dev88614`; 1.20000.1 reports `v2.0.0` itself
-/// (duckdb-rs#918). A newer bundled commit fails here on purpose.
+/// (duckdb-rs#918), and 1.20001.0 reports `v2.0.1`. A newer bundled commit
+/// fails here on purpose.
 #[test]
-fn bundled_duckdb_is_v2_0_0() {
+fn bundled_duckdb_is_v2_0_1() {
     let (version, source_id, codename): (String, String, String) = mem()
         .query_row(
             "SELECT library_version, source_id, codename FROM pragma_version()",
@@ -894,8 +895,8 @@ fn bundled_duckdb_is_v2_0_0() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(source_id, "d54cbbe3df", "the bundled DuckDB moved");
-    assert_eq!(version, "v2.0.0");
+    assert_eq!(source_id, "8d78114e90", "the bundled DuckDB moved");
+    assert_eq!(version, "v2.0.1");
     assert_ne!(codename, "Development Version");
 }
 
