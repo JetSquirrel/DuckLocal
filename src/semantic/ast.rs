@@ -312,17 +312,20 @@ pub(crate) struct Shape {
     pub aggregated: Vec<Vec<String>>,
     /// Column references outside every aggregate.
     pub bare: Vec<Vec<String>>,
+    /// For each outermost aggregate call, the column references it reads.
+    pub calls: Vec<Vec<Vec<String>>>,
 }
 
 impl Sql {
     pub(crate) fn shape(&self, value: &Value) -> Shape {
-        fn walk(sql: &Sql, value: &Value, inside: bool, shape: &mut Shape) {
+        fn walk(sql: &Sql, value: &Value, inside: Option<usize>, shape: &mut Shape) {
             match value {
                 Value::Object(map) => {
                     let mut inside = inside;
                     if map.contains_key("class") {
                         if let Some(parts) = column_names(value) {
-                            if inside {
+                            if let Some(call) = inside {
+                                shape.calls[call].push(parts.clone());
                                 shape.aggregated.push(parts);
                             } else {
                                 shape.bare.push(parts);
@@ -338,9 +341,12 @@ impl Sql {
                             );
                         }
                         if sql.is_aggregate(value) {
-                            shape.nested |= inside;
+                            shape.nested |= inside.is_some();
                             shape.aggregates = true;
-                            inside = true;
+                            if inside.is_none() {
+                                shape.calls.push(Vec::new());
+                                inside = Some(shape.calls.len() - 1);
+                            }
                         }
                     }
                     map.values()
@@ -353,7 +359,7 @@ impl Sql {
             }
         }
         let mut shape = Shape::default();
-        walk(self, value, false, &mut shape);
+        walk(self, value, None, &mut shape);
         shape
     }
 }

@@ -66,6 +66,11 @@ fn model_text(extra_relationships: &str) -> String {
             "SUM(COUNT(events.id)) OVER (ORDER BY events.seen)",
         ),
         ("mixed", "SUM(events.amount * teams.budget)"),
+        ("split", "COUNT(events.id) + SUM(teams.budget)"),
+        (
+            "eng_events",
+            "COUNT(events.id) FILTER (WHERE users.team = 'eng')",
+        ),
         ("bare", "events.amount"),
         ("nested", "SUM(event_count)"),
         ("loop_a", "loop_b + 1"),
@@ -343,7 +348,12 @@ fn what_cannot_be_answered_exactly_is_refused_by_kind() {
     let cases: &[(&[&str], &[&str], &str)] = &[
         (&["user_count"], &["events.user_name"], "metric_fanout"),
         (&["event_count", "user_count"], &[], "metric_multi_grain"),
-        (&["mixed"], &[], "metric_multi_grain"),
+        (&["split"], &[], "metric_multi_grain"),
+        (
+            &["event_count"],
+            &["events.seen:fortnight"],
+            "metric_bad_grain",
+        ),
         (&["running"], &[], "metric_window_unsupported"),
         (&["bare"], &[], "metric_not_aggregate"),
         (&["nested"], &[], "metric_nested_aggregate"),
@@ -496,4 +506,30 @@ fn the_cloudtrail_example_answers_as_its_dashboard_does() {
     for metric in vocabulary["metrics"].as_array().unwrap() {
         assert_eq!(metric["queryable"], true, "{metric}");
     }
+}
+
+#[test]
+fn an_aggregate_may_read_what_its_rows_reach_one_to_one() {
+    let (sql, model) = setup("");
+    // Every event has at most one user and every user one team, so the
+    // budget multiplies each event once: alice (eng) 25 * 100 + bob (ops)
+    // 30 * 50; mallory has no user, so her row adds NULL.
+    let compiled = ok(&sql, &model, &request(&["mixed", "eng_events"], &[]));
+    assert_eq!(compiled.base, "events");
+    assert_eq!(compiled.joins, ["events_user", "users_team"]);
+    assert_eq!(rows(&compiled.sql), table(&[&["4000", "2"]]));
+    // Broken down, the joined dataset's field groups the same rows.
+    let compiled = ok(&sql, &model, &request(&["eng_events"], &["users.team"]));
+    assert_eq!(
+        rows(&compiled.sql),
+        table(&[&["eng", "2"], &["ops", "0"], &["NULL", "0"]])
+    );
+    // Two aggregates of different datasets in one metric still have no one
+    // row to count: SUM(teams.budget) would repeat per event.
+    let refusal = refused(&sql, &model, &request(&["split"], &[]));
+    assert!(
+        refusal.message.contains("different datasets"),
+        "{}",
+        refusal.message
+    );
 }

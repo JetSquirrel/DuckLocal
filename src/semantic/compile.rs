@@ -256,15 +256,67 @@ fn datasets_of(parts: &[Vec<String>]) -> BTreeSet<String> {
     parts.iter().filter_map(|p| p.first().cloned()).collect()
 }
 
-/// A dimension as requested: its reference and grain.
-fn split_grain(text: &str) -> (&str, Option<String>) {
-    if let Some((reference, grain)) = text.rsplit_once(':') {
-        let grain = grain.trim().to_lowercase();
-        if GRAINS.contains(&grain.as_str()) {
-            return (reference.trim(), Some(grain));
-        }
+/// The dataset an aggregate counts the rows of. An aggregate may read
+/// several datasets when one of them reaches each of the others along
+/// exactly one many-to-one path: every row of it then sees one value of
+/// theirs, so nothing is counted twice. `None` when it reads no dataset;
+/// `Err` when no dataset, or more than one, qualifies.
+fn grain_of(model: &Model, own: &BTreeSet<String>) -> Result<Option<String>, ()> {
+    if own.len() <= 1 {
+        return Ok(own.iter().next().cloned());
     }
-    (text.trim(), None)
+    let reaches_all = |from: &String| {
+        own.iter()
+            .filter(|other| *other != from)
+            .all(|other| paths(model, from, other).len() == 1)
+    };
+    let mut candidates = own.iter().filter(|d| reaches_all(d));
+    match (candidates.next(), candidates.next()) {
+        (Some(only), None) => Ok(Some(only.clone())),
+        _ => Err(()),
+    }
+}
+
+/// The one dataset every aggregate call in `shape` counts the rows of, or
+/// why there is none.
+fn home_of(model: &Model, shape: &ast::Shape) -> Result<Option<String>, String> {
+    let mut homes = BTreeSet::new();
+    for call in &shape.calls {
+        let own = datasets_of(call);
+        let home = grain_of(model, &own).map_err(|()| {
+            format!(
+                "an aggregate reads columns of {} together, and no one of them reaches the \
+                 others along many-to-one relationships, so it has no one row to count",
+                own.iter().cloned().collect::<Vec<_>>().join(" and ")
+            )
+        })?;
+        homes.extend(home);
+    }
+    if homes.len() > 1 {
+        return Err(format!(
+            "its aggregates count the rows of different datasets ({})",
+            homes.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(homes.into_iter().next())
+}
+
+/// A dimension as requested: its reference and grain.
+fn split_grain(text: &str) -> Result<(&str, Option<String>), Refusal> {
+    match text.rsplit_once(':') {
+        Some((reference, grain)) => {
+            let grain = grain.trim().to_lowercase();
+            if !GRAINS.contains(&grain.as_str()) {
+                return Err(Refusal::new(
+                    "metric_bad_grain",
+                    format!("--by {text:?}: {grain:?} is not a time grain"),
+                )
+                .with_hint(format!("Use one of {}", GRAINS.join(", "))));
+            }
+            Ok((reference.trim(), Some(grain)))
+        }
+        None => Ok((text.trim(), None)),
+    }
 }
 
 pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Compiled, Refusal> {
@@ -277,6 +329,8 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
     // Metrics: each one's tree, and the dataset it aggregates.
     let mut selected: Vec<(String, String, Value)> = Vec::new(); // (output, reference, tree)
     let mut grain: BTreeSet<String> = BTreeSet::new();
+    // Datasets to join to the base.
+    let mut needed: BTreeSet<String> = BTreeSet::new();
     for name in &request.metrics {
         let Some(metric) = model.metric(name) else {
             let mut error = unknown(format!(
@@ -333,26 +387,21 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
                 ),
             ));
         }
-        let own = datasets_of(&shape.aggregated);
-        if own.len() > 1 {
-            return Err(Refusal::new(
+        let home = home_of(model, &shape).map_err(|why| {
+            Refusal::new(
                 "metric_multi_grain",
-                format!(
-                    "metric {:?} aggregates columns of {} together; each aggregate must read one dataset",
-                    metric.name,
-                    own.iter().cloned().collect::<Vec<_>>().join(" and ")
-                ),
-            ));
-        }
-        grain.extend(own);
+                format!("metric {:?}: {why}", metric.name),
+            )
+        })?;
+        grain.extend(home);
+        needed.extend(datasets_of(&shape.aggregated));
         selected.push((metric.name.clone(), metric.name.clone(), tree));
     }
 
     // Dimensions.
     let mut dimensions: Vec<(Column, Value, String)> = Vec::new(); // (column, tree, dataset.field)
-    let mut needed: BTreeSet<String> = BTreeSet::new();
     for text in &request.by {
-        let (reference, wanted_grain) = split_grain(text);
+        let (reference, wanted_grain) = split_grain(text)?;
         let (dataset, field) = dimension(model, sql, reference)?;
         let mut tree = resolver.field(dataset, field)?;
         if let Some(grain) = &wanted_grain {
@@ -415,8 +464,9 @@ pub(crate) fn compile(model: &Model, sql: &Sql, request: &Request) -> Result<Com
             return Err(refused("a window function cannot filter".to_string()));
         }
         if shape.aggregates {
-            let own = datasets_of(&shape.aggregated);
-            grain.extend(own);
+            let home = home_of(model, &shape).map_err(refused)?;
+            grain.extend(home);
+            needed.extend(datasets_of(&shape.aggregated));
             needed.extend(datasets_of(&shape.bare));
             group_filters.push(tree);
         } else {
