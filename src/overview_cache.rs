@@ -321,20 +321,23 @@ mod tests {
         ))
         .unwrap();
 
+        // The generation is process-wide and tests running alongside move
+        // it, so the files are compared on their own, and the generation
+        // only for having moved forward.
         let direct = format!("(SELECT * FROM '{path}')");
         let first = stamp_of(&conn, &direct);
         assert_eq!(first.files.len(), 1);
-        assert_eq!(stamp_of(&conn, &direct), first);
+        assert_eq!(stamp_of(&conn, &direct).files, first.files);
         // Through the view the sidebar makes, the same file.
         let through = stamp_of(&conn, "(SELECT * FROM data)");
         assert_eq!(through.files, first.files);
 
         std::fs::write(&csv, "n\n1\n2\n").unwrap();
-        assert_ne!(stamp_of(&conn, &direct), first);
+        assert_ne!(stamp_of(&conn, &direct).files, first.files);
 
         let before = stamp_of(&conn, "t");
         data_changed();
-        assert_ne!(stamp_of(&conn, "t"), before);
+        assert!(stamp_of(&conn, "t").generation > before.generation);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
