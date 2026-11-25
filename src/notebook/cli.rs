@@ -484,12 +484,15 @@ fn run_cells(args: &[OsString]) -> Result<(String, i32), CliError> {
     // a .dash file beside the notebook — its sources start there — on its
     // own connection, in memory unless --database names one. A table an
     // earlier SQL cell made is not there, so a query reading one is listed
-    // under `unresolved` rather than failed.
-    for ix in 0..doc.cells.len() {
-        if doc.cells[ix].kind == CellKind::Dash && selected(ix + 1) {
+    // under `unresolved` rather than failed. Its errors name the notebook,
+    // so the source is shifted down to where the cell starts in it: the
+    // line an error gives is then the notebook's line, not the cell's.
+    for (ix, cell) in doc.cells.iter().enumerate() {
+        if cell.kind == CellKind::Dash && selected(ix + 1) {
+            let source = "\n".repeat(lines[ix].saturating_sub(1)) + &cell.source;
             let checked = crate::spec::check_source(
                 &file,
-                &doc.cells[ix].source,
+                &source,
                 options.database.clone(),
                 true,
                 false,
@@ -968,5 +971,8 @@ SELECT 'a' AS channel, 3 AS revenue UNION ALL SELECT 'b', 5;
         assert_eq!(report["cells"][0]["status"], "failed");
         let message = report["cells"][0]["error"]["message"].as_str().unwrap();
         assert!(message.contains("pyramid"), "{message}");
+        // The cell's text starts on the notebook's second line, and the
+        // error names the notebook, so it gives that line.
+        assert!(message.contains(".sql:2:"), "{message}");
     }
 }
