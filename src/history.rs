@@ -74,6 +74,16 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
+/// Release the history database connection so another process (such as a
+/// freshly relaunched update) can open `history.duckdb` without lock conflicts.
+pub fn close() -> Result<()> {
+    let mut guard = HISTORY_CONNECTION
+        .lock()
+        .map_err(|e| anyhow!("History lock poisoned: {e}"))?;
+    *guard = None;
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_history(f: impl FnOnce()) {
     struct Reset;

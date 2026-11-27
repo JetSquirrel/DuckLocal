@@ -193,7 +193,6 @@ pub fn open_memory() -> Result<()> {
     replace(Some(Connection::open_in_memory_with_flags(config()?)?))
 }
 
-#[cfg(test)]
 pub fn close() -> Result<()> {
     replace(None)
 }

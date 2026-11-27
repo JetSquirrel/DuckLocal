@@ -50,6 +50,14 @@ use crate::app::DuckLocalApp;
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(windows)]
+    {
+        if args.first().is_some_and(|arg| arg == "__apply-update") {
+            let code = ui::update::run_elevated_apply(&args[1..]);
+            std::process::exit(code);
+        }
+        windows::wait_for_update_parent();
+    }
     #[cfg(feature = "scroll-bench")]
     if args.first().is_some_and(|arg| arg == "__scroll-bench") {
         #[cfg(windows)]
