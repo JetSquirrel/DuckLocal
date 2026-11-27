@@ -826,13 +826,32 @@ static STRINGS: &[(&str, &str, &str)] = &[
     ("status_bar.update.latest", "已是最新", "Up to date"),
     ("status_bar.update.available", "有新版本 {}", "Update available: {}"),
     ("status_bar.update.downloading", "正在下载 {}…", "Downloading {}…"),
+    (
+        "status_bar.update.downloading_progress",
+        "正在下载 {} ({})",
+        "Downloading {} ({})",
+    ),
+    ("status_bar.update.installing", "正在安装 {}…", "Installing {}…"),
     ("status_bar.update.restart", "重启以更新到 {}", "Restart to update to {}"),
     (
         "status_bar.update.restart_hint",
-        "新版本已下载，重启或下次退出时安装",
-        "Downloaded; installs when DuckLocal restarts or next quits"
+        "新版本已下载；点击立即安装并自动重启，或下次退出时安装",
+        "Update downloaded; click to install and restart automatically, or it will install when you next quit",
     ),
-    ("status_bar.update.failed", "检查更新失败", "Update check failed"),
+    ("status_bar.update.failed", "更新失败", "Update failed"),
+    ("notify.update.ready.title", "更新已就绪", "Update ready"),
+    (
+        "notify.update.ready",
+        "DuckLocal {} 已下载，重启后即可完成安装。",
+        "DuckLocal {} is ready to install. Restart to update.",
+    ),
+    ("notify.update.restart_now", "立即重启", "Restart now"),
+    ("notify.update.failed.title", "更新失败", "Update failed"),
+    (
+        "notify.update.failed",
+        "无法完成更新：{}",
+        "Could not complete update: {}",
+    ),
     (
         "menu.base_map",
         "在线底图（OpenStreetMap）",

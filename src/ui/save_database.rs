@@ -28,6 +28,8 @@ pub enum After {
     /// "Save as database…" by itself: nothing follows.
     Stay,
     Quit,
+    /// Install a downloaded update and relaunch DuckLocal.
+    RestartUpdate,
     /// Open what was asked for, which replaces the in-memory database.
     Open(OpenRequest),
 }
@@ -74,6 +76,14 @@ pub fn quit(cx: &mut App) {
     in_window(cx, request_quit, |cx| cx.quit());
 }
 
+/// Restart to install a downloaded update, unless that would lose tables or
+/// views held only in memory, in which case it asks first.
+pub fn restart_for_update(cx: &mut App) {
+    in_window(cx, request_restart_for_update, |cx| {
+        crate::ui::update::execute_restart(cx)
+    });
+}
+
 /// The "Save as database…" command.
 pub fn save_from_menu(cx: &mut App) {
     in_window(
@@ -87,6 +97,13 @@ fn request_quit(state: Entity<AppState>, window: &mut Window, cx: &mut App) {
     match state.read(cx).unsaved_objects() {
         0 => cx.quit(),
         count => confirm(state, count, After::Quit, window, cx),
+    }
+}
+
+fn request_restart_for_update(state: Entity<AppState>, window: &mut Window, cx: &mut App) {
+    match state.read(cx).unsaved_objects() {
+        0 => crate::ui::update::execute_restart(cx),
+        count => confirm(state, count, After::RestartUpdate, window, cx),
     }
 }
 
@@ -119,6 +136,7 @@ fn proceed(state: Entity<AppState>, after: After, window: &mut Window, cx: &mut 
     match after {
         After::Stay => {}
         After::Quit => cx.quit(),
+        After::RestartUpdate => crate::ui::update::execute_restart(cx),
         After::Open(request) => crate::ui::run_open_request(state, request, true, window, cx),
     }
 }
@@ -132,7 +150,7 @@ fn confirm(state: Entity<AppState>, count: usize, after: After, window: &mut Win
             "open_unsaved.body",
             "open_unsaved.discard",
         ),
-        After::Quit | After::Stay => (
+        After::Quit | After::RestartUpdate | After::Stay => (
             "quit_unsaved.title",
             "quit_unsaved.body",
             "quit_unsaved.discard",
@@ -215,6 +233,9 @@ pub fn save(state: Entity<AppState>, after: After, window: &mut Window, cx: &mut
                         crate::ui::apply_open_outcome(state.clone(), outcome, window, cx);
                         if matches!(after, After::Quit) {
                             return cx.quit();
+                        }
+                        if matches!(after, After::RestartUpdate) {
+                            return crate::ui::update::execute_restart(cx);
                         }
                         // Said before the next database opens over it.
                         if let Some(saved) = saved {

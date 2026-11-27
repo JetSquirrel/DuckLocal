@@ -32,8 +32,9 @@ pub mod tour;
 pub mod update;
 pub mod workspace;
 
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::WindowExt;
+use gpui_kit::component::{Sizable, WindowExt};
 use gpui_kit::{
     Action, App, Entity, KeyBinding, KeyBindingContextPredicate, PathPromptOptions, Window,
 };
@@ -177,20 +178,63 @@ pub fn init(cx: &mut App) {
     update::on_launch(cx);
 }
 
-/// The menu bar: every command the window has, with its shortcut, where a
-/// Mac user looks for it. Rebuilt when the language changes.
+/// Run `f` against the active window — or the first open one when the app is
+/// in the background — once any current window borrow ends. No-op when no
+/// window is open (for example in headless tests).
+fn with_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+            return;
+        };
+        window.update(cx, move |_, window, cx| f(window, cx)).ok();
+    });
+}
+
 /// Someone just turned on something that reaches the network: say where it
 /// goes, once, as they do it. See docs/network-and-privacy.md.
 fn notify_network(message: String, cx: &mut App) {
-    if let Some(window) = cx.active_window() {
-        window
-            .update(cx, |_, window, cx| {
-                window.push_notification(Notification::info(message), cx);
-            })
-            .ok();
-    }
+    with_window(cx, move |window, cx| {
+        window.push_notification(Notification::info(message), cx);
+    });
 }
 
+/// Tell the user an update has finished downloading and offer a one-click
+/// restart to install it.
+pub(crate) fn notify_update_ready(tag: String, cx: &mut App) {
+    with_window(cx, move |window, cx| {
+        window.push_notification(
+            Notification::info(trf("notify.update.ready", &[&tag]))
+                .title(tr("notify.update.ready.title"))
+                .action(|_, _, cx| {
+                    Button::new("restart-for-update")
+                        .primary()
+                        .small()
+                        .label(tr("notify.update.restart_now"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.dismiss(window, cx);
+                            update::restart(cx);
+                        }))
+                }),
+            cx,
+        );
+    });
+}
+
+/// Surface an update error as a toast so a failed download or restart is not
+/// buried in the status bar tooltip.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn notify_update_failed(error: String, cx: &mut App) {
+    with_window(cx, move |window, cx| {
+        window.push_notification(
+            Notification::error(trf("notify.update.failed", &[&error]))
+                .title(tr("notify.update.failed.title")),
+            cx,
+        );
+    });
+}
+
+/// The menu bar: every command the window has, with its shortcut, where a
+/// Mac user looks for it. Rebuilt when the language changes.
 pub fn set_menus(cx: &mut App) {
     use gpui_kit::component::input;
     use gpui_kit::{Menu, MenuItem};
