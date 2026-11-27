@@ -17,6 +17,8 @@ query "totals" {
   sql = <<SQL
     SELECT sum(revenue) AS revenue, sum(orders) AS orders,
            count(DISTINCT channel) AS channels,
+           CASE WHEN count(DISTINCT channel) = 1 THEN min(channel)
+                ELSE count(DISTINCT channel) || ' channels' END AS channel_scope,
            count(DISTINCT region) || ' regions, ' || count(DISTINCT date) || ' days' AS spread
     FROM orders
     WHERE $channel
@@ -59,7 +61,7 @@ query "daily_orders" {
 plot "overview" {
   type  = "text"
   title = "Orders overview"
-  text  = "Five channels, three regions, September 2026"
+  text  = "September 2026 orders by channel and region"
 }
 
 plot "revenue_total" {
@@ -67,7 +69,7 @@ plot "revenue_total" {
   query = query.totals
   value = revenue
   title = "Revenue"
-  note  = "Every channel and region"
+  note  = channel_scope
   tone  = "accent"
 }
 

@@ -928,11 +928,14 @@ impl Notebook {
     /// its code font at its line height — and its insets, so a one-line cell
     /// is one line tall and a long one stops at `EDITOR_MAX_LINES`.
     fn editor_height(editor: &Entity<EditorState>, cx: &App) -> Pixels {
-        let lines = editor
-            .read(cx)
-            .text()
-            .lines_len()
-            .clamp(EDITOR_MIN_LINES, EDITOR_MAX_LINES);
+        let state = editor.read(cx);
+        let rows = state.display_map().display_row_count();
+        let lines = if rows == 0 {
+            state.text().lines_len()
+        } else {
+            rows
+        }
+        .clamp(EDITOR_MIN_LINES, EDITOR_MAX_LINES);
         cx.theme().mono_font_size * EDITOR_LINE_HEIGHT * lines as f32 + px(EDITOR_INSETS)
     }
 
@@ -1002,7 +1005,10 @@ impl Notebook {
             });
 
         // Code sits in a quiet box, the way a code block does in prose.
-        let code_box = |editor: &Entity<EditorState>, height: Pixels| {
+        let notebook_id = cx.entity_id();
+        let code_box = |editor: &Entity<EditorState>| {
+            let height = Self::editor_height(editor, cx);
+            let measured_editor = editor.clone();
             div()
                 .w_full()
                 .h(height)
@@ -1015,15 +1021,18 @@ impl Notebook {
                 })
                 .overflow_hidden()
                 .child(Editor::new(editor).h(relative(1.)).bordered(false))
+                .on_children_prepainted(move |_, window, cx| {
+                    // Layout computes wrapping at the actual width, including on resize.
+                    if Self::editor_height(&measured_editor, cx) != height {
+                        window.on_next_frame(move |_, cx| cx.notify(notebook_id));
+                    }
+                })
         };
         let body = match cell.kind {
             CellKind::Sql => v_flex()
                 .w_full()
                 .gap_2()
-                .child(code_box(
-                    &cell.editor,
-                    Self::editor_height(&cell.editor, cx),
-                ))
+                .child(code_box(&cell.editor))
                 .children(cell.results.clone().map(|results| {
                     // A statement that returned no rows is one line of news,
                     // not a panel of empty space.
@@ -1062,7 +1071,7 @@ impl Notebook {
                 }))
                 .into_any_element(),
             CellKind::Markdown | CellKind::Plot | CellKind::Dash if cell.editing => {
-                code_box(&cell.editor, Self::editor_height(&cell.editor, cx)).into_any_element()
+                code_box(&cell.editor).into_any_element()
             }
             // The dashboard at its own full height: the notebook scrolls,
             // and the dashboard's grid, cards and filters work as in a tab.

@@ -1312,6 +1312,9 @@ fn remove_label(count: usize) -> SharedString {
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.tree_language != crate::i18n::current() {
+            self.search.update(cx, |input, cx| {
+                input.set_placeholder(tr("sidebar.search.placeholder"), window, cx);
+            });
             self.rebuild_tree(cx);
         }
         // An `Rc` handle: the list is read while `cx` is borrowed mutably for
