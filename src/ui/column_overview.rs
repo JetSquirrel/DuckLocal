@@ -236,7 +236,6 @@ impl Plan {
 /// An overview whose shell is read.
 struct Lazy {
     relation: String,
-    label: SharedString,
     /// What the shell and every profile here were computed under.
     stamp: Stamp,
     shell: Arc<Shell>,
@@ -312,7 +311,7 @@ impl ColumnOverviewPanel {
 
     /// Read `relation`'s shell — from the cache when it is still valid,
     /// with whatever columns were profiled under it — and list its columns.
-    pub fn load(&mut self, relation: String, label: SharedString, cx: &mut Context<Self>) {
+    pub fn load(&mut self, relation: String, cx: &mut Context<Self>) {
         self.cancel_all();
         self.request += 1;
         let request = self.request;
@@ -349,7 +348,6 @@ impl ColumnOverviewPanel {
                         let cached_since = since.filter(|_| plan.profiled() > 0);
                         State::Ready(Box::new(Lazy {
                             relation,
-                            label,
                             stamp,
                             shell,
                             plan,
@@ -375,9 +373,9 @@ impl ColumnOverviewPanel {
         let State::Ready(lazy) = &self.state else {
             return;
         };
-        let (relation, label) = (lazy.relation.clone(), lazy.label.clone());
+        let relation = lazy.relation.clone();
         crate::overview_cache::forget(&relation);
-        self.load(relation, label, cx);
+        self.load(relation, cx);
     }
 
     /// Columns `range` came into view.
@@ -528,7 +526,6 @@ impl ColumnOverviewPanel {
         self.request += 1;
         self.state = State::Ready(Box::new(Lazy {
             relation: relation.to_string(),
-            label: "test".into(),
             stamp: crate::overview_cache::stamp_of(
                 &duckdb::Connection::open_in_memory().expect("in-memory database"),
                 relation,
@@ -570,7 +567,6 @@ impl ColumnOverviewPanel {
                     .child(trf(
                         "results.overview.summary",
                         &[
-                            &lazy.label,
                             &group_digits(lazy.shell.row_count.max(0) as u64),
                             &total.to_string(),
                         ],

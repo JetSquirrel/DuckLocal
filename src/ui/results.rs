@@ -419,10 +419,6 @@ impl ResultTableDelegate {
             .unwrap_or_else(|| self.rows().len())
     }
 
-    fn total_count(&self) -> usize {
-        self.rows().len()
-    }
-
     fn is_filtered(&self) -> bool {
         self.filtered.is_some()
     }
@@ -435,6 +431,23 @@ impl TableDelegate for ResultTableDelegate {
 
     fn rows_count(&self, _: &App) -> usize {
         self.visible_count()
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        h_flex()
+            .size_full()
+            .justify_center()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(tr(if self.rows().is_empty() {
+                "results.empty.no_rows"
+            } else {
+                "results.filter.no_matches"
+            }))
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -735,19 +748,18 @@ impl ResultsPanel {
         let table = cx.new(|cx| TableState::new(ResultTableDelegate::new(), window, cx));
         let filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(tr("results.filter.placeholder")));
-        let subscription =
-            cx.subscribe_in(&filter_input, window, |this, state, event, window, cx| {
-                match event {
-                    InputEvent::PressEnter { .. } => this.apply_filter(cx),
-                    // The cleanable ✕ emits Change with an empty value — treat
-                    // that as clearing the filter so the button always works.
-                    InputEvent::Change if state.read(cx).value().trim().is_empty() => {
-                        this.apply_filter(cx)
-                    }
-                    _ => {}
+        let subscription = cx.subscribe_in(&filter_input, window, |this, state, event, _, cx| {
+            match event {
+                InputEvent::PressEnter { .. } => this.apply_filter(cx),
+                // The cleanable ✕ emits Change with an empty value — treat
+                // that as clearing the filter so the button always works.
+                InputEvent::Change if state.read(cx).value().trim().is_empty() => {
+                    this.apply_filter(cx)
                 }
-                let _ = window;
-            });
+                InputEvent::Change => cx.notify(),
+                _ => {}
+            }
+        });
         Self {
             view: ResultView::Empty,
             tab: ResultsTab::Table,
@@ -947,9 +959,8 @@ impl ResultsPanel {
                 return;
             }
         };
-        self.overview.update(cx, |overview, cx| {
-            overview.load(relation, tr("results.overview.query").into(), cx)
-        });
+        self.overview
+            .update(cx, |overview, cx| overview.load(relation, cx));
     }
 
     /// The current result's query as a relation the chart can wrap, when it
@@ -1315,31 +1326,28 @@ impl ResultsPanel {
         .detach();
     }
 
-    fn rows_count(&self) -> usize {
-        match &self.view {
-            ResultView::Rows(result) => result.row_count(),
-            _ => 0,
-        }
-    }
-
-    fn columns_count(&self) -> usize {
-        match &self.view {
-            ResultView::Rows(result) => result.columns.len(),
-            _ => 0,
-        }
-    }
-
     fn render_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_rows = matches!(self.view, ResultView::Rows(_));
-        let summary = has_rows.then(|| {
-            trf(
-                "results.summary",
-                &[
-                    &self.rows_count().to_string(),
-                    &self.columns_count().to_string(),
-                ],
-            )
-        });
+        let summary = match &self.view {
+            ResultView::Rows(result) => {
+                let delegate = self.table.read(cx).delegate();
+                let total = format_thousands(result.row_count());
+                if !delegate.is_filtered() {
+                    Some(trf(
+                        "results.summary",
+                        &[&total, &result.columns.len().to_string()],
+                    ))
+                } else if self.tab == ResultsTab::Table {
+                    Some(trf(
+                        "results.filter.counts",
+                        &[&format_thousands(delegate.visible_count()), &total],
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
 
         // The tab bar is the whole header, so its own bottom line runs the
         // panel's width and the selected tab's underline sits on it; a border
@@ -1375,6 +1383,9 @@ impl ResultsPanel {
                     .when_some(summary, |this, summary| {
                         this.child(
                             div()
+                                .id("results-row-count")
+                                .role(Role::Status)
+                                .aria_label(summary.clone())
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(summary),
@@ -1809,16 +1820,32 @@ impl ResultsPanel {
         ])
     }
 
-    /// Bottom bar of the table page: client-side filter input + match counts.
-    fn render_filter_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (visible, total, is_filtered) = {
-            let delegate = self.table.read(cx).delegate();
-            (
-                delegate.visible_count(),
-                delegate.total_count(),
-                delegate.is_filtered(),
-            )
+    fn analysis_scope(&self, cx: &App) -> Option<String> {
+        let ResultView::Rows(result) = &self.view else {
+            return None;
         };
+        let delegate = self.table.read(cx).delegate();
+        if !delegate.is_filtered() {
+            return None;
+        }
+        let key = match self.tab {
+            ResultsTab::Table => return None,
+            ResultsTab::Chart => "results.filter.chart_scope",
+            ResultsTab::Overview => "results.filter.overview_scope",
+        };
+        Some(trf(
+            key,
+            &[
+                &format_thousands(delegate.visible_count()),
+                &format_thousands(result.row_count()),
+            ],
+        ))
+    }
+
+    /// Show the apply action only while the draft differs from the displayed filter.
+    fn render_filter_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let applied = self.table.read(cx).delegate().filter.trim();
+        let pending = self.filter_input.read(cx).value().trim() != applied;
 
         h_flex()
             .w_full()
@@ -1834,22 +1861,47 @@ impl ResultsPanel {
                     .cleanable(true)
                     .small(),
             )
-            .when(is_filtered, |this| {
+            .when(pending, |this| {
                 this.child(
+                    Button::new("apply-table-filter")
+                        .small()
+                        .outline()
+                        .label(tr("results.filter.apply"))
+                        .on_click(cx.listener(|this, _, _, cx| this.apply_filter(cx))),
+                )
+            })
+            .when(pending && !applied.is_empty(), |bar| {
+                let message = trf("results.filter.applied", &[applied]);
+                bar.child(
                     div()
+                        .id("current-table-filter")
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .min_w_0()
+                        .truncate()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(trf(
-                            "results.filter.counts",
-                            &[&visible.to_string(), &total.to_string()],
-                        )),
+                        .child(message),
                 )
             })
     }
 }
 
 impl Render for ResultsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let placeholder = tr("results.filter.placeholder");
+        if self
+            .filter_input
+            .read(cx)
+            .presentation()
+            .placeholder()
+            .as_ref()
+            != placeholder
+        {
+            self.filter_input.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx);
+            });
+        }
         v_flex()
             .relative()
             .size_full()
@@ -1858,6 +1910,20 @@ impl Render for ResultsPanel {
             .child(crate::ui::tour::anchor(crate::ui::tour::Target::Results))
             .child(self.render_header(cx))
             .children(self.render_script_steps(cx))
+            .when_some(self.analysis_scope(cx), |panel, message| {
+                panel.child(
+                    div()
+                        .id("analysis-filter-scope")
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .w_full()
+                        .px_3()
+                        .py_1()
+                        .text_sm()
+                        .bg(cx.theme().muted)
+                        .child(message),
+                )
+            })
             .child(div().flex_1().min_h_0().child(match self.tab {
                 ResultsTab::Table => self.render_table_content(cx),
                 ResultsTab::Chart => self.render_chart_content(cx),
@@ -2182,6 +2248,75 @@ mod tests {
     use crate::query::{ColumnKind, ColumnMeta, QueryResult};
     use gpui_kit::component::table::ColumnSort;
     use std::rc::Rc;
+
+    #[gpui_kit::test]
+    fn table_filter_can_be_applied_by_click_or_enter_and_cleared(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::{Theme, ThemeMode};
+        use gpui_kit::test::TestWindowExt;
+        use gpui_kit::AppContext;
+
+        let (window, panel) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+            gpui_kit::open_window(Default::default(), cx, |window, cx| {
+                cx.new(|cx| super::ResultsPanel::new(window, cx))
+            })
+            .unwrap()
+        });
+        let rows = |cx: &gpui_kit::App| panel.read(cx).table.read(cx).delegate().visible_count();
+        cx.update_window(window, |_, window, cx| {
+            let result = QueryResult {
+                columns: vec![ColumnMeta {
+                    name: "channel".into(),
+                    duck_type: "VARCHAR".into(),
+                    kind: ColumnKind::Text,
+                }],
+                rows: vec![vec!["Mobile".into()], vec!["Web".into()]],
+                elapsed_ms: 0,
+                truncated: false,
+                text_nulls: Default::default(),
+            };
+            panel.update(cx, |panel, cx| {
+                panel.show(
+                    &super::Shown::Rows(Rc::new(result)),
+                    "SELECT channel",
+                    window,
+                    cx,
+                );
+                panel
+                    .filter_input
+                    .update(cx, |input, cx| input.focus(window, cx));
+            });
+            window.render_frame(cx);
+            window.input("Web", cx);
+        })
+        .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(rows(cx), 2);
+            window.click("apply-table-filter", cx);
+            assert_eq!(rows(cx), 1);
+            window.render_frame(cx);
+            assert!(window.try_find("apply-table-filter").is_none());
+            panel
+                .read(cx)
+                .filter_input
+                .clone()
+                .update(cx, |input, cx| input.focus(window, cx));
+            window.press("end", cx);
+            window.input("x", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            assert_eq!(rows(cx), 0);
+            window.click("clean", cx);
+        })
+        .unwrap();
+        cx.update(|cx| assert_eq!(rows(cx), 2));
+    }
 
     #[test]
     fn a_sorted_result_keeps_the_filter_and_a_new_result_drops_the_sort() {
